@@ -65,7 +65,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
     public bool ShowControls => IsConnected;
     public bool ShowReconnecting => IsReconnecting;
 
-    public string StatusText => IsReconnecting || IsConnecting ? "尝试连接" : "";
+    public string StatusText => IsConnected ? "已连接" : IsReconnecting || IsConnecting ? "尝试连接" : "可连接";
 
     public ControllerMode Mode
     {

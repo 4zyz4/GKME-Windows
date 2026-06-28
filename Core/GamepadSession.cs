@@ -382,8 +382,10 @@ public class GamepadSession : IDisposable
         // [24-28]: reserved (default 0xE9,0,0,0,0 from ViGEm)
         buf[24] = 0xE9;
 
-        // [29]: Battery/cable state (bit4 = USB connected)
-        buf[29] = 0x10;
+        // [29]: Battery/cable state (bit4=USB/charging, bits 0-3=battery 0-10)
+        var powerState = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
+        if (input.IsCharging) powerState |= 0x10;
+        buf[29] = powerState;
 
         // [30-31]: reserved (default 0x1B,0x00 from ViGEm)
         buf[30] = 0x1B;
@@ -603,8 +605,9 @@ public class GamepadSession : IDisposable
                     buf[0] = 128; buf[1] = 128;
                     buf[2] = 128; buf[3] = 128;
                     buf[4] = 8;
+                    buf[11] = 10;
                     buf[24] = 0xE9;
-                    buf[29] = 0x10;
+                    buf[29] = 0x10 | 10;
                     buf[30] = 0x1B;
                     buf[34] = 0x80;
                     buf[38] = 0x80;
