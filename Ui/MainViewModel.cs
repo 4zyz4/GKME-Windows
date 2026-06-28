@@ -218,7 +218,10 @@ public class MainViewModel : INotifyPropertyChanged
         {
             var ip = session.Device.IpString;
             _initialConnecting.Remove(ip);
-            Sessions.Add(session);
+            if (!Sessions.Contains(session))
+            {
+                Sessions.Add(session);
+            }
             _sessionMap[ip] = session;
             OnPropertyChanged(nameof(HasActiveSession));
             var card = DeviceCards.FirstOrDefault(c => c.IpAddress == ip);

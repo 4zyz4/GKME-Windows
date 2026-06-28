@@ -144,10 +144,8 @@ public class NetworkService : IDisposable
             };
             session.OnConnectionLost += s =>
             {
-                _sessions.TryRemove(s.Device.Key, out _);
-                OnSessionEnded?.Invoke(s);
-                if (s.HasBeenReady && !_disposed)
-                    _ = Task.Run(() => ReconnectAsync(s.Device, s.Device.Key));
+                if (_disposed) return;
+                _ = Task.Run(() => ReconnectAsync(s.Device, s.Device.Key));
             };
 
             session.Start();
@@ -175,13 +173,10 @@ public class NetworkService : IDisposable
         var lockObj = _reconnectLocks.GetOrAdd(key, _ => new object());
         lock (lockObj)
         {
-            // If there's already a reconnect loop running for this device, don't start another
             if (_reconnectCts.TryGetValue(key, out var existingCts) && !existingCts.IsCancellationRequested)
             {
-                // Another reconnect is already in progress, skip
                 return;
             }
-            // Cancel any stale reconnect token
             if (existingCts != null)
             {
                 existingCts.Cancel();
@@ -191,7 +186,6 @@ public class NetworkService : IDisposable
         }
         var cts = _reconnectCts[key];
 
-        // Notify UI that connection is lost and reconnecting
         UiInvoke(() => OnSessionConnectionLost?.Invoke(device.IpString));
 
         var reconnectTimeout = TimeSpan.FromSeconds(10);
@@ -243,39 +237,17 @@ public class NetworkService : IDisposable
                     return;
                 }
 
-                // Old session may have been closed by RequestReconnect(),
-                // but it's still in _sessions. We replace it.
-                var oldSession = _sessions.GetValueOrDefault(key);
-                if (oldSession != null)
+                var session = _sessions.GetValueOrDefault(key);
+                if (session != null)
                 {
-                    oldSession.RequestCancelReconnect();
-                    oldSession.Dispose();
+                    session.ReplaceConnection(tcp);
+                }
+                else
+                {
+                    tcp.Close();
                 }
 
-                var newSession = new GamepadSession(device, tcp, _viGEm);
-                newSession.OnReady += s =>
-                {
-                    OnSessionStarted?.Invoke(s);
-                };
-                newSession.OnDisconnected += s =>
-                {
-                    _sessions.TryRemove(s.Device.Key, out _);
-                    _reconnectCts.TryRemove(s.Device.Key, out var rCts);
-                    rCts?.Cancel();
-                    rCts?.Dispose();
-                    OnSessionEnded?.Invoke(s);
-                };
-                newSession.OnConnectionLost += s =>
-                {
-                    _sessions.TryRemove(s.Device.Key, out _);
-                    OnSessionEnded?.Invoke(s);
-                    if (s.HasBeenReady && !_disposed)
-                        _ = Task.Run(() => ReconnectAsync(device, s.Device.Key));
-                };
-
-                newSession.Start();
-                _sessions[key] = newSession;
-
+                _reconnectCts.TryRemove(key, out _);
                 return;
             }
             catch

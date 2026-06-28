@@ -10,10 +10,10 @@ namespace GamepadEmuHost.Core;
 
 public class GamepadSession : IDisposable
 {
-    private readonly TcpClient _tcp;
-    private readonly NetworkStream _stream;
+    private TcpClient _tcp;
+    private NetworkStream _stream;
     private readonly ViGEmClient _viGEm;
-    private readonly CancellationTokenSource _cts = new();
+    private CancellationTokenSource _cts = new();
     private Task _readTask = Task.CompletedTask;
     private Task _vibTask = Task.CompletedTask;
     private bool _disposed;
@@ -66,7 +66,7 @@ public class GamepadSession : IDisposable
 
     public async Task SendAsync(IMessage message)
     {
-        if (_disposed) return;
+        if (_disposed || IsReconnectRequested) return;
         try
         {
             var data = message.ToByteArray();
@@ -126,10 +126,7 @@ public class GamepadSession : IDisposable
         }
         catch (OperationCanceledException)
         {
-            if (_disposed && IsReconnectRequested)
-            {
-                return;
-            }
+            if (_disposed) return;
             connectionAbnormal = true;
         }
         catch
@@ -139,14 +136,10 @@ public class GamepadSession : IDisposable
 
         if (connectionAbnormal)
         {
-            if (IsReconnectRequested || _disposed)
-            {
-                return;
-            }
+            if (_disposed || IsReconnectRequested) return;
             IsReconnectRequested = true;
-            _disposed = true;
             _cts.Cancel();
-            DestroyController();
+            ResetController();
             try { _stream.Close(); } catch { }
             try { _tcp.Close(); } catch { }
             OnConnectionLost?.Invoke(this);
@@ -190,18 +183,11 @@ public class GamepadSession : IDisposable
 
     private void HandleHello(Hello hello)
     {
-        var newMode = hello.ControllerMode;
-
-        if (IsReady && Mode != newMode)
-        {
-            DestroyController();
-        }
-
-        Mode = newMode;
+        Mode = ControllerMode.Ds4;
 
         if (Controller == null)
         {
-            CreateController(newMode);
+            CreateController(Mode);
         }
 
         _ = SendAsync(new ServerToClient
@@ -218,23 +204,15 @@ public class GamepadSession : IDisposable
         if (!_readyFired)
         {
             _readyFired = true;
-            OnReady?.Invoke(this);
         }
+        OnReady?.Invoke(this);
     }
 
     private void CreateController(ControllerMode mode)
     {
         switch (mode)
         {
-            case ControllerMode.Ds4:
-            {
-                var ctrl = _viGEm.CreateDualShock4Controller();
-                ctrl.FeedbackReceived += OnDs4Feedback;
-                ctrl.Connect();
-                Controller = ctrl;
-                break;
-            }
-            default:
+            case ControllerMode.Xbox360:
             {
                 var ctrl = _viGEm.CreateXbox360Controller();
                 ctrl.FeedbackReceived += OnXbox360Feedback;
@@ -245,6 +223,14 @@ public class GamepadSession : IDisposable
                 ctrl.SetAxisValue(Xbox360Axis.RightThumbY, 0);
                 ctrl.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
                 ctrl.SetSliderValue(Xbox360Slider.RightTrigger, 0);
+                Controller = ctrl;
+                break;
+            }
+            default:
+            {
+                var ctrl = _viGEm.CreateDualShock4Controller();
+                ctrl.FeedbackReceived += OnDs4Feedback;
+                ctrl.Connect();
                 Controller = ctrl;
                 break;
             }
@@ -530,6 +516,24 @@ public class GamepadSession : IDisposable
         return new ValueTask(Task.WhenAll(tasks));
     }
 
+    public void ReplaceConnection(TcpClient newTcp)
+    {
+        IsReconnectRequested = false;
+        try { _stream.Close(); } catch { }
+        try { _tcp.Close(); } catch { }
+        _tcp = newTcp;
+        _stream = newTcp.GetStream();
+        _cts.Dispose();
+        _cts = new CancellationTokenSource();
+        _readTask = Task.Run(() => ReadLoop(_cts.Token));
+        _vibTask = Task.Run(async () =>
+        {
+            try { await VibrationSendLoop(_cts.Token); }
+            catch (OperationCanceledException) { }
+            catch { }
+        });
+    }
+
     public void Disconnect()
     {
         if (_disposed) return;
@@ -545,13 +549,10 @@ public class GamepadSession : IDisposable
     public async Task RequestReconnectAsync()
     {
         IsReconnectRequested = true;
-        _disposed = true;
         _cts.Cancel();
-        DestroyController();
         try { _stream.Close(); } catch { }
         try { _tcp.Close(); } catch { }
 
-        // Wait for background tasks to finish to prevent IOException/SocketException storms
         await _readTask;
         await _vibTask;
 
@@ -566,6 +567,56 @@ public class GamepadSession : IDisposable
     public void RequestCancelReconnect()
     {
         IsReconnectRequested = false;
+    }
+
+    private void ResetController()
+    {
+        try
+        {
+            switch (Controller)
+            {
+                case IXbox360Controller xbox:
+                    xbox.SetButtonState(Xbox360Button.A, false);
+                    xbox.SetButtonState(Xbox360Button.B, false);
+                    xbox.SetButtonState(Xbox360Button.X, false);
+                    xbox.SetButtonState(Xbox360Button.Y, false);
+                    xbox.SetButtonState(Xbox360Button.LeftShoulder, false);
+                    xbox.SetButtonState(Xbox360Button.RightShoulder, false);
+                    xbox.SetButtonState(Xbox360Button.LeftThumb, false);
+                    xbox.SetButtonState(Xbox360Button.RightThumb, false);
+                    xbox.SetButtonState(Xbox360Button.Back, false);
+                    xbox.SetButtonState(Xbox360Button.Start, false);
+                    xbox.SetButtonState(Xbox360Button.Guide, false);
+                    xbox.SetButtonState(Xbox360Button.Up, false);
+                    xbox.SetButtonState(Xbox360Button.Down, false);
+                    xbox.SetButtonState(Xbox360Button.Left, false);
+                    xbox.SetButtonState(Xbox360Button.Right, false);
+                    xbox.SetAxisValue(Xbox360Axis.LeftThumbX, 0);
+                    xbox.SetAxisValue(Xbox360Axis.LeftThumbY, 0);
+                    xbox.SetAxisValue(Xbox360Axis.RightThumbX, 0);
+                    xbox.SetAxisValue(Xbox360Axis.RightThumbY, 0);
+                    xbox.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
+                    xbox.SetSliderValue(Xbox360Slider.RightTrigger, 0);
+                    break;
+                case IDualShock4Controller ds4:
+                    var buf = new byte[63];
+                    buf[0] = 128; buf[1] = 128;
+                    buf[2] = 128; buf[3] = 128;
+                    buf[4] = 8;
+                    buf[24] = 0xE9;
+                    buf[29] = 0x10;
+                    buf[30] = 0x1B;
+                    buf[34] = 0x80;
+                    buf[38] = 0x80;
+                    buf[43] = 0x80;
+                    buf[47] = 0x80;
+                    buf[52] = 0x80;
+                    buf[56] = 0x80;
+                    ds4.SubmitRawReport(buf);
+                    break;
+            }
+        }
+        catch { }
     }
 
     private void DestroyController()
