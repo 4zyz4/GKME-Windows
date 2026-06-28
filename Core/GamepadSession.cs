@@ -183,10 +183,15 @@ public class GamepadSession : IDisposable
 
     private void HandleHello(Hello hello)
     {
-        Mode = ControllerMode.Ds4;
-
         if (Controller == null)
         {
+            Mode = ControllerMode.Ds4;
+            CreateController(Mode);
+        }
+        else if (Mode == ControllerMode.Ds4 && Controller is not IDualShock4Controller ||
+                 Mode == ControllerMode.Xbox360 && Controller is not IXbox360Controller)
+        {
+            DestroyController();
             CreateController(Mode);
         }
 
