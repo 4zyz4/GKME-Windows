@@ -4,27 +4,86 @@
         xmlns:ui="clr-namespace:GamepadEmuHost.Ui"
         Title="Gamepad Emu Host"
         Width="580" Height="500"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        Background="#1E1E1E"
+        Foreground="#E0E0E0">
     <Window.Resources>
         <Style x:Key="CardBorder" TargetType="Border">
-            <Setter Property="Background" Value="#F8F9FA" />
-            <Setter Property="BorderBrush" Value="#DEE2E6" />
+            <Setter Property="Background" Value="#2D2D2D" />
+            <Setter Property="BorderBrush" Value="#3E3E3E" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="14" />
             <Setter Property="Margin" Value="0,0,0,10" />
             <Setter Property="Effect">
                 <Setter.Value>
-                    <DropShadowEffect BlurRadius="6" Opacity="0.08" ShadowDepth="2" Color="#000000" />
+                    <DropShadowEffect BlurRadius="6" Opacity="0.3" ShadowDepth="2" Color="#000000" />
                 </Setter.Value>
             </Setter>
         </Style>
 
         <Style x:Key="ModeButton" TargetType="Button">
-            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Name="border" Background="#0E639C" CornerRadius="4" Padding="8,4">
+                            <ContentPresenter Name="content" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextElement.Foreground="#FFFFFF" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="border" Property="Background" Value="#3E3E3E" />
+                                <Setter TargetName="content" Property="TextElement.Foreground" Value="#888888" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ActionButton" TargetType="Button">
+            <Setter Property="Background" Value="#0E639C" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="8,4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
             <Style.Triggers>
-                <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Foreground" Value="Blue" />
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#1177BB" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="DangerButton" TargetType="Button">
+            <Setter Property="Background" Value="#C23B22" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="8,4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#E0553A" />
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -47,10 +106,14 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="IP 地址" VerticalAlignment="Center" FontSize="13" Margin="0,0,8,0" />
                 <TextBox Grid.Column="1" Text="{Binding ManualIp, UpdateSourceTrigger=PropertyChanged}"
-                         VerticalContentAlignment="Center" Height="30" FontSize="13" />
+                         VerticalContentAlignment="Center" Height="30" FontSize="13"
+                         Background="#3C3C3C" Foreground="#E0E0E0" BorderBrush="#555555"
+                         BorderThickness="1" />
                 <Button Grid.Column="2" Content="手动连接" Width="80" Height="30" Margin="8,0,0,0"
+                        Style="{StaticResource ActionButton}"
                         Click="OnManualConnectClick" />
                 <Button Grid.Column="3" Content="刷新" Width="60" Height="30" Margin="8,0,0,0"
+                        Style="{StaticResource ActionButton}"
                         Click="OnRefreshClick" />
             </Grid>
         </Border>
@@ -70,32 +133,35 @@
                                 <!-- Device info -->
                                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
                                     <TextBlock Text="{Binding DeviceName}" FontSize="14" FontWeight="SemiBold" />
-                                    <TextBlock Text="{Binding IpAddress}" FontSize="11" Foreground="#6C757D" Margin="0,2,0,0" />
-                                    <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#6C757D" Margin="0,2,0,0" />
+                                    <TextBlock Text="{Binding IpAddress}" FontSize="11" Foreground="#9D9D9D" Margin="0,2,0,0" />
+                                    <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#9D9D9D" Margin="0,2,0,0" />
                                 </StackPanel>
 
                                 <!-- Connect button -->
                                 <Button Grid.Column="1" Content="连接" Width="70" Height="30"
+                                        Style="{StaticResource ActionButton}"
                                         Visibility="{Binding ShowConnect, Converter={x:Static ui:BoolToVisibilityConverter.Instance}}"
                                         Click="OnCardConnectClick" />
 
                                 <!-- Reconnecting indicator -->
                                 <Button Grid.Column="1" Content="断开" Width="50" Height="30"
+                                        Style="{StaticResource DangerButton}"
                                         Visibility="{Binding ShowReconnecting, Converter={x:Static ui:BoolToVisibilityConverter.Instance}}"
                                         Click="OnCardDisconnectClick" />
 
                                 <!-- Session controls -->
                                 <StackPanel Grid.Column="1" Orientation="Horizontal"
                                             Visibility="{Binding ShowControls, Converter={x:Static ui:BoolToVisibilityConverter.Instance}}">
-                                    <Button Content="Xbox" Width="50" Height="28" FontSize="12"
-                                            Style="{StaticResource ModeButton}"
-                                            IsEnabled="{Binding IsDs4Active}"
-                                            Tag="Xbox" Click="OnCardModeClick" />
-                                    <Button Content="DS4" Width="40" Height="28" Margin="4,0,0,0" FontSize="12"
+                                    <Button Content="DS4" Width="40" Height="28" FontSize="12"
                                             Style="{StaticResource ModeButton}"
                                             IsEnabled="{Binding IsXbox360Active}"
                                             Tag="DS4" Click="OnCardModeClick" />
+                                    <Button Content="Xbox" Width="50" Height="28" Margin="4,0,0,0" FontSize="12"
+                                            Style="{StaticResource ModeButton}"
+                                            IsEnabled="{Binding IsDs4Active}"
+                                            Tag="Xbox" Click="OnCardModeClick" />
                                     <Button Content="断开" Width="50" Height="28" Margin="6,0,0,0"
+                                            Style="{StaticResource DangerButton}"
                                             Click="OnCardDisconnectClick" />
                                 </StackPanel>
                             </Grid>

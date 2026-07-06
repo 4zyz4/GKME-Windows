@@ -205,6 +205,10 @@ public class GamepadSession : IDisposable
                 RecommendedUplinkIntervalUs = 0,
             }
         });
+        _ = SendAsync(new ServerToClient
+        {
+            SetControllerMode = new SetControllerMode { Mode = Mode }
+        });
 
         if (!_readyFired)
         {
