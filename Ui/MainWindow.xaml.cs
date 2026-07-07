@@ -1,6 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
-using GamepadEmu.Protocol;
+using GamepadEmuHost.Core;
 
 namespace GamepadEmuHost.Ui;
 

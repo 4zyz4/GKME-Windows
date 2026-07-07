@@ -205,10 +205,6 @@ public class GamepadSession : IDisposable
                 RecommendedUplinkIntervalUs = 0,
             }
         });
-        _ = SendAsync(new ServerToClient
-        {
-            SetControllerMode = new SetControllerMode { Mode = Mode }
-        });
 
         if (!_readyFired)
         {
@@ -502,22 +498,14 @@ public class GamepadSession : IDisposable
         }
     }
 
-    public async Task SetControllerModeAsync(ControllerMode mode)
+    public Task SetControllerModeAsync(ControllerMode mode)
     {
-        if (_disposed) return;
+        if (_disposed) return Task.CompletedTask;
 
         Mode = mode;
         DestroyController();
-        await Task.Delay(100, _cts.Token);
         CreateController(mode);
-        try
-        {
-            await SendAsync(new ServerToClient
-            {
-                SetControllerMode = new SetControllerMode { Mode = mode }
-            });
-        }
-        catch { }
+        return Task.CompletedTask;
     }
 
     public ValueTask WaitTasksAsync()
