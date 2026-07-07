@@ -314,6 +314,7 @@ public class GamepadSession : IDisposable
     }
 
     private ushort _ds4Timestamp;
+    private int _ds4TouchCounter;
 
     private void HandleDs4Input(GamepadInput input)
     {
@@ -398,29 +399,42 @@ public class GamepadSession : IDisposable
         // [32]: Touch packet count
         buf[32] = 1;
 
-        // [33-41]: sCurrentTouch (1 DS4_TOUCH = 2 touch points)
-        if (input.TouchpadTouch)
-        {
-            buf[33] = 0; // packet counter
-            WriteTouchData(buf, 34, (int)input.TouchpadX, (int)input.TouchpadY, true, 0);
-            WriteTouchData(buf, 38, 0, 0, false, 1);
-        }
-        else
-        {
-            buf[33] = 0; // packet counter
-            WriteTouchData(buf, 34, 0, 0, false, 0);
-            WriteTouchData(buf, 38, 0, 0, false, 1);
-        }
+        // Current frame touches (up to 2 points)
+        var touchList = input.Touches.Where(t => t.Active).Take(2).ToList();
+
+        // [33-41]: sCurrentTouch (DS4_TOUCH = 2 touch points = two fingers)
+        buf[33] = (byte)(_ds4TouchCounter & 0x7F);
+        WriteTouchData(buf, 34,
+            touchList.Count > 0 ? (int)touchList[0].X : 0,
+            touchList.Count > 0 ? (int)touchList[0].Y : 0,
+            touchList.Count > 0, 0);
+        WriteTouchData(buf, 38,
+            touchList.Count > 1 ? (int)touchList[1].X : 0,
+            touchList.Count > 1 ? (int)touchList[1].Y : 0,
+            touchList.Count > 1, 1);
 
         // [42-50]: sPreviousTouch[0] — all inactive
-        buf[42] = 0; // packet counter
+        buf[42] = 0;
         WriteTouchData(buf, 43, 0, 0, false, 2);
         WriteTouchData(buf, 47, 0, 0, false, 3);
 
         // [51-59]: sPreviousTouch[1] — all inactive
-        buf[51] = 0; // packet counter
+        buf[51] = 0;
         WriteTouchData(buf, 52, 0, 0, false, 4);
         WriteTouchData(buf, 56, 0, 0, false, 5);
+
+        _ds4TouchCounter++;
+
+        if (touchList.Count > 0)
+        {
+            try
+            {
+                System.IO.File.AppendAllText(
+                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ds4touch.log"),
+                    $"{DateTime.Now:HH:mm:ss.fff} cnt={touchList.Count} p0=({touchList[0].X},{touchList[0].Y}){(touchList.Count > 1 ? $" p1=({touchList[1].X},{touchList[1].Y})" : "")}\n");
+            }
+            catch { }
+        }
 
         ctrl.SubmitRawReport(buf);
     }
