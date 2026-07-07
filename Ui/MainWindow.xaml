@@ -93,6 +93,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!-- Manual IP input -->
@@ -175,5 +176,17 @@
                 </ItemsControl.ItemsPanel>
             </ItemsControl>
         </ScrollViewer>
+
+        <!-- Footer info -->
+        <Border Grid.Row="2" Background="#252525" Padding="10,8" CornerRadius="6" Margin="0,6,0,0">
+            <TextBlock FontSize="11" Foreground="#888888" TextWrapping="Wrap" TextAlignment="Center"
+                       LineHeight="16">
+                <Run Text="作者：4zyz4" />
+                <LineBreak />
+                <Run Text="开源地址：https://github.com/4zyz4/gamepad-emu-android" />
+                <LineBreak />
+                <Run Text="注意：本软件不是Emotion，请进入Q群1045923515以下载正版Emotion" />
+            </TextBlock>
+        </Border>
     </Grid>
 </Window>

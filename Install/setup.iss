@@ -83,8 +83,41 @@ begin
   Result := GetUninstallKey <> '';
 end;
 
+function GetInstalledVersion: String;
+var
+  Key: String;
+begin
+  Key := GetUninstallKey;
+  if Key <> '' then
+    RegQueryStringValue(HKLM, Key, 'DisplayVersion', Result);
+  if Result = '' then
+    RegQueryStringValue(HKCU, Key, 'DisplayVersion', Result);
+end;
+
+function CompareVersion(const V1, V2: String): Integer;
+var
+  P1, P2, N1, N2, C1, C2: Integer;
+  S1, S2: String;
+begin
+  S1 := V1; S2 := V2;
+  while (S1 <> '') or (S2 <> '') do
+  begin
+    C1 := Pos('.', S1); C2 := Pos('.', S2);
+    if C1 = 0 then C1 := Length(S1) + 1;
+    if C2 = 0 then C2 := Length(S2) + 1;
+    if C1 = 0 then N1 := 0 else N1 := StrToIntDef(Copy(S1, 1, C1 - 1), 0);
+    if C2 = 0 then N2 := 0 else N2 := StrToIntDef(Copy(S2, 1, C2 - 1), 0);
+    if N1 < N2 then begin Result := -1; exit; end;
+    if N1 > N2 then begin Result := 1; exit; end;
+    if C1 = 0 then S1 := '' else Delete(S1, 1, C1);
+    if C2 = 0 then S2 := '' else Delete(S2, 1, C2);
+  end;
+  Result := 0;
+end;
+
 function InitializeSetup: Boolean;
 begin
+  InstalledVersion := GetInstalledVersion;
   Result := True;
 end;
 
@@ -110,18 +143,38 @@ var
   RepairRadioRepair: TRadioButton;
   RepairRadioUninstall: TRadioButton;
   UninstallDone: Boolean;
+  InstalledVersion: String;
 
 procedure InitializeWizard;
+var
+  IsUpgrade: Boolean;
+  Title, Desc: String;
 begin
-  RepairPage := CreateCustomPage(wpWelcome, '检测到已安装',
-    '{#MyAppName} 已经安装在您的计算机上，请选择操作：');
+  IsUpgrade := (InstalledVersion <> '') and
+    (CompareVersion(InstalledVersion, '{#MyAppVersion}') < 0);
+
+  if IsUpgrade then
+  begin
+    Title := '检测到新版本';
+    Desc := '已安装版本 v' + InstalledVersion +
+      '，最新版本 v{#MyAppVersion}。请选择操作：';
+  end else
+  begin
+    Title := '检测到已安装';
+    Desc := '{#MyAppName} 已经安装在您的计算机上，请选择操作：';
+  end;
+
+  RepairPage := CreateCustomPage(wpWelcome, Title, Desc);
 
   RepairRadioRepair := TRadioButton.Create(RepairPage);
   RepairRadioRepair.Parent := RepairPage.Surface;
-  RepairRadioRepair.Caption := '重新安装（修复模式）';
   RepairRadioRepair.Top := 24;
   RepairRadioRepair.Width := RepairPage.SurfaceWidth;
   RepairRadioRepair.Checked := True;
+  if IsUpgrade then
+    RepairRadioRepair.Caption := '升级到 v{#MyAppVersion}（推荐）'
+  else
+    RepairRadioRepair.Caption := '重新安装（修复模式）';
 
   RepairRadioUninstall := TRadioButton.Create(RepairPage);
   RepairRadioUninstall.Parent := RepairPage.Surface;
