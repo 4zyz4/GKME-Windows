@@ -1,4 +1,3 @@
-using System.Net.Sockets;
 using GamepadEmu.Protocol;
 using Google.Protobuf;
 using Nefarius.ViGEm.Client;
@@ -10,14 +9,15 @@ namespace GamepadEmuHost.Core;
 
 public class GamepadSession : IDisposable
 {
-    private TcpClient _tcp;
-    private NetworkStream _stream;
+    private const int ConnectionTimeoutMs = 3000;
+
+    private readonly Func<IMessage, Task> _sendToPhone;
     private readonly ViGEmClient _viGEm;
     private CancellationTokenSource _cts = new();
-    private Task _readTask = Task.CompletedTask;
     private Task _vibTask = Task.CompletedTask;
     private bool _disposed;
     private bool _readyFired;
+    private DateTime _lastReceiveTime = DateTime.UtcNow;
     private byte _lastLargeMotor;
     private byte _lastSmallMotor;
     private ulong _lastSeq;
@@ -25,34 +25,26 @@ public class GamepadSession : IDisposable
     private int _inputCountThisSecond;
     private int _measuredInputRate;
 
-
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
     public object? Controller { get; private set; }
-    public bool IsConnected => _tcp.Connected && !_disposed;
+    public bool IsConnected => !_disposed;
     public bool IsReady => Controller != null;
     public bool HasBeenReady => _readyFired;
 
     public event Action<GamepadSession>? OnReady;
-    public event Action<GamepadSession>? OnDisconnected;
     public event Action<GamepadSession>? OnConnectionLost;
+    public event Action<GamepadSession>? OnDisconnected;
 
-    public bool IsReconnectRequested { get; private set; }
-
-    public string ReconnectIp => Device.IpAddress.ToString();
-    public int ReconnectPort => Device.Port;
-
-    public GamepadSession(DiscoveredDevice device, TcpClient tcp, ViGEmClient viGEm)
+    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, ViGEmClient viGEm)
     {
         Device = device;
-        _tcp = tcp;
-        _stream = tcp.GetStream();
+        _sendToPhone = sendToPhone;
         _viGEm = viGEm;
     }
 
     public void Start()
     {
-        _readTask = Task.Run(() => ReadLoop(_cts.Token));
         _vibTask = Task.Run(async () =>
         {
             try
@@ -62,154 +54,74 @@ public class GamepadSession : IDisposable
             catch (OperationCanceledException) { }
             catch { }
         });
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await WatchdogLoop(_cts.Token);
+            }
+            catch (OperationCanceledException) { }
+            catch { }
+        });
     }
 
-    public async Task SendAsync(IMessage message)
+    private async Task WatchdogLoop(CancellationToken ct)
     {
-        if (_disposed || IsReconnectRequested) return;
-        try
+        while (!ct.IsCancellationRequested)
         {
-            var data = message.ToByteArray();
-            var len = data.Length;
-            var header = new byte[4]
+            await Task.Delay(1000, ct);
+            if (_disposed) return;
+            if (Controller == null) continue;
+            if ((DateTime.UtcNow - _lastReceiveTime).TotalMilliseconds > ConnectionTimeoutMs)
             {
-                (byte)((len >> 24) & 0xFF),
-                (byte)((len >> 16) & 0xFF),
-                (byte)((len >> 8) & 0xFF),
-                (byte)(len & 0xFF),
-            };
-            await _stream.WriteAsync(header, _cts.Token);
-            await _stream.WriteAsync(data, _cts.Token);
-            await _stream.FlushAsync(_cts.Token);
-        }
-        catch
-        {
-            if (IsReconnectRequested || _disposed) return;
-            RequestReconnect();
-        }
-    }
-
-    private async Task ReadLoop(CancellationToken ct)
-    {
-        var lengthBuf = new byte[4];
-        var buffer = new byte[65536];
-        bool connectionAbnormal = false;
-
-        try
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                var headerRead = await ReadExactAsync(_stream, lengthBuf, 4, ct);
-                if (headerRead < 4)
-                {
-                    connectionAbnormal = true;
-                    break;
-                }
-
-                var msgLen = (lengthBuf[0] << 24) | (lengthBuf[1] << 16) |
-                             (lengthBuf[2] << 8) | lengthBuf[3];
-                if (msgLen < 0 || msgLen > buffer.Length)
-                {
-                    connectionAbnormal = true;
-                    break;
-                }
-
-                var bodyRead = await ReadExactAsync(_stream, buffer, msgLen, ct);
-                if (bodyRead < msgLen)
-                {
-                    connectionAbnormal = true;
-                    break;
-                }
-
-                ProcessMessage(buffer.AsSpan(0, msgLen));
+                _readyFired = false;
+                ResetController();
+                try { OnConnectionLost?.Invoke(this); } catch { }
             }
         }
-        catch (OperationCanceledException)
-        {
-            if (_disposed) return;
-            connectionAbnormal = true;
-        }
-        catch
-        {
-            connectionAbnormal = true;
-        }
-
-        if (connectionAbnormal)
-        {
-            if (_disposed || IsReconnectRequested) return;
-            IsReconnectRequested = true;
-            _cts.Cancel();
-            ResetController();
-            try { _stream.Close(); } catch { }
-            try { _tcp.Close(); } catch { }
-            OnConnectionLost?.Invoke(this);
-        }
     }
 
-    private static async Task<int> ReadExactAsync(NetworkStream stream, byte[] buffer, int count, CancellationToken ct)
-    {
-        var offset = 0;
-        while (offset < count)
-        {
-            var read = await stream.ReadAsync(buffer, offset, count - offset, ct);
-            if (read <= 0) return offset;
-            offset += read;
-        }
-        return offset;
-    }
-
-    private void ProcessMessage(ReadOnlySpan<byte> data)
+    public void HandleClientToServer(ClientToServer cts)
     {
         try
         {
-            var wrapper = ClientToServer.Parser.ParseFrom(data.ToArray());
-            switch (wrapper.PayloadCase)
+            _lastReceiveTime = DateTime.UtcNow;
+            switch (cts.PayloadCase)
             {
                 case ClientToServer.PayloadOneofCase.Hello:
-                    HandleHello(wrapper.Hello);
-                    break;
-                case ClientToServer.PayloadOneofCase.GamepadInput:
-                    if (IsReady) HandleGamepadInput(wrapper.GamepadInput);
+                    HandleHello(cts.Hello);
                     break;
                 case ClientToServer.PayloadOneofCase.KeepAlive:
                     break;
             }
         }
-        catch
+        catch { }
+    }
+
+    public void HandleUdpGamepadInput(GamepadInput input)
+    {
+        if (!IsReady) return;
+        _lastReceiveTime = DateTime.UtcNow;
+        HandleGamepadInput(input);
+    }
+
+    public async Task SendAsync(IMessage message)
+    {
+        if (_disposed) return;
+        try
         {
-            // parse error
+            await _sendToPhone(message);
         }
+        catch { }
     }
 
     private void HandleHello(Hello hello)
     {
+        Mode = ControllerMode.Ds4;
         if (Controller == null)
-        {
-            Mode = ControllerMode.Ds4;
             CreateController(Mode);
-        }
-        else if (Mode == ControllerMode.Ds4 && Controller is not IDualShock4Controller ||
-                 Mode == ControllerMode.Xbox360 && Controller is not IXbox360Controller)
-        {
-            DestroyController();
-            CreateController(Mode);
-        }
 
-        _ = SendAsync(new ServerToClient
-        {
-            ServerHello = new ServerHello
-            {
-                ProtocolVersion = 1,
-                HostName = Environment.MachineName,
-                MaxDownlinkRateHz = 1000,
-                RecommendedUplinkIntervalUs = 0,
-            }
-        });
-
-        if (!_readyFired)
-        {
-            _readyFired = true;
-        }
+        _readyFired = true;
         OnReady?.Invoke(this);
     }
 
@@ -244,7 +156,6 @@ public class GamepadSession : IDisposable
 
     private void OnDs4Feedback(object? sender, DualShock4FeedbackReceivedEventArgs e)
     {
-        // Don't echo vibration feedback back to device — server controls it locally
         _lastLargeMotor = e.LargeMotor;
         _lastSmallMotor = e.SmallMotor;
     }
@@ -319,90 +230,76 @@ public class GamepadSession : IDisposable
     private void HandleDs4Input(GamepadInput input)
     {
         var ctrl = (IDualShock4Controller)Controller!;
-        var buf = new byte[63]; // DS4_REPORT_EX (no Report ID byte)
+        var buf = new byte[63];
 
-        // [0-3]: Thumb sticks (0-255, center 128)
         buf[0] = MapAxisToByte(input.LeftStickX);
         buf[1] = MapAxisToByte(input.LeftStickY);
         buf[2] = MapAxisToByte(input.RightStickX);
         buf[3] = MapAxisToByte(input.RightStickY);
 
-        // [4-5]: wButtons (LE) — dpad + face/shoulder/menu/stick-click
         ushort w = (input.Dpad & 0x0F) switch
         {
-            1 => 0,    // N
-            2 => 4,    // S
-            4 => 6,    // W
-            8 => 2,    // E
-            5 => 7,    // NW
-            6 => 5,    // SW
-            9 => 1,    // NE
-            10 => 3,   // SE
-            _ => 8,    // neutral
+            1 => 0,
+            2 => 4,
+            4 => 6,
+            8 => 2,
+            5 => 7,
+            6 => 5,
+            9 => 1,
+            10 => 3,
+            _ => 8,
         };
-        if ((input.Buttons & (1 << 0)) != 0) w |= 1 << 5;   // Cross
-        if ((input.Buttons & (1 << 1)) != 0) w |= 1 << 6;   // Circle
-        if ((input.Buttons & (1 << 2)) != 0) w |= 1 << 4;   // Square
-        if ((input.Buttons & (1 << 3)) != 0) w |= 1 << 7;   // Triangle
-        if ((input.Buttons & (1 << 4)) != 0) w |= 1 << 8;   // L1
-        if ((input.Buttons & (1 << 5)) != 0) w |= 1 << 9;   // R1
-        if ((input.Buttons & (1 << 6)) != 0) w |= 1 << 10;  // L2
-        if ((input.Buttons & (1 << 7)) != 0) w |= 1 << 11;  // R2
-        if ((input.Buttons & (1 << 8)) != 0) w |= 1 << 12;  // Share
-        if ((input.Buttons & (1 << 9)) != 0) w |= 1 << 13;  // Options
-        if ((input.Buttons & (1 << 10)) != 0) w |= 1 << 14; // L3
-        if ((input.Buttons & (1 << 11)) != 0) w |= 1 << 15; // R3
+        if ((input.Buttons & (1 << 0)) != 0) w |= 1 << 5;
+        if ((input.Buttons & (1 << 1)) != 0) w |= 1 << 6;
+        if ((input.Buttons & (1 << 2)) != 0) w |= 1 << 4;
+        if ((input.Buttons & (1 << 3)) != 0) w |= 1 << 7;
+        if ((input.Buttons & (1 << 4)) != 0) w |= 1 << 8;
+        if ((input.Buttons & (1 << 5)) != 0) w |= 1 << 9;
+        if ((input.Buttons & (1 << 6)) != 0) w |= 1 << 10;
+        if ((input.Buttons & (1 << 7)) != 0) w |= 1 << 11;
+        if ((input.Buttons & (1 << 8)) != 0) w |= 1 << 12;
+        if ((input.Buttons & (1 << 9)) != 0) w |= 1 << 13;
+        if ((input.Buttons & (1 << 10)) != 0) w |= 1 << 14;
+        if ((input.Buttons & (1 << 11)) != 0) w |= 1 << 15;
         buf[4] = (byte)w;
         buf[5] = (byte)(w >> 8);
 
-        // [6]: bSpecial (PS=bit0, TouchpadClick=bit1)
         byte special = 0;
         if ((input.Buttons & (1 << 16)) != 0) special |= 1;
         if ((input.Buttons & (1 << 17)) != 0) special |= 2;
         buf[6] = special;
 
-        // [7-8]: Analog triggers
         var lt = input.LeftTrigger > 0 ? input.LeftTrigger : ((input.Buttons & (1 << 6)) != 0 ? 255u : 0u);
         var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1 << 7)) != 0 ? 255u : 0u);
         buf[7] = (byte)Math.Clamp(lt, 0, 255);
         buf[8] = (byte)Math.Clamp(rt, 0, 255);
 
-        // [9-10]: Timestamp
         _ds4Timestamp++;
         buf[9] = (byte)_ds4Timestamp;
         buf[10] = (byte)(_ds4Timestamp >> 8);
 
-        // [11]: Battery level (0-10)
         buf[11] = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
 
-        // [12-17]: Gyroscope (rad/s → int16, scale ≈940 for ±2000°/s)
         WriteInt16LE(buf, 12, (short)Math.Clamp(input.GyroX * 940f, short.MinValue, short.MaxValue));
         WriteInt16LE(buf, 14, (short)Math.Clamp(input.GyroY * 940f, short.MinValue, short.MaxValue));
         WriteInt16LE(buf, 16, (short)Math.Clamp(input.GyroZ * 940f, short.MinValue, short.MaxValue));
 
-        // [18-23]: Accelerometer (m/s² → int16, scale ≈835 for ±2g)
         WriteInt16LE(buf, 18, (short)Math.Clamp(input.AccelX * 835f, short.MinValue, short.MaxValue));
         WriteInt16LE(buf, 20, (short)Math.Clamp(input.AccelY * 835f, short.MinValue, short.MaxValue));
         WriteInt16LE(buf, 22, (short)Math.Clamp(input.AccelZ * 835f, short.MinValue, short.MaxValue));
 
-        // [24-28]: reserved (default 0xE9,0,0,0,0 from ViGEm)
         buf[24] = 0xE9;
 
-        // [29]: Battery/cable state (bit4=USB/charging, bits 0-3=battery 0-10)
         var powerState = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
         if (input.IsCharging) powerState |= 0x10;
         buf[29] = powerState;
 
-        // [30-31]: reserved (default 0x1B,0x00 from ViGEm)
         buf[30] = 0x1B;
 
-        // [32]: Touch packet count
         buf[32] = 1;
 
-        // Current frame touches (up to 2 points)
         var touchList = input.Touches.Where(t => t.Active).Take(2).ToList();
 
-        // [33-41]: sCurrentTouch (DS4_TOUCH = 2 touch points = two fingers)
         buf[33] = (byte)(_ds4TouchCounter & 0x7F);
         WriteTouchData(buf, 34,
             touchList.Count > 0 ? (int)touchList[0].X : 0,
@@ -413,28 +310,15 @@ public class GamepadSession : IDisposable
             touchList.Count > 1 ? (int)touchList[1].Y : 0,
             touchList.Count > 1, 1);
 
-        // [42-50]: sPreviousTouch[0] — all inactive
         buf[42] = 0;
         WriteTouchData(buf, 43, 0, 0, false, 2);
         WriteTouchData(buf, 47, 0, 0, false, 3);
 
-        // [51-59]: sPreviousTouch[1] — all inactive
         buf[51] = 0;
         WriteTouchData(buf, 52, 0, 0, false, 4);
         WriteTouchData(buf, 56, 0, 0, false, 5);
 
         _ds4TouchCounter++;
-
-        if (touchList.Count > 0)
-        {
-            try
-            {
-                System.IO.File.AppendAllText(
-                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ds4touch.log"),
-                    $"{DateTime.Now:HH:mm:ss.fff} cnt={touchList.Count} p0=({touchList[0].X},{touchList[0].Y}){(touchList.Count > 1 ? $" p1=({touchList[1].X},{touchList[1].Y})" : "")}\n");
-            }
-            catch { }
-        }
 
         ctrl.SubmitRawReport(buf);
     }
@@ -447,9 +331,7 @@ public class GamepadSession : IDisposable
 
     private static void WriteTouchData(byte[] buf, int offset, int x, int y, bool active, byte tracking)
     {
-        // Status: bit7 = 1 if inactive, bits 6-0 = tracking number
         buf[offset] = active ? (byte)(tracking & 0x7F) : (byte)(0x80 | (tracking & 0x7F));
-        // 3 bytes: 12-bit X + 12-bit Y packed
         int cx = Math.Clamp(x, 0, 1919);
         int cy = Math.Clamp(y, 0, 942);
         buf[offset + 1] = (byte)(cx & 0xFF);
@@ -498,7 +380,7 @@ public class GamepadSession : IDisposable
                         }
                     });
                 }
-                catch { /* silently ignore — connection likely dropped */ }
+                catch { }
             }
             else if (_lastLargeMotor > 0 || _lastSmallMotor > 0)
             {
@@ -507,7 +389,7 @@ public class GamepadSession : IDisposable
                     if (_disposed) break;
                     await SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
                 }
-                catch { /* silently ignore */ }
+                catch { }
             }
         }
     }
@@ -522,64 +404,13 @@ public class GamepadSession : IDisposable
         return Task.CompletedTask;
     }
 
-    public ValueTask WaitTasksAsync()
-    {
-        var tasks = new[] { _readTask, _vibTask }.Where(t => t != Task.CompletedTask).ToArray();
-        if (tasks.Length == 0) return default;
-        return new ValueTask(Task.WhenAll(tasks));
-    }
-
-    public void ReplaceConnection(TcpClient newTcp)
-    {
-        IsReconnectRequested = false;
-        try { _stream.Close(); } catch { }
-        try { _tcp.Close(); } catch { }
-        _tcp = newTcp;
-        _stream = newTcp.GetStream();
-        _cts.Dispose();
-        _cts = new CancellationTokenSource();
-        _readTask = Task.Run(() => ReadLoop(_cts.Token));
-        _vibTask = Task.Run(async () =>
-        {
-            try { await VibrationSendLoop(_cts.Token); }
-            catch (OperationCanceledException) { }
-            catch { }
-        });
-    }
-
     public void Disconnect()
     {
         if (_disposed) return;
         _disposed = true;
-        IsReconnectRequested = false;
         _cts.Cancel();
         DestroyController();
-        try { _stream.Close(); } catch { }
-        try { _tcp.Close(); } catch { }
         OnDisconnected?.Invoke(this);
-    }
-
-    public async Task RequestReconnectAsync()
-    {
-        IsReconnectRequested = true;
-        _cts.Cancel();
-        try { _stream.Close(); } catch { }
-        try { _tcp.Close(); } catch { }
-
-        await _readTask;
-        await _vibTask;
-
-        OnConnectionLost?.Invoke(this);
-    }
-
-    public void RequestReconnect()
-    {
-        _ = RequestReconnectAsync();
-    }
-
-    public void RequestCancelReconnect()
-    {
-        IsReconnectRequested = false;
     }
 
     private void ResetController()

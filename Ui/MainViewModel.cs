@@ -87,20 +87,26 @@ public class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    public Task DisconnectAsync(DeviceCardViewModel card)
+    public async Task DisconnectAsync(DeviceCardViewModel card)
     {
         var ip = card.IpAddress;
         _initialConnecting.Remove(ip);
-        _network?.CancelReconnect(ip);
         if (_sessionMap.TryGetValue(ip, out var session))
         {
-            session.Disconnect();
+            // Send disconnect packet to phone
+            if (_network != null)
+            {
+                await _network.SendDisconnectAsync(session.Device);
+            }
+            else
+            {
+                session.Disconnect();
+            }
             _sessionMap.Remove(ip);
         }
         card.IsConnected = false;
         card.IsConnecting = false;
         card.IsReconnecting = false;
-        return Task.CompletedTask;
     }
 
     public async Task SetModeAsync(DeviceCardViewModel card, ControllerMode mode)
@@ -263,16 +269,10 @@ public class MainViewModel : INotifyPropertyChanged
             var card = DeviceCards.FirstOrDefault(c => c.IpAddress == ip);
             if (card != null)
             {
-                if (_initialConnecting.Remove(ip))
-                {
-                    card.IsConnecting = false;
-                }
-                else
-                {
-                    card.IsConnected = false;
-                    card.IsReconnecting = true;
-                }
+                card.IsConnected = false;
+                card.IsReconnecting = true;
             }
+            StatusText = $"连接丢失: {ip}";
         });
     }
 
@@ -290,6 +290,7 @@ public class MainViewModel : INotifyPropertyChanged
         _network.OnDeviceDiscovered -= OnDeviceDiscovered;
         _network.OnSessionStarted -= OnSessionStarted;
         _network.OnSessionEnded -= OnSessionEnded;
+        _network.OnSessionConnectionLost -= OnSessionConnectionLost;
         _network.StopDiscovery();
         _network.DisconnectAll();
         _initialConnecting.Clear();

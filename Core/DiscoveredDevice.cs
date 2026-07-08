@@ -4,7 +4,7 @@ namespace GamepadEmuHost.Core;
 
 public class DiscoveredDevice
 {
-    public required string DeviceName { get; init; }
+    public required string DeviceName { get; set; }
     public required IPAddress IpAddress { get; init; }
     public string IpString => IpAddress.ToString();
     public int Port { get; init; } = 37284;

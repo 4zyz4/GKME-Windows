@@ -1,23 +1,28 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using GamepadEmu.Protocol;
+using Google.Protobuf;
 using Nefarius.ViGEm.Client;
 
 namespace GamepadEmuHost.Core;
 
 public class NetworkService : IDisposable
 {
-    private const int DefaultPort = 37284;
+    private const int Port = 37284;
     private const string BroadcastPrefix = "GAMEPAD_SERVER:";
+
+    private const byte TypeClientToServer = 0x00;
+    private const byte TypeServerToClient = 0x01;
+    private const byte TypeGamepadInput = 0x02;
 
     private readonly ConcurrentDictionary<string, DiscoveredDevice> _discovered = new();
     private readonly ConcurrentDictionary<string, GamepadSession> _sessions = new();
-    private readonly ConcurrentDictionary<string, CancellationTokenSource> _reconnectCts = new();
-    private readonly ConcurrentDictionary<string, object> _reconnectLocks = new();
     private readonly ViGEmClient _viGEm = new();
-    private CancellationTokenSource? _discoveryCts;
-    private Task? _discoveryTask;
+    private CancellationTokenSource? _listenerCts;
+    private Task? _listenerTask;
+    private UdpClient? _listener;
     private bool _disposed;
 
     public IReadOnlyCollection<DiscoveredDevice> DiscoveredDevices =>
@@ -32,120 +37,157 @@ public class NetworkService : IDisposable
 
     public void StartDiscovery()
     {
-        if (_discoveryCts != null) return;
-        _discoveryCts = new CancellationTokenSource();
-        _discoveryTask = Task.Run(() => DiscoveryLoop(_discoveryCts.Token));
+        if (_listenerCts != null) return;
+        _listenerCts = new CancellationTokenSource();
+        _listener = new UdpClient(new IPEndPoint(IPAddress.Any, Port));
+        _listenerTask = Task.Run(() => ListenLoop(_listenerCts.Token));
     }
 
     public void StopDiscovery()
     {
-        if (_discoveryCts != null)
+        if (_listenerCts != null)
         {
-            _discoveryCts.Cancel();
-            _discoveryCts.Dispose();
-            _discoveryCts = null;
+            _listenerCts.Cancel();
+            _listenerCts.Dispose();
+            _listenerCts = null;
         }
-        try
-        {
-            _discoveryTask?.GetAwaiter().GetResult();
-        }
-        catch { }
-        _discoveryTask = null;
+        try { _listenerTask?.GetAwaiter().GetResult(); } catch { }
+        _listenerTask = null;
+        try { _listener?.Close(); } catch { }
+        _listener = null;
     }
 
-    private async Task DiscoveryLoop(CancellationToken ct)
+    private async Task ListenLoop(CancellationToken ct)
     {
-        var udp = new UdpClient(new IPEndPoint(IPAddress.Any, DefaultPort));
-        udp.EnableBroadcast = true;
-
+        var buf = new byte[65535];
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                var result = await udp.ReceiveAsync(ct);
-                var msg = System.Text.Encoding.UTF8.GetString(result.Buffer);
+                var result = await _listener!.ReceiveAsync(ct);
+                var data = result.Buffer;
+                if (data.Length == 0) continue;
 
-                if (msg.StartsWith(BroadcastPrefix))
+                // Plain-text discovery broadcast from phone
+                var text = Encoding.UTF8.GetString(data);
+                if (text.StartsWith(BroadcastPrefix))
                 {
-                    var deviceName = msg[BroadcastPrefix.Length..];
-                    var key = $"{result.RemoteEndPoint.Address}:{DefaultPort}";
+                    HandleDiscovery(result.RemoteEndPoint, text);
+                    continue;
+                }
 
-                    var device = _discovered.GetOrAdd(key, _ => new DiscoveredDevice
-                    {
-                        DeviceName = deviceName,
-                        IpAddress = result.RemoteEndPoint.Address,
-                        Port = DefaultPort
-                    });
-                    device.LastSeen = DateTime.UtcNow;
+                var type = data[0];
+                var payload = data.AsSpan(1).ToArray();
 
-                    OnDeviceDiscovered?.Invoke(device);
+                switch (type)
+                {
+                    case TypeClientToServer:
+                        RouteClientToServer(result.RemoteEndPoint, payload);
+                        break;
+                    case TypeGamepadInput:
+                        RouteGamepadInput(result.RemoteEndPoint, payload);
+                        break;
                 }
             }
             catch (OperationCanceledException) { break; }
-            catch (System.Net.Sockets.SocketException ex)
+            catch (SocketException ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[UDP] SocketException: {ex.Message}");
                 await Task.Delay(1000, ct);
             }
             catch
             {
-                System.Diagnostics.Debug.WriteLine($"[UDP] Unknown exception, retrying");
                 await Task.Delay(1000, ct);
             }
         }
+    }
 
-        udp.Close();
+    private void HandleDiscovery(IPEndPoint remoteEp, string msg)
+    {
+        var deviceName = msg[BroadcastPrefix.Length..];
+
+        var phoneEp = new IPEndPoint(remoteEp.Address, Port);
+        var key = $"{phoneEp}";
+
+        var device = _discovered.GetOrAdd(key, _ => new DiscoveredDevice
+        {
+            DeviceName = deviceName,
+            IpAddress = phoneEp.Address,
+            Port = Port,
+        });
+        device.DeviceName = deviceName;
+        device.LastSeen = DateTime.UtcNow;
+
+        OnDeviceDiscovered?.Invoke(device);
+    }
+
+    private void RouteClientToServer(IPEndPoint remoteEp, byte[] payload)
+    {
+        try
+        {
+            var cts = ClientToServer.Parser.ParseFrom(payload);
+            var key = $"{new IPEndPoint(remoteEp.Address, Port)}";
+
+            if (_sessions.TryGetValue(key, out var session))
+            {
+                session.HandleClientToServer(cts);
+            }
+        }
+        catch { }
+    }
+
+    private void RouteGamepadInput(IPEndPoint remoteEp, byte[] payload)
+    {
+        try
+        {
+            var input = GamepadInput.Parser.ParseFrom(payload);
+            var key = $"{new IPEndPoint(remoteEp.Address, Port)}";
+
+            if (_sessions.TryGetValue(key, out var session))
+            {
+                session.HandleUdpGamepadInput(input);
+            }
+        }
+        catch { }
     }
 
     public async Task<GamepadSession?> ConnectAsync(DiscoveredDevice device, int connectTimeoutMs = 5000)
     {
         try
         {
-            var tcp = new TcpClient();
-            tcp.NoDelay = true;
-            tcp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-            tcp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.DontLinger, 1);
-            var connectCts = CancellationTokenSource.CreateLinkedTokenSource(_discoveryCts?.Token ?? CancellationToken.None);
-            connectCts.CancelAfter(connectTimeoutMs);
-            try
+            // Disconnect existing session for this device if any
+            if (_sessions.TryRemove(device.Key, out var oldSession))
             {
-                await tcp.ConnectAsync(device.IpAddress, device.Port, connectCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                tcp.Close();
-                return null;
-            }
-            catch (SocketException) when (connectCts.IsCancellationRequested)
-            {
-                tcp.Close();
-                return null;
-            }
-            finally
-            {
-                connectCts.Dispose();
+                oldSession.Disconnect();
             }
 
-            var session = new GamepadSession(device, tcp, _viGEm);
+            var phoneEp = new IPEndPoint(device.IpAddress, Port);
+
+            var hello = new ServerToClient
+            {
+                ServerHello = new ServerHello
+                {
+                    ProtocolVersion = 1,
+                    HostName = Environment.MachineName,
+                    MaxDownlinkRateHz = 1000,
+                    RecommendedUplinkIntervalUs = 0,
+                }
+            };
+            await SendToPhoneAsync(phoneEp, TypeServerToClient, hello);
+
+            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _viGEm);
             session.OnReady += s =>
             {
-                _reconnectCts.TryRemove(s.Device.Key, out var oldCts);
-                oldCts?.Cancel();
-                oldCts?.Dispose();
                 OnSessionStarted?.Invoke(s);
+            };
+            session.OnConnectionLost += s =>
+            {
+                OnSessionConnectionLost?.Invoke(s.Device.IpString);
             };
             session.OnDisconnected += s =>
             {
                 _sessions.TryRemove(s.Device.Key, out _);
-                _reconnectCts.TryRemove(s.Device.Key, out var cts);
-                cts?.Cancel();
-                cts?.Dispose();
                 OnSessionEnded?.Invoke(s);
-            };
-            session.OnConnectionLost += s =>
-            {
-                if (_disposed) return;
-                _ = Task.Run(() => ReconnectAsync(s.Device, s.Device.Key));
             };
 
             session.Start();
@@ -159,125 +201,35 @@ public class NetworkService : IDisposable
         }
     }
 
-    public void CancelReconnect(string deviceKey)
+    public async Task SendToPhoneAsync(IPEndPoint ep, byte type, IMessage msg)
     {
-        if (_reconnectCts.TryRemove(deviceKey, out var cts))
-        {
-            cts.Cancel();
-            cts.Dispose();
-        }
-    }
-
-    private async Task ReconnectAsync(DiscoveredDevice device, string key)
-    {
-        var lockObj = _reconnectLocks.GetOrAdd(key, _ => new object());
-        lock (lockObj)
-        {
-            if (_reconnectCts.TryGetValue(key, out var existingCts) && !existingCts.IsCancellationRequested)
-            {
-                return;
-            }
-            if (existingCts != null)
-            {
-                existingCts.Cancel();
-                existingCts.Dispose();
-            }
-            _reconnectCts[key] = new CancellationTokenSource();
-        }
-        var cts = _reconnectCts[key];
-
-        UiInvoke(() => OnSessionConnectionLost?.Invoke(device.IpString));
-
-        var reconnectTimeout = TimeSpan.FromSeconds(10);
-        int attempt = 0;
-
-        while (!cts.Token.IsCancellationRequested && !_disposed)
-        {
-            try
-            {
-                int delay = Math.Min(2000 * (1 << attempt), 10000);
-                await Task.Delay(delay, cts.Token);
-                attempt++;
-
-                if (cts.IsCancellationRequested || _disposed) break;
-
-                var tcp = new TcpClient();
-                tcp.ReceiveTimeout = (int)reconnectTimeout.TotalMilliseconds;
-                tcp.SendTimeout = (int)reconnectTimeout.TotalMilliseconds;
-                tcp.NoDelay = true;
-                tcp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-                tcp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.DontLinger, 1);
-
-                var localCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
-                localCts.CancelAfter(5000);
-                try
-                {
-                    await tcp.ConnectAsync(device.IpAddress, device.Port, localCts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    tcp.Close();
-                    if (cts.IsCancellationRequested || _disposed) return;
-                    continue;
-                }
-                catch (SocketException) when (localCts.IsCancellationRequested)
-                {
-                    tcp.Close();
-                    if (cts.IsCancellationRequested || _disposed) return;
-                    continue;
-                }
-                finally
-                {
-                    localCts.Dispose();
-                }
-
-                if (cts.IsCancellationRequested || _disposed)
-                {
-                    tcp.Close();
-                    return;
-                }
-
-                var session = _sessions.GetValueOrDefault(key);
-                if (session != null)
-                {
-                    session.ReplaceConnection(tcp);
-                }
-                else
-                {
-                    tcp.Close();
-                }
-
-                _reconnectCts.TryRemove(key, out _);
-                return;
-            }
-            catch
-            {
-                if (cts.IsCancellationRequested || _disposed) return;
-            }
-        }
-    }
-
-    private static void UiInvoke(Action action)
-    {
+        if (_listener == null || _disposed) return;
         try
         {
-            if (System.Windows.Application.Current?.Dispatcher.CheckAccess() == true)
-                action();
-            else
-                System.Windows.Application.Current?.Dispatcher.Invoke(action);
+            var payload = msg.ToByteArray();
+            var data = new byte[1 + payload.Length];
+            data[0] = type;
+            Buffer.BlockCopy(payload, 0, data, 1, payload.Length);
+            await _listener.SendAsync(data, data.Length, ep);
         }
         catch { }
     }
 
+    public async Task SendDisconnectAsync(DiscoveredDevice device)
+    {
+        var key = device.Key;
+        if (!_sessions.TryGetValue(key, out var session)) return;
+
+        var packet = new ServerToClient
+        {
+            Disconnect = new Disconnect { Reason = "User disconnected" }
+        };
+        await SendToPhoneAsync(new IPEndPoint(device.IpAddress, Port), TypeServerToClient, packet);
+        session.Disconnect();
+    }
+
     public void DisconnectAll()
     {
-        foreach (var kvp in _reconnectCts)
-        {
-            kvp.Value.Cancel();
-            kvp.Value.Dispose();
-        }
-        _reconnectCts.Clear();
-
         foreach (var session in _sessions.Values)
         {
             session.Disconnect();
@@ -287,26 +239,9 @@ public class NetworkService : IDisposable
 
     public void Refresh()
     {
-        foreach (var kvp in _reconnectCts)
-        {
-            kvp.Value.Cancel();
-            kvp.Value.Dispose();
-        }
-        _reconnectCts.Clear();
-
         StopDiscovery();
-
-        foreach (var session in _sessions.Values.Where(s => !s.IsConnected).ToList())
-        {
-            session.Disconnect();
-        }
-
-        var connectedKeys = new HashSet<string>(_sessions.Keys);
-        foreach (var key in _discovered.Keys.Where(k => !connectedKeys.Contains(k)).ToList())
-        {
-            _discovered.TryRemove(key, out _);
-        }
-
+        DisconnectAll();
+        _discovered.Clear();
         StartDiscovery();
     }
 
