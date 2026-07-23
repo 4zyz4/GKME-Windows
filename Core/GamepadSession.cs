@@ -14,7 +14,7 @@ public class GamepadSession : IDisposable
     private readonly Func<IMessage, Task> _sendToPhone;
     private readonly ViGEmClient _viGEm;
     private CancellationTokenSource _cts = new();
-    private Task _vibTask = Task.CompletedTask;
+    private Task _reportTask = Task.CompletedTask;
     private bool _disposed;
     private bool _readyFired;
     private DateTime _lastReceiveTime = DateTime.UtcNow;
@@ -24,6 +24,8 @@ public class GamepadSession : IDisposable
     private DateTime _lastInputTime = DateTime.MinValue;
     private int _inputCountThisSecond;
     private int _measuredInputRate;
+    private GamepadInput? _latestInput;
+    private readonly object _inputLock = new();
 
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
@@ -45,11 +47,11 @@ public class GamepadSession : IDisposable
 
     public void Start()
     {
-        _vibTask = Task.Run(async () =>
+        _reportTask = Task.Run(async () =>
         {
             try
             {
-                await VibrationSendLoop(_cts.Token);
+                await ReportLoop(_cts.Token);
             }
             catch (OperationCanceledException) { }
             catch { }
@@ -133,6 +135,7 @@ public class GamepadSession : IDisposable
             {
                 var ctrl = _viGEm.CreateXbox360Controller();
                 ctrl.FeedbackReceived += OnXbox360Feedback;
+                ctrl.AutoSubmitReport = false;
                 ctrl.Connect();
                 ctrl.SetAxisValue(Xbox360Axis.LeftThumbX, 0);
                 ctrl.SetAxisValue(Xbox360Axis.LeftThumbY, 0);
@@ -140,6 +143,7 @@ public class GamepadSession : IDisposable
                 ctrl.SetAxisValue(Xbox360Axis.RightThumbY, 0);
                 ctrl.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
                 ctrl.SetSliderValue(Xbox360Slider.RightTrigger, 0);
+                ctrl.SubmitReport();
                 Controller = ctrl;
                 break;
             }
@@ -181,18 +185,13 @@ public class GamepadSession : IDisposable
         }
         _lastInputTime = now;
 
-        switch (Mode)
+        lock (_inputLock)
         {
-            case ControllerMode.Ds4:
-                HandleDs4Input(input);
-                break;
-            default:
-                HandleXbox360Input(input);
-                break;
+            _latestInput = input;
         }
     }
 
-    private void HandleXbox360Input(GamepadInput input)
+    private void SubmitXbox360Report(GamepadInput input)
     {
         var ctrl = (IXbox360Controller)Controller!;
 
@@ -222,12 +221,18 @@ public class GamepadSession : IDisposable
         var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1 << 7)) != 0 ? 255u : 0u);
         ctrl.SetSliderValue(Xbox360Slider.LeftTrigger, (byte)Math.Clamp(lt, 0, 255));
         ctrl.SetSliderValue(Xbox360Slider.RightTrigger, (byte)Math.Clamp(rt, 0, 255));
+
+        ctrl.SubmitReport();
     }
 
     private ushort _ds4Timestamp;
     private int _ds4TouchCounter;
+    private byte _previousTouchCounter;
+    private readonly byte[] _touchIds = new byte[2];
+    private readonly bool[] _prevTouchActive = new bool[2];
+    private byte _nextTrackingId;
 
-    private void HandleDs4Input(GamepadInput input)
+    private void SubmitDs4Report(GamepadInput input)
     {
         var ctrl = (IDualShock4Controller)Controller!;
         var buf = new byte[63];
@@ -298,26 +303,41 @@ public class GamepadSession : IDisposable
 
         buf[32] = 1;
 
-        var touchList = input.Touches.Where(t => t.Active).Take(2).ToList();
+        // Use phone's slot-indexed touches directly; phone always sends 2 slots
+        var t0 = input.Touches.Count > 0 ? input.Touches[0] : null;
+        var t1 = input.Touches.Count > 1 ? input.Touches[1] : null;
 
-        buf[33] = (byte)(_ds4TouchCounter & 0x7F);
+        for (int i = 0; i < 2; i++)
+        {
+            var t = i == 0 ? t0 : t1;
+            bool isActive = t?.Active ?? false;
+            if (isActive && !_prevTouchActive[i])
+                _touchIds[i] = _nextTrackingId++;
+            _prevTouchActive[i] = isActive;
+        }
+
+        byte currentCounter = (byte)(_ds4TouchCounter & 0x7F);
+        buf[33] = currentCounter;
         WriteTouchData(buf, 34,
-            touchList.Count > 0 ? (int)touchList[0].X : 0,
-            touchList.Count > 0 ? (int)touchList[0].Y : 0,
-            touchList.Count > 0, 0);
+            (int)(t0?.X ?? 0), (int)(t0?.Y ?? 0),
+            t0?.Active ?? false, _touchIds[0]);
         WriteTouchData(buf, 38,
-            touchList.Count > 1 ? (int)touchList[1].X : 0,
-            touchList.Count > 1 ? (int)touchList[1].Y : 0,
-            touchList.Count > 1, 1);
+            (int)(t1?.X ?? 0), (int)(t1?.Y ?? 0),
+            t1?.Active ?? false, _touchIds[1]);
 
-        buf[42] = 0;
-        WriteTouchData(buf, 43, 0, 0, false, 2);
-        WriteTouchData(buf, 47, 0, 0, false, 3);
+        buf[42] = _previousTouchCounter;
+        byte tid2 = (byte)((_nextTrackingId + 2) & 0x7F);
+        WriteTouchData(buf, 43, 0, 0, false, tid2);
+        byte tid3 = (byte)((_nextTrackingId + 3) & 0x7F);
+        WriteTouchData(buf, 47, 0, 0, false, tid3);
 
-        buf[51] = 0;
-        WriteTouchData(buf, 52, 0, 0, false, 4);
-        WriteTouchData(buf, 56, 0, 0, false, 5);
+        buf[51] = _previousTouchCounter;
+        byte tid4 = (byte)((_nextTrackingId + 4) & 0x7F);
+        WriteTouchData(buf, 52, 0, 0, false, tid4);
+        byte tid5 = (byte)((_nextTrackingId + 5) & 0x7F);
+        WriteTouchData(buf, 56, 0, 0, false, tid5);
 
+        _previousTouchCounter = currentCounter;
         _ds4TouchCounter++;
 
         ctrl.SubmitRawReport(buf);
@@ -356,19 +376,41 @@ public class GamepadSession : IDisposable
         });
     }
 
-    private async Task VibrationSendLoop(CancellationToken ct)
+    private async Task ReportLoop(CancellationToken ct)
     {
+        var intervalTicks = (long)(TimeSpan.TicksPerSecond / 125.0);
+        var sw = new System.Diagnostics.Stopwatch();
+        sw.Start();
+        long nextTick = intervalTicks;
+
         while (!ct.IsCancellationRequested)
         {
-            await Task.Delay(8, ct);
+            if (_disposed) return;
 
-            if (_disposed) continue;
+            // Submit latest input to ViGEm (batched, one report per tick)
+            GamepadInput? input;
+            lock (_inputLock)
+            {
+                input = _latestInput;
+            }
 
+            if (input != null && Controller != null)
+            {
+                try
+                {
+                    if (Mode == ControllerMode.Ds4)
+                        SubmitDs4Report(input);
+                    else
+                        SubmitXbox360Report(input);
+                }
+                catch { }
+            }
+
+            // Send vibration/RTT back to phone
             if (_lastSeq > 0)
             {
                 try
                 {
-                    if (_disposed) break;
                     await SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
                     await SendAsync(new ServerToClient
                     {
@@ -386,11 +428,28 @@ public class GamepadSession : IDisposable
             {
                 try
                 {
-                    if (_disposed) break;
                     await SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
                 }
                 catch { }
             }
+
+            // Drift-compensated wait for next 125Hz tick
+            var remainingTicks = nextTick - sw.Elapsed.Ticks;
+            if (remainingTicks > 0)
+            {
+                var waitMs = (int)(remainingTicks / TimeSpan.TicksPerMillisecond);
+                if (waitMs > 1)
+                {
+                    await Task.Delay(waitMs - 1, ct);
+                    while (sw.Elapsed.Ticks < nextTick && !ct.IsCancellationRequested)
+                        Thread.SpinWait(1);
+                }
+            }
+            nextTick += intervalTicks;
+
+            // If fallen behind, reset schedule
+            if (sw.Elapsed.Ticks > nextTick + intervalTicks)
+                nextTick = sw.Elapsed.Ticks + intervalTicks;
         }
     }
 
@@ -441,6 +500,8 @@ public class GamepadSession : IDisposable
                     xbox.SetAxisValue(Xbox360Axis.RightThumbY, 0);
                     xbox.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
                     xbox.SetSliderValue(Xbox360Slider.RightTrigger, 0);
+                    xbox.SubmitReport();
+                    ClearLatestInput();
                     break;
                 case IDualShock4Controller ds4:
                     var buf = new byte[63];
@@ -458,10 +519,19 @@ public class GamepadSession : IDisposable
                     buf[52] = 0x80;
                     buf[56] = 0x80;
                     ds4.SubmitRawReport(buf);
+                    ClearLatestInput();
                     break;
             }
         }
         catch { }
+    }
+
+    private void ClearLatestInput()
+    {
+        lock (_inputLock)
+        {
+            _latestInput = null;
+        }
     }
 
     private void DestroyController()
