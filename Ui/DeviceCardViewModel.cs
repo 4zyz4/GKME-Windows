@@ -75,15 +75,25 @@ public class DeviceCardViewModel : INotifyPropertyChanged
             if (_mode == value) return;
             _mode = value;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(IsXbox360Active));
-            OnPropertyChanged(nameof(IsDs4Active));
         }
     }
 
-    public bool IsXbox360Active => _mode == ControllerMode.Xbox360;
-    public bool IsDs4Active => _mode == ControllerMode.Ds4;
-
     internal DiscoveredDevice Device => _device;
+
+    public static List<ControllerMode> AllModes { get; } = new()
+    {
+        ControllerMode.Ds4,
+        ControllerMode.Xbox360Wired,
+        ControllerMode.XboxOneS,
+    };
+
+    public static string DisplayName(ControllerMode mode) => mode switch
+    {
+        ControllerMode.Ds4 => "DualShock 4",
+        ControllerMode.Xbox360Wired => "Xbox 360",
+        ControllerMode.XboxOneS => "Xbox One",
+        _ => "?",
+    };
 
     public DeviceCardViewModel(DiscoveredDevice device)
     {

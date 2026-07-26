@@ -153,14 +153,23 @@
                                 <!-- Session controls -->
                                 <StackPanel Grid.Column="1" Orientation="Horizontal"
                                             Visibility="{Binding ShowControls, Converter={x:Static ui:BoolToVisibilityConverter.Instance}}">
-                                    <Button Content="DS4" Width="40" Height="28" FontSize="12"
-                                            Style="{StaticResource ModeButton}"
-                                            IsEnabled="{Binding IsXbox360Active}"
-                                            Tag="DS4" Click="OnCardModeClick" />
-                                    <Button Content="Xbox" Width="50" Height="28" Margin="4,0,0,0" FontSize="12"
-                                            Style="{StaticResource ModeButton}"
-                                            IsEnabled="{Binding IsDs4Active}"
-                                            Tag="Xbox" Click="OnCardModeClick" />
+                                    <ComboBox Width="140" Height="28" FontSize="12"
+                                              ItemsSource="{x:Static ui:DeviceCardViewModel.AllModes}"
+                                              SelectedItem="{Binding Mode}"
+                                              SelectionChanged="OnModeChanged"
+                                              Background="#0E639C" Foreground="White"
+                                              BorderThickness="0">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Converter={x:Static ui:ControllerModeConverter.Instance}}" />
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                        <ComboBox.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Background="#2D2D2D" />
+                                            </ItemsPanelTemplate>
+                                        </ComboBox.ItemsPanel>
+                                    </ComboBox>
                                     <Button Content="断开" Width="50" Height="28" Margin="6,0,0,0"
                                             Style="{StaticResource DangerButton}"
                                             Click="OnCardDisconnectClick" />

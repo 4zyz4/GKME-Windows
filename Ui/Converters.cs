@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
+using GamepadEmuHost.Core;
 
 namespace GamepadEmuHost.Ui;
 
@@ -46,4 +47,15 @@ public class BoolToVisibilityConverter : IValueConverter
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
         value is Visibility v && v == Visibility.Visible;
+}
+
+public class ControllerModeConverter : IValueConverter
+{
+    public static readonly ControllerModeConverter Instance = new();
+
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture) =>
+        value is ControllerMode mode ? DeviceCardViewModel.DisplayName(mode) : "?";
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
+        throw new NotImplementedException();
 }

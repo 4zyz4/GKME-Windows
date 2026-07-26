@@ -14,10 +14,16 @@ public partial class App : Application
         try
         {
             Service = new NetworkService();
+            if (!Service.InitializeHidMaestro())
+            {
+                Service.Dispose();
+                Service = null;
+            }
         }
         catch
         {
-            // ViGEm driver not installed — service unavailable
+            Service?.Dispose();
+            Service = null;
         }
 
         var vm = new MainViewModel(Service);

@@ -40,7 +40,7 @@ public class MainViewModel : INotifyPropertyChanged
         if (_network == null)
         {
             _driverOk = false;
-            StatusText = "viGEm 驱动错误: 无法创建服务";
+            StatusText = "驱动错误: 无法创建服务";
             return;
         }
 
