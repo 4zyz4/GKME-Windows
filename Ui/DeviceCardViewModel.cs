@@ -83,14 +83,12 @@ public class DeviceCardViewModel : INotifyPropertyChanged
     public static List<ControllerMode> AllModes { get; } = new()
     {
         ControllerMode.Ds4,
-        ControllerMode.Xbox360Wired,
         ControllerMode.XboxOneS,
     };
 
     public static string DisplayName(ControllerMode mode) => mode switch
     {
         ControllerMode.Ds4 => "DualShock 4",
-        ControllerMode.Xbox360Wired => "Xbox 360",
         ControllerMode.XboxOneS => "Xbox One",
         _ => "?",
     };

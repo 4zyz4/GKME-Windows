@@ -76,6 +76,7 @@ public class GamepadSession : IDisposable
         {
             await Task.Delay(1000, ct);
             if (_disposed) return;
+            if (_switchingMode) continue;
             if (Controller == null) continue;
             if ((DateTime.UtcNow - _lastReceiveTime).TotalMilliseconds > ConnectionTimeoutMs)
             {
@@ -122,9 +123,9 @@ public class GamepadSession : IDisposable
 
     private void HandleHello(Hello hello)
     {
-        if (_switchingMode || _disposed) return;
+        if (_disposed) return;
 
-        if (Controller == null)
+        if (Controller == null && !_switchingMode)
         {
             var ctrl = CreateFreshController(ControllerMode.Ds4);
             RegisterOutputHandlers(ctrl);
@@ -143,7 +144,6 @@ public class GamepadSession : IDisposable
 
     private static string ProfileIdForMode(ControllerMode mode) => mode switch
     {
-        ControllerMode.Xbox360Wired => "xbox-360-wired",
         ControllerMode.XboxOneS => "xbox-one-s",
         _ => "dualshock-4-v1-full",
     };
@@ -246,7 +246,7 @@ public class GamepadSession : IDisposable
         };
     }
 
-    private void SubmitXbox360Report(GamepadInput input)
+    private void SubmitXboxReport(GamepadInput input)
     {
         var ctrl = Controller!;
 
@@ -421,7 +421,7 @@ public class GamepadSession : IDisposable
                     if (Mode == ControllerMode.Ds4)
                         SubmitDs4Report(input);
                     else
-                        SubmitXbox360Report(input);
+                        SubmitXboxReport(input);
                 }
                 catch { }
             }
@@ -482,9 +482,13 @@ public class GamepadSession : IDisposable
             _lastLargeMotor = 0;
             _lastSmallMotor = 0;
 
-            // Create new controller BEFORE destroying old one
-            // so phone keeps working during the 20s PnP creation
+            // Destroy old controller first so the new one gets a clean PnP slot
             var oldCtrl = Controller;
+            Controller = null;
+            if (oldCtrl != null)
+                await Task.Run(() => { try { oldCtrl.Dispose(); } catch { } });
+
+            // Create new controller with the target mode
             var newCtrl = await Task.Run(() =>
             {
                 var c = CreateFreshController(mode);
@@ -492,12 +496,18 @@ public class GamepadSession : IDisposable
                 return c;
             });
 
-            // Swap: new controller takes over, old one is cleaned up
-            oldCtrl?.Dispose();
             Controller = newCtrl;
             Mode = mode;
             _lastLargeMotor = 0;
             _lastSmallMotor = 0;
+
+            // Ensure OnReady fires — the initial Hello may have been dropped
+            // because _switchingMode was true when it arrived.
+            if (!_readyFired)
+            {
+                _readyFired = true;
+                OnReady?.Invoke(this);
+            }
         }
         finally
         {
@@ -510,7 +520,10 @@ public class GamepadSession : IDisposable
         if (_disposed) return;
         _disposed = true;
         _cts.Cancel();
-        DestroyController();
+        var oldCtrl = Controller;
+        Controller = null;
+        if (oldCtrl != null)
+            _ = Task.Run(() => { try { oldCtrl.Dispose(); } catch { } });
         OnDisconnected?.Invoke(this);
     }
 
@@ -536,16 +549,6 @@ public class GamepadSession : IDisposable
         {
             _latestInput = null;
         }
-    }
-
-    private void DestroyController()
-    {
-        try
-        {
-            Controller?.Dispose();
-        }
-        catch { }
-        Controller = null;
     }
 
     public void Dispose()
