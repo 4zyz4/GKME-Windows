@@ -2,7 +2,7 @@
 ; Requires InnoSetup 6+  https://jrsoftware.org/isdl.php
 
 #define MyAppName "GamepadEmuHost"
-#define MyAppVersion "1.5.1"
+#define MyAppVersion "1.5.2"
 #define MyAppPublisher "4zyz4"
 #define MyAppURL ""
 #define MyAppExeName "GamepadEmuHost.exe"
@@ -55,7 +55,7 @@ Filename: "{tmp}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; Parameters: "/qn"; StatusMs
 const
   VIGEM_DRIVER_PATH = 'C:\Windows\System32\drivers\ViGEmBus.sys';
   MyAppName = 'GamepadEmuHost';
-  MyAppVersion = '1.5.1';
+  MyAppVersion = '1.5.2';
 
 var
   InfoPage: TWizardPage;
