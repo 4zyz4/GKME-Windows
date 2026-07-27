@@ -6,6 +6,7 @@ using System.Text;
 using GamepadEmu.Protocol;
 using Google.Protobuf;
 using HIDMaestro;
+using Nefarius.ViGEm.Client;
 
 namespace GamepadEmuHost.Core;
 
@@ -20,6 +21,7 @@ public class NetworkService : IDisposable
 
     private readonly ConcurrentDictionary<string, DiscoveredDevice> _discovered = new();
     private readonly ConcurrentDictionary<string, GamepadSession> _sessions = new();
+    private readonly ViGEmClient _viGEm = new();
     private readonly HMContext _hmContext = new();
 
     static NetworkService()
@@ -237,7 +239,7 @@ public class NetworkService : IDisposable
             };
             await SendToPhoneAsync(phoneEp, TypeServerToClient, hello);
 
-            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _hmContext);
+            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _viGEm, _hmContext);
             session.OnReady += s =>
             {
                 OnSessionStarted?.Invoke(s);
@@ -313,6 +315,7 @@ public class NetworkService : IDisposable
         _disposed = true;
         StopDiscovery();
         DisconnectAll();
+        _viGEm.Dispose();
         _hmContext.Dispose();
     }
 }

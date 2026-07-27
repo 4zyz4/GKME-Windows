@@ -21,6 +21,8 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+
+    <PackageReference Include="Nefarius.ViGEm.Client" Version="1.21.223" />
   </ItemGroup>
 
   <ItemGroup>

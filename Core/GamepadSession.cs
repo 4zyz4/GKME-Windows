@@ -4,6 +4,10 @@ using System.Runtime.InteropServices;
 using GamepadEmu.Protocol;
 using Google.Protobuf;
 using HIDMaestro;
+using Nefarius.ViGEm.Client;
+using Nefarius.ViGEm.Client.Targets;
+using Nefarius.ViGEm.Client.Targets.Xbox360;
+using Nefarius.ViGEm.Client.Targets.DualShock4;
 
 namespace GamepadEmuHost.Core;
 
@@ -12,6 +16,7 @@ public class GamepadSession : IDisposable
     private const int ConnectionTimeoutMs = 3000;
 
     private readonly Func<IMessage, Task> _sendToPhone;
+    private readonly ViGEmClient _viGEm;
     private readonly HMContext _hmContext;
     private CancellationTokenSource _cts = new();
     private Task _reportTask = Task.CompletedTask;
@@ -36,7 +41,7 @@ public class GamepadSession : IDisposable
 
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
-    public HMController? Controller { get; private set; }
+    public object? Controller { get; private set; }
     public bool IsConnected => !_disposed;
     public bool IsReady => Controller != null;
     public bool HasBeenReady => _readyFired;
@@ -45,10 +50,11 @@ public class GamepadSession : IDisposable
     public event Action<GamepadSession>? OnConnectionLost;
     public event Action<GamepadSession>? OnDisconnected;
 
-    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, HMContext hmContext)
+    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, ViGEmClient viGEm, HMContext hmContext)
     {
         Device = device;
         _sendToPhone = sendToPhone;
+        _viGEm = viGEm;
         _hmContext = hmContext;
     }
 
@@ -131,12 +137,7 @@ public class GamepadSession : IDisposable
 
         if (Controller == null && !_switchingMode)
         {
-            var ctrl = CreateFreshController(ControllerMode.Ds4);
-            RegisterOutputHandlers(ctrl);
-            Controller = ctrl;
-            Mode = ControllerMode.Ds4;
-            _lastLargeMotor = 0;
-            _lastSmallMotor = 0;
+            CreateController(ControllerMode.Ds4);
         }
 
         if (!_readyFired)
@@ -146,34 +147,56 @@ public class GamepadSession : IDisposable
         }
     }
 
-    private static string ProfileIdForMode(ControllerMode mode) => mode switch
+    private void CreateController(ControllerMode mode)
     {
-        ControllerMode.XboxOneS => "xbox-one-s",
-        ControllerMode.SwitchPro => "switch-pro",
-        _ => "dualshock-4-v1-full",
-    };
+        Mode = mode;
 
-    private HMController CreateFreshController(ControllerMode mode)
-    {
-        var profileId = ProfileIdForMode(mode);
-        var profile = _hmContext.GetProfile(profileId)
-            ?? _hmContext.AllProfiles.FirstOrDefault(p =>
-                p.Id.StartsWith("dualshock-4", StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException($"No HIDMaestro profile found for mode {mode}");
+        switch (mode)
+        {
+            case ControllerMode.SwitchPro:
+            {
+                var profileId = "switch-pro";
+                var profile = _hmContext.GetProfile(profileId)
+                    ?? _hmContext.AllProfiles.FirstOrDefault(p =>
+                        p.Id.StartsWith("dualshock-4", StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException($"No HIDMaestro profile found for mode {mode}");
 
-        return _hmContext.CreateController(profile);
+                var ctrl = _hmContext.CreateController(profile);
+                ctrl.OutputDecoded += OnHmOutputDecoded;
+                ctrl.OutputReceived += OnHmOutputReceived;
+                Controller = ctrl;
+                break;
+            }
+            case ControllerMode.XboxOneS:
+            {
+                var ctrl = _viGEm.CreateXbox360Controller();
+                ctrl.FeedbackReceived += OnXbox360Feedback;
+                ctrl.AutoSubmitReport = false;
+                ctrl.Connect();
+                Controller = ctrl;
+                break;
+            }
+            default:
+            {
+                var ctrl = _viGEm.CreateDualShock4Controller();
+                ctrl.FeedbackReceived += OnDs4Feedback;
+                ctrl.Connect();
+                Controller = ctrl;
+                break;
+            }
+        }
     }
 
-    private void RegisterOutputHandlers(HMController ctrl)
+    private void OnDs4Feedback(object? sender, DualShock4FeedbackReceivedEventArgs e)
     {
-        ctrl.OutputDecoded += OnHmOutputDecoded;
-        ctrl.OutputReceived += OnHmOutputReceived;
+        _lastLargeMotor = e.LargeMotor;
+        _lastSmallMotor = e.SmallMotor;
     }
 
-    private void UnregisterOutputHandlers(HMController ctrl)
+    private void OnXbox360Feedback(object? sender, Xbox360FeedbackReceivedEventArgs e)
     {
-        ctrl.OutputDecoded -= OnHmOutputDecoded;
-        ctrl.OutputReceived -= OnHmOutputReceived;
+        _lastLargeMotor = e.LargeMotor;
+        _lastSmallMotor = e.SmallMotor;
     }
 
     private void OnHmOutputDecoded(object? sender, HMOutputDecodedEventArgs e)
@@ -218,66 +241,43 @@ public class GamepadSession : IDisposable
         }
     }
 
-    private static HMButton MapButtons(uint buttons)
+    private void SubmitXbox360Report(GamepadInput input)
     {
-        HMButton b = 0;
-        if ((buttons & (1 << 0)) != 0) b |= HMButton.A;
-        if ((buttons & (1 << 1)) != 0) b |= HMButton.B;
-        if ((buttons & (1 << 2)) != 0) b |= HMButton.X;
-        if ((buttons & (1 << 3)) != 0) b |= HMButton.Y;
-        if ((buttons & (1 << 4)) != 0) b |= HMButton.LeftBumper;
-        if ((buttons & (1 << 5)) != 0) b |= HMButton.RightBumper;
-        if ((buttons & (1 << 8)) != 0) b |= HMButton.Back;
-        if ((buttons & (1 << 9)) != 0) b |= HMButton.Start;
-        if ((buttons & (1 << 10)) != 0) b |= HMButton.LeftStick;
-        if ((buttons & (1 << 11)) != 0) b |= HMButton.RightStick;
-        if ((buttons & (1 << 16)) != 0) b |= HMButton.Guide;
-        return b;
-    }
+        var ctrl = (IXbox360Controller)Controller!;
 
-    private static HMHat MapDpad(uint dpad)
-    {
-        return (dpad & 0x0F) switch
-        {
-            1 => HMHat.North,
-            2 => HMHat.South,
-            4 => HMHat.West,
-            8 => HMHat.East,
-            5 => HMHat.NorthWest,
-            9 => HMHat.NorthEast,
-            6 => HMHat.SouthWest,
-            10 => HMHat.SouthEast,
-            _ => HMHat.None,
-        };
-    }
+        ctrl.SetButtonState(Xbox360Button.A, (input.Buttons & (1 << 0)) != 0);
+        ctrl.SetButtonState(Xbox360Button.B, (input.Buttons & (1 << 1)) != 0);
+        ctrl.SetButtonState(Xbox360Button.X, (input.Buttons & (1 << 2)) != 0);
+        ctrl.SetButtonState(Xbox360Button.Y, (input.Buttons & (1 << 3)) != 0);
+        ctrl.SetButtonState(Xbox360Button.LeftShoulder, (input.Buttons & (1 << 4)) != 0);
+        ctrl.SetButtonState(Xbox360Button.RightShoulder, (input.Buttons & (1 << 5)) != 0);
+        ctrl.SetButtonState(Xbox360Button.LeftThumb, (input.Buttons & (1 << 10)) != 0);
+        ctrl.SetButtonState(Xbox360Button.RightThumb, (input.Buttons & (1 << 11)) != 0);
+        ctrl.SetButtonState(Xbox360Button.Back, (input.Buttons & (1 << 8)) != 0);
+        ctrl.SetButtonState(Xbox360Button.Start, (input.Buttons & (1 << 9)) != 0);
+        ctrl.SetButtonState(Xbox360Button.Guide, (input.Buttons & (1 << 16)) != 0);
 
-    private void SubmitXboxReport(GamepadInput input)
-    {
-        var ctrl = Controller!;
+        ctrl.SetButtonState(Xbox360Button.Up, (input.Dpad & 1) != 0);
+        ctrl.SetButtonState(Xbox360Button.Down, (input.Dpad & 2) != 0);
+        ctrl.SetButtonState(Xbox360Button.Left, (input.Dpad & 4) != 0);
+        ctrl.SetButtonState(Xbox360Button.Right, (input.Dpad & 8) != 0);
+
+        ctrl.SetAxisValue(Xbox360Axis.LeftThumbX, (short)input.LeftStickX);
+        ctrl.SetAxisValue(Xbox360Axis.LeftThumbY, (short)-input.LeftStickY);
+        ctrl.SetAxisValue(Xbox360Axis.RightThumbX, (short)input.RightStickX);
+        ctrl.SetAxisValue(Xbox360Axis.RightThumbY, (short)-input.RightStickY);
 
         var lt = input.LeftTrigger > 0 ? input.LeftTrigger : ((input.Buttons & (1 << 6)) != 0 ? 255u : 0u);
         var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1 << 7)) != 0 ? 255u : 0u);
+        ctrl.SetSliderValue(Xbox360Slider.LeftTrigger, (byte)Math.Clamp(lt, 0, 255));
+        ctrl.SetSliderValue(Xbox360Slider.RightTrigger, (byte)Math.Clamp(rt, 0, 255));
 
-        ctrl.SubmitState(new HMGamepadState
-        {
-            Axes = HMGamepadStateHelpers.StandardAxes(ctrl.Profile,
-                leftStickX:   (input.LeftStickX + 32768f) / 65535f,
-                leftStickY:   (input.LeftStickY + 32768f) / 65535f,
-                rightStickX:  (input.RightStickX + 32768f) / 65535f,
-                rightStickY:  (input.RightStickY + 32768f) / 65535f,
-                leftTrigger:  lt / 255f,
-                rightTrigger: rt / 255f),
-            Buttons = MapButtons(input.Buttons),
-            Hat = MapDpad(input.Dpad),
-        });
+        ctrl.SubmitReport();
     }
 
     private void SubmitSwitchProReport(GamepadInput input)
     {
-        var ctrl = Controller!;
-
-        // 48-byte body. Bytes [0,1,11] are overlaid by the driver
-        // (timer, battery, vibrator), so we skip them.
+        var ctrl = (HMController)Controller!;
 
         var buf = new byte[48];
 
@@ -339,7 +339,7 @@ public class GamepadSession : IDisposable
 
     private void SubmitDs4Report(GamepadInput input)
     {
-        var ctrl = Controller!;
+        var ctrl = (IDualShock4Controller)Controller!;
         var buf = new byte[63];
 
         buf[0] = (byte)((input.LeftStickX + 32768) / 256);
@@ -435,16 +435,10 @@ public class GamepadSession : IDisposable
         _previousTouchCounter = currentCounter;
         _ds4TouchCounter++;
 
-        ctrl.SubmitRawReport(buf.AsSpan());
+        ctrl.SubmitRawReport(buf);
     }
 
     private static void WriteInt16LE(byte[] buf, int offset, short value)
-    {
-        buf[offset] = (byte)value;
-        buf[offset + 1] = (byte)(value >> 8);
-    }
-
-    private static void WriteUInt16LE(byte[] buf, int offset, ushort value)
     {
         buf[offset] = (byte)value;
         buf[offset + 1] = (byte)(value >> 8);
@@ -483,15 +477,12 @@ public class GamepadSession : IDisposable
         {
             if (_disposed) return;
 
-            // Submit latest input (batched, one report per tick)
             GamepadInput? input;
             lock (_inputLock)
             {
                 input = _latestInput;
             }
 
-            // Always submit a report every tick to keep the controller alive.
-            // Use the last known state when no new input has arrived.
             var report = input ?? _lastReportedInput;
 
             if (report != null && Controller != null)
@@ -503,7 +494,7 @@ public class GamepadSession : IDisposable
                     else if (Mode == ControllerMode.SwitchPro)
                         SubmitSwitchProReport(report);
                     else
-                        SubmitXboxReport(report);
+                        SubmitXbox360Report(report);
                 }
                 catch { }
 
@@ -511,7 +502,6 @@ public class GamepadSession : IDisposable
                     _lastReportedInput = input;
             }
 
-            // Send vibration/RTT back to phone
             if (_lastSeq > 0)
             {
                 try
@@ -538,7 +528,6 @@ public class GamepadSession : IDisposable
                 catch { }
             }
 
-            // Drift-compensated wait for next 125Hz tick
             var remainingTicks = nextTick - sw.Elapsed.Ticks;
             if (remainingTicks > 0)
             {
@@ -552,7 +541,6 @@ public class GamepadSession : IDisposable
             }
             nextTick += intervalTicks;
 
-            // If fallen behind, reset schedule
             if (sw.Elapsed.Ticks > nextTick + intervalTicks)
                 nextTick = sw.Elapsed.Ticks + intervalTicks;
         }
@@ -561,7 +549,6 @@ public class GamepadSession : IDisposable
     public async Task SetControllerModeAsync(ControllerMode mode)
     {
         if (_disposed || _switchingMode) return;
-        Log($"SetControllerModeAsync ENTER mode={mode} (current={Mode})");
         _switchingMode = true;
         try
         {
@@ -575,53 +562,50 @@ public class GamepadSession : IDisposable
             if (oldCtrl != null && oldMode == ControllerMode.SwitchPro)
             {
                 // SwitchPro teardown is slow (~5s). Create new first, destroy old in background.
-                Log("SetControllerModeAsync SwitchPro→X: creating new first");
                 Controller = null;
-                var newCtrl = await Task.Run(() =>
+                if (mode == ControllerMode.SwitchPro)
                 {
-                    var c = CreateFreshController(mode);
-                    RegisterOutputHandlers(c);
-                    return c;
-                });
-                Controller = newCtrl;
+                    // SwitchPro → SwitchPro: recreate via background
+                    var newCtrl = await Task.Run(() =>
+                    {
+                        CreateController(mode);
+                        return Controller;
+                    });
+                    Controller = newCtrl;
+                }
+                else
+                {
+                    // SwitchPro → DS4/Xbox: ViGEm is fast, create inline
+                    CreateController(mode);
+                }
                 Mode = mode;
-                Log("SetControllerModeAsync new controller created");
+                var toDestroy = oldCtrl;
                 _ = Task.Run(() =>
                 {
                     try
                     {
-                        var sw = Stopwatch.StartNew();
-                        PreRemoveDevice(oldCtrl);
-                        oldCtrl.Dispose();
-                        Log($"SetControllerModeAsync bg cleanup: {sw.ElapsedMilliseconds}ms");
+                        PreRemoveDevice((HMController)toDestroy);
+                        DestroyController(toDestroy);
                     }
                     catch { }
                 });
             }
             else
             {
-                // Normal path: destroy old first (fast for non-SwitchPro)
                 Controller = null;
                 if (oldCtrl != null)
-                {
-                    var sw = Stopwatch.StartNew();
-                    PreRemoveDevice(oldCtrl);
-                    Log($"SetControllerModeAsync PreRemoveDevice took {sw.ElapsedMilliseconds}ms");
-                    Log("SetControllerModeAsync awaiting DisposeTask...");
-                    sw.Restart();
-                    await Task.Run(() => { try { oldCtrl.Dispose(); } catch { } });
-                    Log($"SetControllerModeAsync DisposeTask done in {sw.ElapsedMilliseconds}ms");
-                }
+                    DestroyController(oldCtrl);
 
-                var newCtrl = await Task.Run(() =>
+                if (mode == ControllerMode.SwitchPro)
                 {
-                    var c = CreateFreshController(mode);
-                    RegisterOutputHandlers(c);
-                    return c;
-                });
-                Controller = newCtrl;
+                    // ViGEm → SwitchPro: HIDMaestro creation is slow
+                    await Task.Run(() => CreateController(mode));
+                }
+                else
+                {
+                    CreateController(mode);
+                }
                 Mode = mode;
-                Log("SetControllerModeAsync new controller created");
             }
 
             _lastLargeMotor = 0;
@@ -636,44 +620,30 @@ public class GamepadSession : IDisposable
         finally
         {
             _switchingMode = false;
-            Log("SetControllerModeAsync EXIT");
-        }
-    }
-
-    private static readonly string _logPath = System.IO.Path.Combine(
-        System.IO.Path.GetTempPath(), "gamepademu_teardown.log");
-    private static readonly object _logLock = new();
-    private static void Log(string msg)
-    {
-        lock (_logLock)
-        {
-            try { System.IO.File.AppendAllText(_logPath,
-                $"{DateTime.Now:HH:mm:ss.fff} [{Environment.CurrentManagedThreadId}] {msg}\n"); }
-            catch { }
         }
     }
 
     public void Disconnect()
     {
         if (_disposed) return;
-        Log("Disconnect ENTER");
         _disposed = true;
         _cts.Cancel();
-        var oldCtrl = Controller;
-        Controller = null;
-        if (oldCtrl != null)
+
+        if (Controller is HMController hmCtrl)
         {
+            var ctrl = hmCtrl;
             _ = Task.Run(() =>
             {
-                var sw = Stopwatch.StartNew();
-                PreRemoveDevice(oldCtrl);
-                Log($"Disconnect background pre-remove took {sw.ElapsedMilliseconds}ms");
-                sw.Restart();
-                try { oldCtrl.Dispose(); } catch { }
-                Log($"Disconnect background dispose total={sw.ElapsedMilliseconds}ms");
+                PreRemoveDevice(ctrl);
+                try { ctrl.Dispose(); } catch { }
             });
         }
-        Log("Disconnect EXIT");
+        else
+        {
+            DestroyController(Controller);
+        }
+        Controller = null;
+
         OnDisconnected?.Invoke(this);
     }
 
@@ -699,27 +669,15 @@ public class GamepadSession : IDisposable
             EnsureReflectionCache(ctrl);
             var instanceId = _instanceIdField?.GetValue(ctrl) as string;
             if (string.IsNullOrEmpty(instanceId)) return;
-            Log($"PreRemoveDevice instanceId={instanceId}");
 
-            var sw = Stopwatch.StartNew();
             IntPtr devnode = IntPtr.Zero;
             var status = CM_Locate_DevNodeW(ref devnode, instanceId, 0);
-            if (status != CR_SUCCESS || devnode == IntPtr.Zero)
-            {
-                Log($"PreRemoveDevice: device not found, status={status}");
-                return;
-            }
+            if (status != CR_SUCCESS || devnode == IntPtr.Zero) return;
 
-            status = CM_Disable_DevNode(devnode, DN_DISABLE_ASYNC);
-            Log($"PreRemoveDevice: CM_Disable_DevNode(ASYNC) status={status} took {sw.ElapsedMilliseconds}ms");
-
-            status = CM_Uninstall_DevNode(devnode, 0);
-            Log($"PreRemoveDevice: CM_Uninstall_DevNode status={status} took {sw.ElapsedMilliseconds}ms");
+            CM_Disable_DevNode(devnode, DN_DISABLE_ASYNC);
+            CM_Uninstall_DevNode(devnode, 0);
         }
-        catch (Exception ex)
-        {
-            Log($"PreRemoveDevice EXCEPTION: {ex.Message}");
-        }
+        catch { }
     }
 
     private static void EnsureReflectionCache(HMController ctrl)
@@ -728,10 +686,8 @@ public class GamepadSession : IDisposable
         lock (_preRemoveLock)
         {
             if (_instanceIdField != null) return;
-            Log("EnsureReflectionCache: resolving types...");
             _instanceIdField = ctrl.GetType().GetField("<InstanceId>k__BackingField",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            Log($"EnsureReflectionCache: InstanceIdField={_instanceIdField != null}");
         }
     }
 
@@ -739,14 +695,61 @@ public class GamepadSession : IDisposable
     {
         try
         {
-            if (Controller == null) return;
-            Controller.SubmitState(new HMGamepadState
+            switch (Controller)
             {
-                Axes = HMGamepadStateHelpers.StandardAxes(Controller.Profile),
-                Buttons = HMButton.None,
-                Hat = HMHat.None,
-            });
-            ClearLatestInput();
+                case IXbox360Controller xbox:
+                    xbox.SetButtonState(Xbox360Button.A, false);
+                    xbox.SetButtonState(Xbox360Button.B, false);
+                    xbox.SetButtonState(Xbox360Button.X, false);
+                    xbox.SetButtonState(Xbox360Button.Y, false);
+                    xbox.SetButtonState(Xbox360Button.LeftShoulder, false);
+                    xbox.SetButtonState(Xbox360Button.RightShoulder, false);
+                    xbox.SetButtonState(Xbox360Button.LeftThumb, false);
+                    xbox.SetButtonState(Xbox360Button.RightThumb, false);
+                    xbox.SetButtonState(Xbox360Button.Back, false);
+                    xbox.SetButtonState(Xbox360Button.Start, false);
+                    xbox.SetButtonState(Xbox360Button.Guide, false);
+                    xbox.SetButtonState(Xbox360Button.Up, false);
+                    xbox.SetButtonState(Xbox360Button.Down, false);
+                    xbox.SetButtonState(Xbox360Button.Left, false);
+                    xbox.SetButtonState(Xbox360Button.Right, false);
+                    xbox.SetAxisValue(Xbox360Axis.LeftThumbX, 0);
+                    xbox.SetAxisValue(Xbox360Axis.LeftThumbY, 0);
+                    xbox.SetAxisValue(Xbox360Axis.RightThumbX, 0);
+                    xbox.SetAxisValue(Xbox360Axis.RightThumbY, 0);
+                    xbox.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
+                    xbox.SetSliderValue(Xbox360Slider.RightTrigger, 0);
+                    xbox.SubmitReport();
+                    ClearLatestInput();
+                    break;
+                case IDualShock4Controller ds4:
+                    var buf = new byte[63];
+                    buf[0] = 128; buf[1] = 128;
+                    buf[2] = 128; buf[3] = 128;
+                    buf[4] = 8;
+                    buf[11] = 10;
+                    buf[24] = 0xE9;
+                    buf[29] = 0x10 | 10;
+                    buf[30] = 0x1B;
+                    buf[34] = 0x80;
+                    buf[38] = 0x80;
+                    buf[43] = 0x80;
+                    buf[47] = 0x80;
+                    buf[52] = 0x80;
+                    buf[56] = 0x80;
+                    ds4.SubmitRawReport(buf);
+                    ClearLatestInput();
+                    break;
+                case HMController hm:
+                    hm.SubmitState(new HMGamepadState
+                    {
+                        Axes = HMGamepadStateHelpers.StandardAxes(hm.Profile),
+                        Buttons = HMButton.None,
+                        Hat = HMHat.None,
+                    });
+                    ClearLatestInput();
+                    break;
+            }
         }
         catch { }
     }
@@ -758,6 +761,26 @@ public class GamepadSession : IDisposable
             _latestInput = null;
             _lastReportedInput = null;
         }
+    }
+
+    private static void DestroyController(object? ctrl)
+    {
+        try
+        {
+            switch (ctrl)
+            {
+                case IXbox360Controller xbox:
+                    xbox.Disconnect();
+                    break;
+                case IDualShock4Controller ds4:
+                    ds4.Disconnect();
+                    break;
+                case HMController hm:
+                    hm.Dispose();
+                    break;
+            }
+        }
+        catch { }
     }
 
     public void Dispose()
