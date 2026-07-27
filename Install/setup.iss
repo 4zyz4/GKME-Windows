@@ -7,7 +7,7 @@
 #define MyAppURL ""
 #define MyAppExeName "GamepadEmuHost.exe"
 
-#define PublishDir "..\bin\Release\net8.0-windows\win-x64\publish"
+#define PublishDir "..\bin\Release\net10.0-windows\win-x64\publish"
 #define VigemDir "VigemDrv"
 
 [Setup]
