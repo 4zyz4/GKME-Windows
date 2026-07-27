@@ -167,7 +167,7 @@ public class GamepadSession : IDisposable
                 Controller = ctrl;
                 break;
             }
-            case ControllerMode.XboxOneS:
+            case ControllerMode.Xbox360:
             {
                 var ctrl = _viGEm.CreateXbox360Controller();
                 ctrl.FeedbackReceived += OnXbox360Feedback;
