@@ -40,6 +40,13 @@ public partial class MainWindow : Window
         _vm.Refresh();
     }
 
+    private void OnDiagClick(object sender, RoutedEventArgs e)
+    {
+        var card = (sender as FrameworkElement)?.DataContext as DeviceCardViewModel;
+        if (card != null)
+            _vm.SwitchProDiagToggle(card);
+    }
+
     private async void OnModeChanged(object sender, SelectionChangedEventArgs e)
     {
         if (e.AddedItems.Count == 0 || e.AddedItems[0] is not ControllerMode mode) return;

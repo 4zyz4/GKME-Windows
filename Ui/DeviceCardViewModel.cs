@@ -75,8 +75,18 @@ public class DeviceCardViewModel : INotifyPropertyChanged
             if (_mode == value) return;
             _mode = value;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(ShowDiag));
         }
     }
+
+    // Diagnostics
+    private string _diagLabel = "校准";
+    public string DiagLabel
+    {
+        get => _diagLabel;
+        set { _diagLabel = value; OnPropertyChanged(); }
+    }
+    public bool ShowDiag => _mode == ControllerMode.SwitchPro;
 
     internal DiscoveredDevice Device => _device;
 
@@ -84,12 +94,14 @@ public class DeviceCardViewModel : INotifyPropertyChanged
     {
         ControllerMode.Ds4,
         ControllerMode.XboxOneS,
+        ControllerMode.SwitchPro,
     };
 
     public static string DisplayName(ControllerMode mode) => mode switch
     {
         ControllerMode.Ds4 => "DualShock 4",
         ControllerMode.XboxOneS => "Xbox One",
+        ControllerMode.SwitchPro => "Switch Pro",
         _ => "?",
     };
 
