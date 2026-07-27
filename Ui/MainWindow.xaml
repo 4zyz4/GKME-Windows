@@ -239,11 +239,6 @@
                                             </Style>
                                         </ComboBox.ItemContainerStyle>
                                     </ComboBox>
-                                    <Button Content="{Binding DiagLabel}"
-                                            MinWidth="70" Height="28" Margin="6,0,0,0"
-                                            Style="{StaticResource ActionButton}"
-                                            Visibility="{Binding ShowDiag, Converter={x:Static ui:BoolToVisibilityConverter.Instance}}"
-                                            Click="OnDiagClick" />
                                     <Button Content="断开" Width="50" Height="28" Margin="6,0,0,0"
                                             Style="{StaticResource DangerButton}"
                                             Click="OnCardDisconnectClick" />

@@ -284,17 +284,6 @@ public class MainViewModel : INotifyPropertyChanged
             Application.Current?.Dispatcher.Invoke(action);
     }
 
-    public void SwitchProDiagToggle(DeviceCardViewModel card)
-    {
-        var ip = card.IpAddress;
-        if (_sessionMap.TryGetValue(ip, out var session))
-        {
-            if (session.Mode != ControllerMode.SwitchPro) return;
-            session.SwitchProDiagNext();
-            card.DiagLabel = session.Mode == ControllerMode.SwitchPro ? $"诊断: {session.SwitchProDiagStepName}" : "";
-        }
-    }
-
     public void Shutdown()
     {
         if (_network == null) return;

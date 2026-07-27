@@ -75,18 +75,8 @@ public class DeviceCardViewModel : INotifyPropertyChanged
             if (_mode == value) return;
             _mode = value;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(ShowDiag));
         }
     }
-
-    // Diagnostics
-    private string _diagLabel = "校准";
-    public string DiagLabel
-    {
-        get => _diagLabel;
-        set { _diagLabel = value; OnPropertyChanged(); }
-    }
-    public bool ShowDiag => _mode == ControllerMode.SwitchPro;
 
     internal DiscoveredDevice Device => _device;
 
