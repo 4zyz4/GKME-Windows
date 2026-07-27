@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using GamepadEmu.Protocol;
 using Google.Protobuf;
@@ -20,6 +21,11 @@ public class NetworkService : IDisposable
     private readonly ConcurrentDictionary<string, DiscoveredDevice> _discovered = new();
     private readonly ConcurrentDictionary<string, GamepadSession> _sessions = new();
     private readonly HMContext _hmContext = new();
+
+    static NetworkService()
+    {
+        Environment.SetEnvironmentVariable("HIDMAESTRO_TIMEOUT_SCALE", "0.01");
+    }
     private CancellationTokenSource? _listenerCts;
     private Task? _listenerTask;
     private UdpClient? _listener;
@@ -33,6 +39,8 @@ public class NetworkService : IDisposable
             if (loaded == 0)
                 return false;
 
+            PatchTimeoutScale(_hmContext);
+
             if (!_hmContext.IsDriverInstalled)
                 _hmContext.InstallDriver();
 
@@ -42,6 +50,41 @@ public class NetworkService : IDisposable
         {
             return false;
         }
+    }
+
+    private static void PatchTimeoutScale(HMContext ctx)
+    {
+        try
+        {
+            var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+            var seen = new HashSet<object>();
+            PatchTimeoutScaleRecursive(ctx, flags, seen);
+        }
+        catch { }
+    }
+
+    private static void PatchTimeoutScaleRecursive(object obj, BindingFlags flags, HashSet<object> seen)
+    {
+        if (obj == null || !seen.Add(obj)) return;
+        var t = obj.GetType();
+
+        SetFieldInt(t, obj, "perAttemptTimeoutMs", 500, flags);
+        SetFieldInt(t, obj, "timeoutMs", 500, flags);
+        SetFieldInt(t, obj, "callbackTimeoutMs", 500, flags);
+
+        foreach (var f in t.GetFields(flags))
+        {
+            var val = f.GetValue(obj);
+            if (val != null && f.FieldType.IsClass && f.FieldType.Namespace?.StartsWith("HIDMaestro") == true)
+                PatchTimeoutScaleRecursive(val, flags, seen);
+        }
+    }
+
+    private static void SetFieldInt(Type t, object obj, string name, int value, BindingFlags flags)
+    {
+        var f = t.GetField(name, flags);
+        if (f != null && f.FieldType == typeof(int))
+            f.SetValue(obj, value);
     }
 
     public IReadOnlyCollection<DiscoveredDevice> DiscoveredDevices =>

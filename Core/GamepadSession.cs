@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using GamepadEmu.Protocol;
 using Google.Protobuf;
 using HIDMaestro;
@@ -12,7 +15,7 @@ public class GamepadSession : IDisposable
     private readonly HMContext _hmContext;
     private CancellationTokenSource _cts = new();
     private Task _reportTask = Task.CompletedTask;
-    private bool _disposed;
+    private volatile bool _disposed;
     private bool _readyFired;
     private DateTime _lastReceiveTime = DateTime.UtcNow;
     private byte _lastLargeMotor;
@@ -558,6 +561,7 @@ public class GamepadSession : IDisposable
     public async Task SetControllerModeAsync(ControllerMode mode)
     {
         if (_disposed || _switchingMode) return;
+        Log($"SetControllerModeAsync ENTER mode={mode} (current={Mode})");
         _switchingMode = true;
         try
         {
@@ -565,28 +569,64 @@ public class GamepadSession : IDisposable
             _lastSmallMotor = 0;
             _lastReportedInput = null;
 
-
-            // Destroy old controller first so the new one gets a clean PnP slot
             var oldCtrl = Controller;
-            Controller = null;
-            if (oldCtrl != null)
-                await Task.Run(() => { try { oldCtrl.Dispose(); } catch { } });
+            var oldMode = Mode;
 
-            // Create new controller with the target mode
-            var newCtrl = await Task.Run(() =>
+            if (oldCtrl != null && oldMode == ControllerMode.SwitchPro)
             {
-                var c = CreateFreshController(mode);
-                RegisterOutputHandlers(c);
-                return c;
-            });
+                // SwitchPro teardown is slow (~5s). Create new first, destroy old in background.
+                Log("SetControllerModeAsync SwitchPro→X: creating new first");
+                Controller = null;
+                var newCtrl = await Task.Run(() =>
+                {
+                    var c = CreateFreshController(mode);
+                    RegisterOutputHandlers(c);
+                    return c;
+                });
+                Controller = newCtrl;
+                Mode = mode;
+                Log("SetControllerModeAsync new controller created");
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        var sw = Stopwatch.StartNew();
+                        PreRemoveDevice(oldCtrl);
+                        oldCtrl.Dispose();
+                        Log($"SetControllerModeAsync bg cleanup: {sw.ElapsedMilliseconds}ms");
+                    }
+                    catch { }
+                });
+            }
+            else
+            {
+                // Normal path: destroy old first (fast for non-SwitchPro)
+                Controller = null;
+                if (oldCtrl != null)
+                {
+                    var sw = Stopwatch.StartNew();
+                    PreRemoveDevice(oldCtrl);
+                    Log($"SetControllerModeAsync PreRemoveDevice took {sw.ElapsedMilliseconds}ms");
+                    Log("SetControllerModeAsync awaiting DisposeTask...");
+                    sw.Restart();
+                    await Task.Run(() => { try { oldCtrl.Dispose(); } catch { } });
+                    Log($"SetControllerModeAsync DisposeTask done in {sw.ElapsedMilliseconds}ms");
+                }
 
-            Controller = newCtrl;
-            Mode = mode;
+                var newCtrl = await Task.Run(() =>
+                {
+                    var c = CreateFreshController(mode);
+                    RegisterOutputHandlers(c);
+                    return c;
+                });
+                Controller = newCtrl;
+                Mode = mode;
+                Log("SetControllerModeAsync new controller created");
+            }
+
             _lastLargeMotor = 0;
             _lastSmallMotor = 0;
 
-            // Ensure OnReady fires — the initial Hello may have been dropped
-            // because _switchingMode was true when it arrived.
             if (!_readyFired)
             {
                 _readyFired = true;
@@ -596,19 +636,103 @@ public class GamepadSession : IDisposable
         finally
         {
             _switchingMode = false;
+            Log("SetControllerModeAsync EXIT");
+        }
+    }
+
+    private static readonly string _logPath = System.IO.Path.Combine(
+        System.IO.Path.GetTempPath(), "gamepademu_teardown.log");
+    private static readonly object _logLock = new();
+    private static void Log(string msg)
+    {
+        lock (_logLock)
+        {
+            try { System.IO.File.AppendAllText(_logPath,
+                $"{DateTime.Now:HH:mm:ss.fff} [{Environment.CurrentManagedThreadId}] {msg}\n"); }
+            catch { }
         }
     }
 
     public void Disconnect()
     {
         if (_disposed) return;
+        Log("Disconnect ENTER");
         _disposed = true;
         _cts.Cancel();
         var oldCtrl = Controller;
         Controller = null;
         if (oldCtrl != null)
-            _ = Task.Run(() => { try { oldCtrl.Dispose(); } catch { } });
+        {
+            _ = Task.Run(() =>
+            {
+                var sw = Stopwatch.StartNew();
+                PreRemoveDevice(oldCtrl);
+                Log($"Disconnect background pre-remove took {sw.ElapsedMilliseconds}ms");
+                sw.Restart();
+                try { oldCtrl.Dispose(); } catch { }
+                Log($"Disconnect background dispose total={sw.ElapsedMilliseconds}ms");
+            });
+        }
+        Log("Disconnect EXIT");
         OnDisconnected?.Invoke(this);
+    }
+
+    private const uint CR_SUCCESS = 0;
+    private const uint DN_DISABLE_ASYNC = 0x00000001;
+
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern uint CM_Locate_DevNodeW(ref IntPtr pdnDevInst, string pDeviceID, uint ulFlags);
+
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern uint CM_Disable_DevNode(IntPtr dnDevInst, uint ulFlags);
+
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern uint CM_Uninstall_DevNode(IntPtr dnDevInst, uint ulFlags);
+
+    private static readonly object _preRemoveLock = new();
+    private static FieldInfo? _instanceIdField;
+
+    private static void PreRemoveDevice(HMController ctrl)
+    {
+        try
+        {
+            EnsureReflectionCache(ctrl);
+            var instanceId = _instanceIdField?.GetValue(ctrl) as string;
+            if (string.IsNullOrEmpty(instanceId)) return;
+            Log($"PreRemoveDevice instanceId={instanceId}");
+
+            var sw = Stopwatch.StartNew();
+            IntPtr devnode = IntPtr.Zero;
+            var status = CM_Locate_DevNodeW(ref devnode, instanceId, 0);
+            if (status != CR_SUCCESS || devnode == IntPtr.Zero)
+            {
+                Log($"PreRemoveDevice: device not found, status={status}");
+                return;
+            }
+
+            status = CM_Disable_DevNode(devnode, DN_DISABLE_ASYNC);
+            Log($"PreRemoveDevice: CM_Disable_DevNode(ASYNC) status={status} took {sw.ElapsedMilliseconds}ms");
+
+            status = CM_Uninstall_DevNode(devnode, 0);
+            Log($"PreRemoveDevice: CM_Uninstall_DevNode status={status} took {sw.ElapsedMilliseconds}ms");
+        }
+        catch (Exception ex)
+        {
+            Log($"PreRemoveDevice EXCEPTION: {ex.Message}");
+        }
+    }
+
+    private static void EnsureReflectionCache(HMController ctrl)
+    {
+        if (_instanceIdField != null) return;
+        lock (_preRemoveLock)
+        {
+            if (_instanceIdField != null) return;
+            Log("EnsureReflectionCache: resolving types...");
+            _instanceIdField = ctrl.GetType().GetField("<InstanceId>k__BackingField",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Log($"EnsureReflectionCache: InstanceIdField={_instanceIdField != null}");
+        }
     }
 
     private void ResetController()
