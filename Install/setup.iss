@@ -7,7 +7,7 @@
 #define MyAppURL ""
 #define MyAppExeName "GamepadEmuHost.exe"
 
-#define PublishDir "..\bin\Release\net10.0-windows\win-x64\publish"
+#define BuildDir "..\bin\Release\net10.0-windows\win-x64"
 #define VigemDir "VigemDrv"
 
 [Setup]
@@ -34,10 +34,10 @@ Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
 
 [Files]
 ; App files - 直接覆盖安装，不需要手动卸载
-Source: "{#PublishDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PublishDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#PublishDir}\*.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#PublishDir}\*.pdb"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#BuildDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#BuildDir}\*.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#BuildDir}\*.pdb"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 ; ViGEM Bus driver installer (bundled)
 Source: "{#VigemDir}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
