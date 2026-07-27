@@ -259,7 +259,7 @@
         <Border Grid.Row="2" Background="#252525" Padding="10,8" CornerRadius="6" Margin="0,6,0,0">
             <TextBlock FontSize="11" Foreground="#888888" TextWrapping="Wrap" TextAlignment="Center"
                        LineHeight="16">
-                <Run Text="作者：4zyz4" />
+                <Run Text="作者：4zyz4  软件Q群：639317971" />
                 <LineBreak />
                 <Run Text="开源地址：https://github.com/4zyz4/gamepad-emu-android" />
                 <LineBreak />
