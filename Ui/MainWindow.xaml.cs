@@ -50,11 +50,12 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
-        try { _vm.Shutdown(); }
-        catch { }
         base.OnClosed(e);
-        try { Application.Current.Shutdown(); }
+        try
+        {
+            _vm.Shutdown();
+        }
         catch { }
-        Environment.Exit(0);
+        Application.Current.Shutdown();
     }
 }

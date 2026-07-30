@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
@@ -27,6 +28,11 @@ public class NetworkService : IDisposable
     static NetworkService()
     {
         Environment.SetEnvironmentVariable("HIDMAESTRO_TIMEOUT_SCALE", "0.01");
+    }
+
+    public static bool IsVigemBusInstalled()
+    {
+        return File.Exists(@"C:\Windows\System32\drivers\ViGEmBus.sys");
     }
     private CancellationTokenSource? _listenerCts;
     private Task? _listenerTask;
@@ -292,6 +298,18 @@ public class NetworkService : IDisposable
         session.Disconnect();
     }
 
+    public async Task DisconnectAllAsync()
+    {
+        var tasks = new List<Task>();
+        foreach (var session in _sessions.Values)
+        {
+            session.Disconnect();
+            tasks.Add(session.WaitForCleanupAsync());
+        }
+        _sessions.Clear();
+        await Task.WhenAll(tasks);
+    }
+
     public void DisconnectAll()
     {
         foreach (var session in _sessions.Values)
@@ -314,7 +332,7 @@ public class NetworkService : IDisposable
         if (_disposed) return;
         _disposed = true;
         StopDiscovery();
-        DisconnectAll();
+        DisconnectAllAsync().GetAwaiter().GetResult();
         _viGEm.Dispose();
         _hmContext.Dispose();
     }

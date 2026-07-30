@@ -292,7 +292,7 @@ public class MainViewModel : INotifyPropertyChanged
         _network.OnSessionEnded -= OnSessionEnded;
         _network.OnSessionConnectionLost -= OnSessionConnectionLost;
         _network.StopDiscovery();
-        _network.DisconnectAll();
+        _network.DisconnectAllAsync().GetAwaiter().GetResult();
         _initialConnecting.Clear();
     }
 

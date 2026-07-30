@@ -16,6 +16,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Content Include="Install\VigemDrv\ViGEmBus_1.22.0_x64_x86_arm64.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.28.3" />
     <PackageReference Include="Grpc.Tools" Version="2.67.0">
       <PrivateAssets>all</PrivateAssets>

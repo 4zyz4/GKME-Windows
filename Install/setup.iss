@@ -39,17 +39,13 @@ Source: "{#BuildDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsource
 Source: "{#BuildDir}\*.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#BuildDir}\*.pdb"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
-; ViGEM Bus driver installer (bundled)
-Source: "{#VigemDir}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+; ViGEM Bus driver installer (bundled, installed by main program)
+Source: "{#VigemDir}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\GamepadEmuHost"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\GamepadEmuHost"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall GamepadEmuHost"; Filename: "{uninstallexe}"
-
-[Run]
-; Install ViGEM Bus driver silently
-Filename: "{tmp}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; Parameters: "/qn"; StatusMsg: "正在安装 ViGEM Bus 驱动 ..."; Flags: waituntilterminated; Check: not IsVigemInstalled
 
 [Code]
 const

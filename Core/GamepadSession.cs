@@ -38,6 +38,7 @@ public class GamepadSession : IDisposable
     private readonly byte[] _touchIds = new byte[2];
     private readonly bool[] _prevTouchActive = new bool[2];
     private byte _nextTrackingId;
+    private Task? _cleanupTask;
 
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
@@ -632,7 +633,7 @@ public class GamepadSession : IDisposable
         if (Controller is HMController hmCtrl)
         {
             var ctrl = hmCtrl;
-            _ = Task.Run(() =>
+            _cleanupTask = Task.Run(() =>
             {
                 PreRemoveDevice(ctrl);
                 try { ctrl.Dispose(); } catch { }
@@ -781,6 +782,11 @@ public class GamepadSession : IDisposable
             }
         }
         catch { }
+    }
+
+    public Task WaitForCleanupAsync()
+    {
+        return _cleanupTask ?? Task.CompletedTask;
     }
 
     public void Dispose()
