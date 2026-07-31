@@ -15,6 +15,21 @@ public class GamepadSession : IDisposable
 {
     private const int ConnectionTimeoutMs = 3000;
 
+    // DS4 gyro soft-knee: keep full sensitivity below the knee, then taper the
+    // gain linearly so the report never hits the ±32767/±32768 full-scale value
+    // (2000 deg/s) that some games treat as a sensor fault.
+    private const float Ds4GyroScale = 940f;
+    private const float Ds4GyroKnee = 30f;
+    private const float Ds4GyroMaxInput = 40f;
+    private const float Ds4GyroMaxOutput = 32760f;
+
+    // DS4 accel soft-knee (same idea; phone sends up to ~15g while the DS4's
+    // full-scale accel range is only ±4g).
+    private const float Ds4AccelScale = 835f;
+    private const float Ds4AccelKnee = 35f;
+    private const float Ds4AccelMaxInput = 160f;
+    private const float Ds4AccelMaxOutput = 32760f;
+
     private readonly Func<IMessage, Task> _sendToPhone;
     private readonly ViGEmClient _viGEm;
     private readonly HMContext _hmContext;
@@ -387,13 +402,13 @@ public class GamepadSession : IDisposable
 
         buf[11] = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
 
-        WriteInt16LE(buf, 12, (short)Math.Clamp(input.GyroX * 940f, short.MinValue, short.MaxValue));
-        WriteInt16LE(buf, 14, (short)Math.Clamp(input.GyroY * 940f, short.MinValue, short.MaxValue));
-        WriteInt16LE(buf, 16, (short)Math.Clamp(input.GyroZ * 940f, short.MinValue, short.MaxValue));
+        WriteInt16LE(buf, 12, (short)SoftLimit(input.GyroX, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
+        WriteInt16LE(buf, 14, (short)SoftLimit(input.GyroY, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
+        WriteInt16LE(buf, 16, (short)SoftLimit(input.GyroZ, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
 
-        WriteInt16LE(buf, 18, (short)Math.Clamp(input.AccelX * 835f, short.MinValue, short.MaxValue));
-        WriteInt16LE(buf, 20, (short)Math.Clamp(input.AccelY * 835f, short.MinValue, short.MaxValue));
-        WriteInt16LE(buf, 22, (short)Math.Clamp(input.AccelZ * 835f, short.MinValue, short.MaxValue));
+        WriteInt16LE(buf, 18, (short)SoftLimit(input.AccelX, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
+        WriteInt16LE(buf, 20, (short)SoftLimit(input.AccelY, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
+        WriteInt16LE(buf, 22, (short)SoftLimit(input.AccelZ, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
 
         var powerState = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
         if (input.IsCharging) powerState |= 0x10;
@@ -443,6 +458,21 @@ public class GamepadSession : IDisposable
     {
         buf[offset] = (byte)value;
         buf[offset + 1] = (byte)(value >> 8);
+    }
+
+    private static float SoftLimit(float input, float scale, float knee, float maxInput, float maxOutput)
+    {
+        float abs = MathF.Abs(input);
+        if (abs <= knee)
+            return input * scale;
+
+        float sign = input < 0 ? -1f : 1f;
+        if (abs >= maxInput)
+            return sign * maxOutput;
+
+        float atKnee = knee * scale;
+        float slope = (maxOutput - atKnee) / (maxInput - knee);
+        return sign * (atKnee + (abs - knee) * slope);
     }
 
     private static void WriteTouchData(byte[] buf, int offset, int x, int y, bool active, byte id)
