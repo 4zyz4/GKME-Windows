@@ -50,6 +50,7 @@ public class GamepadSession : IDisposable
     private volatile bool _switchingMode;
     private byte _previousTouchCounter;
     private int _ds4TouchCounter;
+    private readonly System.Diagnostics.Stopwatch _ds4Timestamp = System.Diagnostics.Stopwatch.StartNew();
     private readonly byte[] _touchIds = new byte[2];
     private readonly bool[] _prevTouchActive = new bool[2];
     private byte _nextTrackingId;
@@ -399,6 +400,8 @@ public class GamepadSession : IDisposable
         var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1 << 7)) != 0 ? 255u : 0u);
         buf[7] = (byte)Math.Clamp(lt, 0, 255);
         buf[8] = (byte)Math.Clamp(rt, 0, 255);
+
+        WriteInt16LE(buf, 9, (short)(_ds4Timestamp.ElapsedMilliseconds & 0xFFFF));
 
         buf[11] = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
 
