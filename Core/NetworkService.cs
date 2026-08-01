@@ -46,6 +46,18 @@ public class NetworkService : IDisposable
     {
         try
         {
+            // External profile override: profiles/ next to the app wins over
+            // the embedded catalog for the same profile ID (external loads
+            // register first, and LoadDefaultProfiles skips existing IDs).
+            // Lets us fix a profile's USB strings (e.g. DualSense iProduct)
+            // without rebuilding HIDMaestro.Core.
+            var overrideDir = Path.Combine(AppContext.BaseDirectory, "profiles");
+            if (Directory.Exists(overrideDir))
+            {
+                try { _hmContext.LoadProfilesFromDirectory(overrideDir); }
+                catch { }
+            }
+
             int loaded = _hmContext.LoadDefaultProfiles();
             if (loaded == 0)
                 return false;

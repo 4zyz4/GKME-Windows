@@ -54,7 +54,37 @@ public class GamepadSession : IDisposable
     private readonly byte[] _touchIds = new byte[2];
     private readonly bool[] _prevTouchActive = new bool[2];
     private byte _nextTrackingId;
+    private byte _ds5SequenceCounter;
     private Task? _cleanupTask;
+
+    // 4-channel audio forwarding (DualSense): the phone needs the raw
+    // speaker + voice-coil PCM, not just the rumble peaks folded above.
+    private readonly object _audioLock = new();
+    private readonly List<byte[]> _audioPending = new();
+    private byte[] _audioTail = Array.Empty<byte>();
+    private uint _audioFrameIndex;
+    private bool _audioFormatReady;
+    private uint _audioSampleRate;
+    private byte _audioChannels;
+    private byte _audioBitsPerSample;
+
+    // Sony test-command tone (dualsense-tester's "1kHz sine wave" button):
+    // the tester writes feature report 0x80 (WAVEOUT_CTRL) instead of
+    // streaming UAC audio, so we synthesize the tone here and forward it
+    // through the normal audio lane. _toneActive is set on the output
+    // polling thread; the phase accumulator is only touched by the
+    // ReportLoop thread inside DrainAudio.
+    private volatile bool _toneActive;
+    private double _tonePhase;
+
+    // Audio telemetry (diagnostic only): how many PCM bytes arrived from
+    // the UAC endpoint and how many were drained to the phone, plus the
+    // last seen window size. Helps distinguish "game never sends audio to
+    // the endpoint" from "data flows but the phone doesn't play it".
+    private long _audioReceivedBytes;
+    private long _audioDrainedBytes;
+    private int _lastAudioWindowBytes;
+    private int _audioWindowsSeen;
 
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
@@ -184,6 +214,18 @@ public class GamepadSession : IDisposable
                 Controller = ctrl;
                 break;
             }
+            case ControllerMode.Dualsense:
+            {
+                var profile = _hmContext.GetProfile("dualsense-composite")
+                    ?? throw new InvalidOperationException($"No HIDMaestro profile found for mode {mode}");
+
+                var ctrl = _hmContext.CreateController(profile);
+                ctrl.OutputDecoded += OnHmOutputDecoded;
+                ctrl.OutputReceived += OnHmOutputReceived;
+                Controller = ctrl;
+                AttachDualsenseAudio(ctrl);
+                break;
+            }
             case ControllerMode.Xbox360:
             {
                 var ctrl = _viGEm.CreateXbox360Controller();
@@ -230,11 +272,266 @@ public class GamepadSession : IDisposable
 
     private void OnHmOutputReceived(HMController controller, HMOutputPacket packet)
     {
+        // Feature report 0x80 is Sony's test-command surface (device/action
+        // first two bytes). dualsense-tester uses it for the 1kHz sine-wave
+        // audio test (WAVEOUT_CTRL on the AUDIO device); the real pad's
+        // firmware generates the tone internally. Synthesize it here instead
+        // of misreading the command bytes as rumble amplitudes.
+        if (packet.Source == HMOutputSource.HidFeature && packet.ReportId == 0x80)
+        {
+            HandleDualsenseTestCommand(packet.Data.Span);
+            return;
+        }
+
         var d = packet.Data.Span;
         if (d.Length < 4) return;
 
+        if (Mode == ControllerMode.Dualsense)
+        {
+            // DualSense output report 0x02 (no report-id byte): payload
+            // [0]=validFlag0, [1]=validFlag1, [2]=rightMotor(small),
+            // [3]=leftMotor(large).
+            _lastSmallMotor = d[2];
+            _lastLargeMotor = d[3];
+            return;
+        }
+
         _lastLargeMotor = d[2];
         _lastSmallMotor = d[3];
+    }
+
+    private void HandleDualsenseTestCommand(ReadOnlySpan<byte> d)
+    {
+        if (Mode != ControllerMode.Dualsense) return;
+        if (d.Length < 3) return;
+
+        // setTestCommandWithParams layout: [0]=deviceId, [1]=actionId,
+        // [2..]=params. AUDIO device (6) + WAVEOUT_CTRL (2) controls the
+        // internal 1 kHz sine-wave generator; params[0] != 0 starts it.
+        byte deviceId = d[0];
+        byte actionId = d[1];
+        if (deviceId != 6 || actionId != 2) return;
+
+        bool enable = d[2] != 0;
+        if (enable)
+        {
+            // (Re)arm the tone. Phase keeps its previous value so a
+            // restart stays sample-continuous.
+            _toneActive = true;
+            if (!_audioFormatReady)
+            {
+                _audioSampleRate = 48000;
+                _audioChannels = 4;
+                _audioBitsPerSample = 16;
+                _audioFormatReady = true;
+            }
+        }
+        else
+        {
+            _toneActive = false;
+        }
+    }
+
+    private void AttachDualsenseAudio(HMController ctrl)
+    {
+        try
+        {
+            var audio = ctrl.UsbAudio;
+            if (audio == null) return;
+
+            // Haptic audio arrives as channels 3/4 of the 4-channel OUT
+            // stream (roles hapticLeft/hapticRight). Fold its amplitude
+            // into the normal rumble lanes sent to the phone.
+            audio.Output.FramesReceived += OnDualsenseAudioFrames;
+        }
+        catch { }
+    }
+
+    private void OnDualsenseAudioFrames(HMAudioOutput output, ReadOnlyMemory<byte> pcm)
+    {
+        try
+        {
+            int channels = output.Channels;
+            if (channels < 2 || pcm.IsEmpty) return;
+
+            var span = pcm.Span;
+            int bytesPerFrame = channels * 2;
+            int frameCount = span.Length / bytesPerFrame;
+            if (frameCount == 0) return;
+
+            // Note: the voice-coil haptic lanes (3/4) are deliberately NOT
+            // folded into _lastLargeMotor/_lastSmallMotor. DualSense games
+            // drive haptics through this audio stream, not through a
+            // legacy-rumble interface, so folding their (irregular)
+            // waveform peaks into the rumble lanes made the phone buzz
+            // chaotically. The phone routes the haptic lanes per the
+            // user's audio-output settings instead.
+
+            // Queue the raw interleaved window for forwarding to the phone.
+            if (!_audioFormatReady)
+            {
+                _audioSampleRate = (uint)output.SampleRateHz;
+                _audioChannels = (byte)output.Channels;
+                _audioBitsPerSample = (byte)output.BitsPerSample;
+                _audioFormatReady = true;
+                System.Diagnostics.Debug.WriteLine(
+                    $"[DualSenseAudio] stream opened: {output.SampleRateHz}Hz {output.Channels}ch {output.BitsPerSample}bit");
+            }
+            lock (_audioLock)
+            {
+                if (_audioPending.Count < 1024)
+                    _audioPending.Add(span.ToArray());
+            }
+            _audioReceivedBytes += span.Length;
+            _audioWindowsSeen++;
+            _lastAudioWindowBytes = span.Length;
+        }
+        catch { }
+    }
+
+    /// <summary>One drain window of a synthesized 1 kHz sine wave,
+    /// 16-bit LE interleaved on the speaker lanes (channels 1/2) with the
+    /// haptic lanes (3/4) silent — the same 4-channel layout a host renders
+    /// to the UAC endpoint. 48000 / 125 = 384 samples per tick.</summary>
+    private byte[] BuildToneWindow()
+    {
+        const int sampleRate = 48000;
+        const int channels = 4;
+        const int bytesPerSample = 2;
+        const int samples = sampleRate / 125;
+        const double amplitude = 0.25;
+        const double step = 2.0 * Math.PI * 1000.0 / sampleRate;
+
+        var buf = new byte[samples * channels * bytesPerSample];
+        for (int i = 0; i < samples; i++)
+        {
+            _tonePhase += step;
+            if (_tonePhase >= 2.0 * Math.PI) _tonePhase -= 2.0 * Math.PI;
+            short v = (short)(Math.Sin(_tonePhase) * 32767.0 * amplitude);
+            int o = i * channels * bytesPerSample;
+            buf[o] = (byte)(v & 0xFF);
+            buf[o + 1] = (byte)((v >> 8) & 0xFF);
+            buf[o + 2] = buf[o];
+            buf[o + 3] = buf[o + 1];
+            buf[o + 4] = 0;
+            buf[o + 5] = 0;
+            buf[o + 6] = 0;
+            buf[o + 7] = 0;
+        }
+        return buf;
+    }
+
+    private void DrainAudio()
+    {
+        if (Mode != ControllerMode.Dualsense) return;
+
+        // Synthesize the test tone (1 kHz, speaker L/R, haptics silent)
+        // when the tester armed it. One window per 125 Hz tick keeps the
+        // sample cadence aligned with the drain rate.
+        if (_toneActive)
+        {
+            if (!_audioFormatReady)
+            {
+                _audioSampleRate = 48000;
+                _audioChannels = 4;
+                _audioBitsPerSample = 16;
+                _audioFormatReady = true;
+            }
+            lock (_audioLock)
+            {
+                if (_audioPending.Count < 1024)
+                    _audioPending.Add(BuildToneWindow());
+            }
+        }
+
+        if (!_audioFormatReady) return;
+
+        byte[][] windows;
+        lock (_audioLock)
+        {
+            if (_audioPending.Count == 0) return;
+            windows = _audioPending.ToArray();
+            _audioPending.Clear();
+        }
+
+        int bytesPerFrame = _audioChannels * (_audioBitsPerSample / 8);
+        if (bytesPerFrame <= 0) return;
+
+        int total = _audioTail.Length;
+        foreach (var w in windows) total += w.Length;
+        if (total == 0) return;
+
+        var merged = new byte[total];
+        int off = 0;
+        if (_audioTail.Length > 0)
+        {
+            _audioTail.CopyTo(merged, 0);
+            off = _audioTail.Length;
+        }
+        foreach (var w in windows)
+        {
+            w.CopyTo(merged, off);
+            off += w.Length;
+        }
+        _audioTail = Array.Empty<byte>();
+
+        int completeBytes = (total / bytesPerFrame) * bytesPerFrame;
+        int remainder = total - completeBytes;
+        if (remainder > 0)
+            _audioTail = merged.AsSpan(completeBytes).ToArray();
+
+        if (completeBytes == 0) return;
+
+        // The engine delivers whole URB windows (a 16 ms burst is 6144 B),
+        // so a drain can hold more than one UDP packet's worth. Never drop
+        // bytes — that tears the stream — split into frame-aligned chunks
+        // instead and send them all.
+        const int MaxPacketBytes = 4096;
+        int chunkBytes = (MaxPacketBytes / bytesPerFrame) * bytesPerFrame;
+        for (int sent = 0; sent < completeBytes; sent += chunkBytes)
+        {
+            int n = Math.Min(chunkBytes, completeBytes - sent);
+            var bytes = new byte[n];
+            Buffer.BlockCopy(merged, sent, bytes, 0, n);
+            _ = SendAudioFrameAsync(bytes);
+        }
+        _audioDrainedBytes += completeBytes;
+    }
+
+    private Task SendAudioFrameAsync(byte[] pcm)
+    {
+        try
+        {
+            var frame = new ServerToClient
+            {
+                AudioFrame = new AudioFrame
+                {
+                    SampleRateHz = _audioSampleRate,
+                    Channels = _audioChannels,
+                    BitsPerSample = _audioBitsPerSample,
+                    FrameIndex = _audioFrameIndex++,
+                    SampleCount = (uint)(pcm.Length / (_audioChannels * (_audioBitsPerSample / 8))),
+                    Pcm = Google.Protobuf.ByteString.CopyFrom(pcm),
+                }
+            };
+            return SendAsync(frame);
+        }
+        catch
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private void ClearPendingAudio()
+    {
+        lock (_audioLock)
+        {
+            _audioPending.Clear();
+        }
+        _audioTail = Array.Empty<byte>();
+        _audioFrameIndex = 0;
+        _toneActive = false;
+        _tonePhase = 0;
     }
 
     private void HandleGamepadInput(GamepadInput input)
@@ -457,6 +754,91 @@ public class GamepadSession : IDisposable
         ctrl.SubmitRawReport(buf);
     }
 
+    private void SubmitDualsenseReport(GamepadInput input)
+    {
+        var ctrl = (HMController)Controller!;
+        var buf = new byte[63];
+
+        buf[0] = (byte)((input.LeftStickX + 32768) / 256);
+        buf[1] = (byte)((input.LeftStickY + 32768) / 256);
+        buf[2] = (byte)((input.RightStickX + 32768) / 256);
+        buf[3] = (byte)((input.RightStickY + 32768) / 256);
+
+        var lt = input.LeftTrigger > 0 ? input.LeftTrigger : ((input.Buttons & (1 << 6)) != 0 ? 255u : 0u);
+        var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1 << 7)) != 0 ? 255u : 0u);
+        buf[4] = (byte)Math.Clamp(lt, 0, 255);
+        buf[5] = (byte)Math.Clamp(rt, 0, 255);
+
+        buf[6] = _ds5SequenceCounter++;
+        buf[7] = (byte)(input.Dpad & 0x0F) switch
+        {
+            1 => 0,
+            2 => 4,
+            4 => 6,
+            8 => 2,
+            5 => 7,
+            6 => 5,
+            9 => 1,
+            10 => 3,
+            _ => 8,
+        };
+        if ((input.Buttons & (1 << 2)) != 0) buf[7] |= 1 << 4; // Square
+        if ((input.Buttons & (1 << 0)) != 0) buf[7] |= 1 << 5; // Cross
+        if ((input.Buttons & (1 << 1)) != 0) buf[7] |= 1 << 6; // Circle
+        if ((input.Buttons & (1 << 3)) != 0) buf[7] |= 1 << 7; // Triangle
+
+        if ((input.Buttons & (1 << 4)) != 0) buf[8] |= 1 << 0; // L1
+        if ((input.Buttons & (1 << 5)) != 0) buf[8] |= 1 << 1; // R1
+        if ((input.Buttons & (1 << 6)) != 0) buf[8] |= 1 << 2; // L2
+        if ((input.Buttons & (1 << 7)) != 0) buf[8] |= 1 << 3; // R2
+        if ((input.Buttons & (1 << 8)) != 0) buf[8] |= 1 << 4; // Share
+        if ((input.Buttons & (1 << 9)) != 0) buf[8] |= 1 << 5; // Options
+        if ((input.Buttons & (1 << 10)) != 0) buf[8] |= 1 << 6; // L3
+        if ((input.Buttons & (1 << 11)) != 0) buf[8] |= 1 << 7; // R3
+
+        if ((input.Buttons & (1 << 16)) != 0) buf[9] |= 1 << 0; // PS
+        if ((input.Buttons & (1 << 17)) != 0) buf[9] |= 1 << 1; // Touchpad
+
+        buf[10] = 0x0F;
+
+        WriteInt16LE(buf, 15, (short)SoftLimit(input.GyroX, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
+        WriteInt16LE(buf, 17, (short)SoftLimit(input.GyroY, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
+        WriteInt16LE(buf, 19, (short)SoftLimit(input.GyroZ, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
+
+        WriteInt16LE(buf, 21, (short)SoftLimit(input.AccelX, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
+        WriteInt16LE(buf, 23, (short)SoftLimit(input.AccelY, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
+        WriteInt16LE(buf, 25, (short)SoftLimit(input.AccelZ, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
+
+        buf[27] = (byte)(_ds4Timestamp.ElapsedMilliseconds & 0xFF);
+        buf[28] = (byte)((_ds4Timestamp.ElapsedMilliseconds >> 8) & 0xFF);
+        buf[29] = (byte)((_ds4Timestamp.ElapsedMilliseconds >> 16) & 0xFF);
+        buf[30] = (byte)((_ds4Timestamp.ElapsedMilliseconds >> 24) & 0xFF);
+
+        var t0 = input.Touches.Count > 0 ? input.Touches[0] : null;
+        var t1 = input.Touches.Count > 1 ? input.Touches[1] : null;
+
+        for (int i = 0; i < 2; i++)
+        {
+            var t = i == 0 ? t0 : t1;
+            bool isActive = t?.Active ?? false;
+            if (isActive && !_prevTouchActive[i])
+                _touchIds[i] = _nextTrackingId++;
+            _prevTouchActive[i] = isActive;
+        }
+
+        WriteTouchData(buf, 32,
+            (int)(t0?.X ?? 0), (int)(t0?.Y ?? 0),
+            t0?.Active ?? false, _touchIds[0]);
+        WriteTouchData(buf, 36,
+            (int)(t1?.X ?? 0), (int)(t1?.Y ?? 0),
+            t1?.Active ?? false, _touchIds[1]);
+
+        buf[52] = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
+        if (input.IsCharging) buf[52] |= 0x10;
+
+        ctrl.SubmitRawReport(buf.AsSpan());
+    }
+
     private static void WriteInt16LE(byte[] buf, int offset, short value)
     {
         buf[offset] = (byte)value;
@@ -506,10 +888,26 @@ public class GamepadSession : IDisposable
         var sw = new System.Diagnostics.Stopwatch();
         sw.Start();
         long nextTick = intervalTicks;
+        long lastStatTicks = 0;
 
         while (!ct.IsCancellationRequested)
         {
             if (_disposed) return;
+
+            DrainAudio();
+
+            // Periodic audio-flow diagnostics (~every 500 ms). Received = PCM
+            // the UAC endpoint delivered; drained = PCM forwarded to the phone.
+            if (sw.Elapsed.Ticks - lastStatTicks > TimeSpan.TicksPerMillisecond * 500)
+            {
+                lastStatTicks = sw.Elapsed.Ticks;
+                System.Diagnostics.Debug.WriteLine(
+                    $"[DualSenseAudio] windows={_audioWindowsSeen} lastWindow={_lastAudioWindowBytes}B " +
+                    $"received={_audioReceivedBytes}B drained={_audioDrainedBytes}B tone={_toneActive}");
+                _audioReceivedBytes = 0;
+                _audioDrainedBytes = 0;
+                _audioWindowsSeen = 0;
+            }
 
             GamepadInput? input;
             lock (_inputLock)
@@ -527,6 +925,8 @@ public class GamepadSession : IDisposable
                         SubmitDs4Report(report);
                     else if (Mode == ControllerMode.SwitchPro)
                         SubmitSwitchProReport(report);
+                    else if (Mode == ControllerMode.Dualsense)
+                        SubmitDualsenseReport(report);
                     else
                         SubmitXbox360Report(report);
                 }
@@ -589,17 +989,21 @@ public class GamepadSession : IDisposable
             _lastLargeMotor = 0;
             _lastSmallMotor = 0;
             _lastReportedInput = null;
+            ClearPendingAudio();
 
             var oldCtrl = Controller;
             var oldMode = Mode;
 
-            if (oldCtrl != null && oldMode == ControllerMode.SwitchPro)
+            bool oldIsHm = oldMode is ControllerMode.SwitchPro or ControllerMode.Dualsense;
+            bool newIsHm = mode is ControllerMode.SwitchPro or ControllerMode.Dualsense;
+
+            if (oldCtrl != null && oldIsHm)
             {
-                // SwitchPro teardown is slow (~5s). Create new first, destroy old in background.
+                // HIDMaestro teardown is slow (~5s). Create new first, destroy old in background.
                 Controller = null;
-                if (mode == ControllerMode.SwitchPro)
+                if (newIsHm)
                 {
-                    // SwitchPro → SwitchPro: recreate via background
+                    // HIDMaestro → HIDMaestro: recreate via background
                     var newCtrl = await Task.Run(() =>
                     {
                         CreateController(mode);
@@ -609,7 +1013,7 @@ public class GamepadSession : IDisposable
                 }
                 else
                 {
-                    // SwitchPro → DS4/Xbox: ViGEm is fast, create inline
+                    // HIDMaestro → DS4/Xbox: ViGEm is fast, create inline
                     CreateController(mode);
                 }
                 Mode = mode;
@@ -630,9 +1034,9 @@ public class GamepadSession : IDisposable
                 if (oldCtrl != null)
                     DestroyController(oldCtrl);
 
-                if (mode == ControllerMode.SwitchPro)
+                if (newIsHm)
                 {
-                    // ViGEm → SwitchPro: HIDMaestro creation is slow
+                    // ViGEm → HIDMaestro: HIDMaestro creation is slow
                     await Task.Run(() => CreateController(mode));
                 }
                 else
@@ -662,6 +1066,7 @@ public class GamepadSession : IDisposable
         if (_disposed) return;
         _disposed = true;
         _cts.Cancel();
+        ClearPendingAudio();
 
         if (Controller is HMController hmCtrl)
         {
