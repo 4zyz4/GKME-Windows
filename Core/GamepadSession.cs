@@ -693,6 +693,12 @@ public class GamepadSession : IDisposable
     [DllImport("setupapi.dll", SetLastError = true)]
     private static extern uint CM_Uninstall_DevNode(IntPtr dnDevInst, uint ulFlags);
 
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern uint CM_Get_Child(ref IntPtr pdnDevInst, IntPtr dnDevInst, uint ulFlags);
+
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern uint CM_Get_Sibling(ref IntPtr pdnDevInst, IntPtr dnDevInst, uint ulFlags);
+
     private static readonly object _preRemoveLock = new();
     private static FieldInfo? _instanceIdField;
 
@@ -706,12 +712,39 @@ public class GamepadSession : IDisposable
 
             IntPtr devnode = IntPtr.Zero;
             var status = CM_Locate_DevNodeW(ref devnode, instanceId, 0);
-            if (status != CR_SUCCESS || devnode == IntPtr.Zero) return;
+            if (status != CR_SUCCESS || devnode == IntPtr.Zero)
+            {
+                // Already uninstalled; pick up the phantom node so HIDMaestro's
+                // non-fast teardown sweep doesn't wait on stale registry residue.
+                status = CM_Locate_DevNodeW(ref devnode, instanceId, 1);
+                if (status != CR_SUCCESS || devnode == IntPtr.Zero) return;
+            }
 
-            CM_Disable_DevNode(devnode, DN_DISABLE_ASYNC);
-            CM_Uninstall_DevNode(devnode, 0);
+            // Fast-remove the whole subtree (HID children first, then the root) —
+            // the same disable+uninstall HIDMaestro's internal fast path performs,
+            // so the later non-fast removal sweeps find nothing left to wait on.
+            var nodes = new List<IntPtr>();
+            CollectDescendants(devnode, nodes);
+            nodes.Add(devnode);
+            foreach (var node in nodes)
+            {
+                CM_Disable_DevNode(node, DN_DISABLE_ASYNC);
+                CM_Uninstall_DevNode(node, 0);
+            }
         }
         catch { }
+    }
+
+    private static void CollectDescendants(IntPtr parent, List<IntPtr> nodes)
+    {
+        IntPtr child = IntPtr.Zero;
+        if (CM_Get_Child(ref child, parent, 0) != CR_SUCCESS) return;
+        do
+        {
+            CollectDescendants(child, nodes);
+            nodes.Add(child);
+        }
+        while (CM_Get_Sibling(ref child, child, 0) == CR_SUCCESS);
     }
 
     private static void EnsureReflectionCache(HMController ctrl)

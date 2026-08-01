@@ -27,7 +27,10 @@ public class NetworkService : IDisposable
 
     static NetworkService()
     {
-        Environment.SetEnvironmentVariable("HIDMAESTRO_TIMEOUT_SCALE", "0.01");
+        // HIDMaestro's TimeoutScale only honors [0.1, 100.0]; anything below the
+        // floor is silently ignored (Factor falls back to 1.0). 0.1 is the floor
+        // and shrinks every internal device-removal wait budget by 10x.
+        Environment.SetEnvironmentVariable("HIDMAESTRO_TIMEOUT_SCALE", "0.1");
     }
 
     public static bool IsVigemBusInstalled()
@@ -49,8 +52,10 @@ public class NetworkService : IDisposable
 
             PatchTimeoutScale(_hmContext);
 
-            if (!_hmContext.IsDriverInstalled)
-                _hmContext.InstallDriver();
+            // Always ensure the SDK's embedded driver version is deployed.
+            // InstallDriver() has a same-version fast path (~40-60 ms) and only
+            // runs the full pipeline when the installed driver actually differs.
+            _hmContext.InstallDriver();
 
             return true;
         }
