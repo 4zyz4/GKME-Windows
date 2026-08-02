@@ -425,7 +425,7 @@ public class GamepadSession : IDisposable
             var t = i == 0 ? t0 : t1;
             bool isActive = t?.Active ?? false;
             if (isActive && !_prevTouchActive[i])
-                _touchIds[i] = _nextTrackingId++;
+                _touchIds[i] = (byte)(_nextTrackingId++ & 0x7F);
             _prevTouchActive[i] = isActive;
         }
 
