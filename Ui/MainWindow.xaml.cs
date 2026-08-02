@@ -44,16 +44,21 @@ public partial class MainWindow : Window
     {
         if (e.AddedItems.Count == 0 || e.AddedItems[0] is not ControllerMode mode) return;
         var card = (sender as FrameworkElement)?.DataContext as DeviceCardViewModel;
-        if (card != null)
-            await _vm.SetModeAsync(card, mode);
+        if (card == null || card.IsRestoringMode) return;
+        await _vm.SetModeAsync(card, mode);
     }
 
     protected override void OnClosed(EventArgs e)
     {
         base.OnClosed(e);
+        _ = CleanupAndShutdownAsync();
+    }
+
+    private async Task CleanupAndShutdownAsync()
+    {
         try
         {
-            _vm.Shutdown();
+            await _vm.ShutdownAsync();
         }
         catch { }
         Application.Current.Shutdown();

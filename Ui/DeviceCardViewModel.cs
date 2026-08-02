@@ -11,6 +11,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
     private bool _isConnected;
     private bool _isReconnecting;
     private bool _isConnecting;
+    private bool _isRestoringMode;
     private ControllerMode _mode = ControllerMode.Ds4;
 
     public string IpAddress => _device.IpString;
@@ -78,6 +79,18 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         }
     }
 
+    // True while Mode is being set programmatically (session restore/reset).
+    // Lets the UI skip persisting these changes, so a saved mode isn't
+    // overwritten by the default value.
+    internal bool IsRestoringMode => _isRestoringMode;
+
+    internal void SetModeRestored(ControllerMode mode)
+    {
+        _isRestoringMode = true;
+        try { Mode = mode; }
+        finally { _isRestoringMode = false; }
+    }
+
     internal DiscoveredDevice Device => _device;
 
     public static List<ControllerMode> AllModes { get; } = new()
@@ -85,7 +98,6 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.Ds4,
         ControllerMode.Xbox360,
         ControllerMode.SwitchPro,
-        ControllerMode.Dualsense,
     };
 
     public static string DisplayName(ControllerMode mode) => mode switch
@@ -93,7 +105,6 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.Ds4 => "DualShock 4",
         ControllerMode.Xbox360 => "Xbox 360",
         ControllerMode.SwitchPro => "Switch Pro",
-        ControllerMode.Dualsense => "DualSense",
         _ => "?",
     };
 

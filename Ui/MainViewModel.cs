@@ -11,6 +11,7 @@ namespace GamepadEmuHost.Ui;
 public class MainViewModel : INotifyPropertyChanged
 {
     private readonly NetworkService? _network;
+    private readonly DeviceModeStore _modeStore;
     private string _statusText = "就绪";
     private bool _driverOk;
     private string _manualIp = "";
@@ -37,6 +38,7 @@ public class MainViewModel : INotifyPropertyChanged
     public MainViewModel(NetworkService? network)
     {
         _network = network;
+        _modeStore = new DeviceModeStore();
         if (_network == null)
         {
             _driverOk = false;
@@ -112,10 +114,11 @@ public class MainViewModel : INotifyPropertyChanged
     public async Task SetModeAsync(DeviceCardViewModel card, ControllerMode mode)
     {
         var ip = card.IpAddress;
+        card.Mode = mode;
+        _modeStore.Set(card.Device.ModeKey, mode);
         if (_sessionMap.TryGetValue(ip, out var session))
         {
             await session.SetControllerModeAsync(mode);
-            card.Mode = mode;
         }
     }
 
@@ -134,14 +137,14 @@ public class MainViewModel : INotifyPropertyChanged
         {
             Sessions.Add(session);
             _sessionMap[session.Device.IpString] = session;
-            DeviceCards.Add(new DeviceCardViewModel(session.Device));
+            DeviceCards.Add(CreateCard(session.Device));
         }
 
         foreach (var device in _network.DiscoveredDevices)
         {
             if (!_sessionMap.ContainsKey(device.IpString))
             {
-                DeviceCards.Add(new DeviceCardViewModel(device));
+                DeviceCards.Add(CreateCard(device));
             }
         }
 
@@ -184,7 +187,7 @@ public class MainViewModel : INotifyPropertyChanged
         }
         else
         {
-            card = new DeviceCardViewModel(device);
+            card = CreateCard(device);
             DeviceCards.Add(card);
         }
 
@@ -205,6 +208,15 @@ public class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    private DeviceCardViewModel CreateCard(DiscoveredDevice device)
+    {
+        var card = new DeviceCardViewModel(device);
+        var saved = _modeStore.Get(device.ModeKey);
+        if (saved != null)
+            card.Mode = saved.Value;
+        return card;
+    }
+
     private void OnDeviceDiscovered(DiscoveredDevice device)
     {
         UiInvoke(() =>
@@ -212,7 +224,7 @@ public class MainViewModel : INotifyPropertyChanged
             var ip = device.IpString;
             if (!DeviceCards.Any(c => c.IpAddress == ip))
             {
-                DeviceCards.Add(new DeviceCardViewModel(device));
+                DeviceCards.Add(CreateCard(device));
                 StatusText = $"发现设备: {device.IpString}";
             }
         });
@@ -236,9 +248,28 @@ public class MainViewModel : INotifyPropertyChanged
                 card.IsConnected = true;
                 card.IsConnecting = false;
                 card.IsReconnecting = false;
-                card.Mode = session.Mode;
+                var saved = _modeStore.Get(session.Device.ModeKey);
+                if (saved != null && saved.Value != session.Mode)
+                {
+                    card.SetModeRestored(saved.Value);
+                    _ = ApplySavedModeAsync(session, card, saved.Value);
+                }
+                else
+                {
+                    card.SetModeRestored(session.Mode);
+                }
             }
         });
+    }
+
+    private async Task ApplySavedModeAsync(GamepadSession session, DeviceCardViewModel card, ControllerMode mode)
+    {
+        try
+        {
+            await session.SetControllerModeAsync(mode);
+            UiInvoke(() => card.SetModeRestored(session.Mode));
+        }
+        catch { }
     }
 
     private void OnSessionEnded(GamepadSession session)
@@ -256,7 +287,7 @@ public class MainViewModel : INotifyPropertyChanged
                 card.IsConnected = false;
                 card.IsConnecting = false;
                 card.IsReconnecting = false;
-                card.Mode = ControllerMode.Ds4;
+                card.SetModeRestored(ControllerMode.Ds4);
             }
             StatusText = $"已断开: {ip}";
         });
@@ -284,7 +315,7 @@ public class MainViewModel : INotifyPropertyChanged
             Application.Current?.Dispatcher.Invoke(action);
     }
 
-    public void Shutdown()
+    public async Task ShutdownAsync()
     {
         if (_network == null) return;
         _network.OnDeviceDiscovered -= OnDeviceDiscovered;
@@ -292,7 +323,7 @@ public class MainViewModel : INotifyPropertyChanged
         _network.OnSessionEnded -= OnSessionEnded;
         _network.OnSessionConnectionLost -= OnSessionConnectionLost;
         _network.StopDiscovery();
-        _network.DisconnectAllAsync().GetAwaiter().GetResult();
+        await _network.DisconnectAllAsync();
         _initialConnecting.Clear();
     }
 

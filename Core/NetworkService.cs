@@ -49,8 +49,8 @@ public class NetworkService : IDisposable
             // External profile override: profiles/ next to the app wins over
             // the embedded catalog for the same profile ID (external loads
             // register first, and LoadDefaultProfiles skips existing IDs).
-            // Lets us fix a profile's USB strings (e.g. DualSense iProduct)
-            // without rebuilding HIDMaestro.Core.
+            // Lets us fix a profile's USB strings without rebuilding
+            // HIDMaestro.Core.
             var overrideDir = Path.Combine(AppContext.BaseDirectory, "profiles");
             if (Directory.Exists(overrideDir))
             {
@@ -315,13 +315,13 @@ public class NetworkService : IDisposable
         session.Disconnect();
     }
 
-    public async Task DisconnectAllAsync()
+    public async Task DisconnectAllAsync(int timeoutMs = 5000)
     {
         var tasks = new List<Task>();
         foreach (var session in _sessions.Values)
         {
             session.Disconnect();
-            tasks.Add(session.WaitForCleanupAsync());
+            tasks.Add(session.WaitForCleanupAsync(timeoutMs));
         }
         _sessions.Clear();
         await Task.WhenAll(tasks);
@@ -349,8 +349,20 @@ public class NetworkService : IDisposable
         if (_disposed) return;
         _disposed = true;
         StopDiscovery();
-        DisconnectAllAsync().GetAwaiter().GetResult();
-        _viGEm.Dispose();
-        _hmContext.Dispose();
+        try { DisconnectAllAsync(3000).GetAwaiter().GetResult(); } catch { }
+        try { RunWithTimeout(() => _viGEm.Dispose(), 3000); } catch { }
+        try { RunWithTimeout(() => _hmContext.Dispose(), 5000); } catch { }
+    }
+
+    // Runs a synchronous call on a background thread and gives up after the
+    // timeout, so a hanging native/library Dispose can't block app exit.
+    private static void RunWithTimeout(Action action, int timeoutMs)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(timeoutMs);
+            Task.Run(action).Wait(cts.Token);
+        }
+        catch { }
     }
 }

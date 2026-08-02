@@ -11,4 +11,10 @@ public class DiscoveredDevice
     public DateTime LastSeen { get; set; } = DateTime.UtcNow;
 
     public string Key => $"{IpAddress}:{Port}";
+
+    // Persisted-mode key: real device name for discovered devices, IP for
+    // manual connections that have no name.
+    public string ModeKey => string.IsNullOrWhiteSpace(DeviceName) || DeviceName == IpString
+        ? IpString
+        : DeviceName;
 }
