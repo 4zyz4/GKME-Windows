@@ -4,16 +4,32 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using WinApplication = System.Windows.Application;
+using WinFormsApplication = System.Windows.Forms.Application;
+using WinFormsNotifyIcon = System.Windows.Forms.NotifyIcon;
+using WinFormsContextMenuStrip = System.Windows.Forms.ContextMenuStrip;
+using WinFormsToolStripMenuItem = System.Windows.Forms.ToolStripMenuItem;
+using WinFormsMouseEventArgs = System.Windows.Forms.MouseEventArgs;
+using WinFormsMouseButtons = System.Windows.Forms.MouseButtons;
+using WinFormsIcon = System.Drawing.Icon;
 using GamepadEmuHost.Core;
 using GamepadEmuHost.Ui;
 
 namespace GamepadEmuHost;
 
-public partial class App : Application
+public partial class App : WinApplication
 {
     private const string VigemInstallerName = "ViGEmBus_1.22.0_x64_x86_arm64.exe";
 
     public NetworkService? Service { get; private set; }
+
+    private WinFormsNotifyIcon? _notifyIcon;
+    private Window? _mainWindow;
+
+    public void SetMainWindow(Window window)
+    {
+        _mainWindow = window;
+    }
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -45,7 +61,54 @@ public partial class App : Application
 
         var vm = new MainViewModel(Service);
         var window = new MainWindow(vm);
+        _mainWindow = window;
         window.Show();
+
+        var appDir = AppDomain.CurrentDomain.BaseDirectory;
+        var iconPath = Path.Combine(appDir, "icon.ico");
+        var resolvedIcon = iconPath != null && System.IO.File.Exists(iconPath)
+            ? new WinFormsIcon(iconPath)
+            : WinFormsIcon.ExtractAssociatedIcon(Path.Combine(appDir, "GamepadEmuHost.exe"));
+
+        _notifyIcon = new WinFormsNotifyIcon
+        {
+            Icon = resolvedIcon ?? WinFormsIcon.ExtractAssociatedIcon(Environment.SystemDirectory + @"\shell32.dll"),
+            Text = "Gamepad Emu Host",
+            Visible = true
+        };
+
+        var menu = new WinFormsContextMenuStrip();
+        var showItem = new WinFormsToolStripMenuItem("显示窗口");
+        var exitItem = new WinFormsToolStripMenuItem("退出");
+        exitItem.Click += async (_, _) =>
+        {
+            var mainWindow = _mainWindow as MainWindow;
+            if (mainWindow != null)
+                await mainWindow.SafeCloseAsync();
+            else
+                WinApplication.Current.Shutdown();
+        };
+        showItem.Click += (_, _) =>
+        {
+            if (_mainWindow != null)
+            {
+                _mainWindow.Show();
+                _mainWindow.WindowState = WindowState.Normal;
+                _mainWindow.Activate();
+            }
+        };
+        menu.Items.Add(showItem);
+        menu.Items.Add(exitItem);
+        _notifyIcon.ContextMenuStrip = menu;
+        _notifyIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == WinFormsMouseButtons.Left)
+            {
+                window.Show();
+                window.WindowState = WindowState.Normal;
+                window.Activate();
+            }
+        };
     }
 
     private static bool PromptInstallVigemBus()
@@ -113,7 +176,7 @@ public partial class App : Application
             installBtn.Click += (_, _) =>
             {
                 window.Hide();
-                var ui = Application.Current.Dispatcher;
+                var ui = WinApplication.Current.Dispatcher;
 
                 new Thread(() =>
                 {
@@ -164,7 +227,12 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        try { Service?.Dispose(); }
+        try
+        {
+            _notifyIcon?.Visible = false;
+            _notifyIcon?.Dispose();
+            Service?.Dispose();
+        }
         catch { }
         base.OnExit(e);
     }

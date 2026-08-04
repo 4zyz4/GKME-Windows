@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using GamepadEmuHost.Core;
@@ -13,7 +14,40 @@ public partial class MainWindow : Window
         DataContext = vm;
         _vm = vm;
         InitializeComponent();
+        this.Closing += OnClosing;
+        this.StateChanged += OnStateChanged;
         Loaded += async (_, _) => await _vm.InitializeAsync();
+    }
+
+    private void OnStateChanged(object? sender, EventArgs e)
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            Hide();
+            if (Application.Current is App app)
+                app.SetMainWindow(this);
+        }
+    }
+
+    private void OnClosing(object? sender, CancelEventArgs e)
+    {
+        e.Cancel = true;
+        Hide();
+    }
+
+    public async Task SafeCloseAsync()
+    {
+        try
+        {
+            await _vm.ShutdownAsync();
+        }
+        catch { }
+        Application.Current.Shutdown();
+        try
+        {
+            Closing -= OnClosing;
+        }
+        catch { }
     }
 
     private async void OnManualConnectClick(object sender, RoutedEventArgs e)
@@ -46,21 +80,5 @@ public partial class MainWindow : Window
         var card = (sender as FrameworkElement)?.DataContext as DeviceCardViewModel;
         if (card == null || card.IsRestoringMode) return;
         await _vm.SetModeAsync(card, mode);
-    }
-
-    protected override void OnClosed(EventArgs e)
-    {
-        base.OnClosed(e);
-        _ = CleanupAndShutdownAsync();
-    }
-
-    private async Task CleanupAndShutdownAsync()
-    {
-        try
-        {
-            await _vm.ShutdownAsync();
-        }
-        catch { }
-        Application.Current.Shutdown();
     }
 }
