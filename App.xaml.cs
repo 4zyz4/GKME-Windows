@@ -182,7 +182,14 @@ public partial class App : WinApplication
                 {
                     try
                     {
-                        Process.Start(installerPath)?.WaitForExit();
+                        var startInfo = new ProcessStartInfo
+                        {
+                            FileName = installerPath,
+                            UseShellExecute = true,
+                            Verb = "runas"
+                        };
+                        using var proc = Process.Start(startInfo);
+                        proc?.WaitForExit();
                     }
                     catch (Exception ex)
                     {

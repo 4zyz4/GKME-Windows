@@ -45,6 +45,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Protobuf Include="proto\gamepad_state.proto">
       <ProtoRoot>proto</ProtoRoot>
     </Protobuf>
