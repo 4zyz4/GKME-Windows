@@ -2,7 +2,7 @@
 ; Requires InnoSetup 6+  https://jrsoftware.org/isdl.php
 
 #define MyAppName "GamepadEmuHost"
-#define MyAppVersion "2.1.0"
+#define MyAppVersion "2.3.0"
 #define MyAppPublisher "4zyz4"
 #define MyAppURL ""
 #define MyAppExeName "GamepadEmuHost.exe"
@@ -51,7 +51,7 @@ Name: "{group}\Uninstall GamepadEmuHost"; Filename: "{uninstallexe}"
 const
   VIGEM_DRIVER_PATH = 'C:\Windows\System32\drivers\ViGEmBus.sys';
   MyAppName = 'GamepadEmuHost';
-  MyAppVersion = '2.1.0';
+  MyAppVersion = '2.3.0';
 
 var
   InfoPage: TWizardPage;
