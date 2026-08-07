@@ -352,36 +352,22 @@ public class GamepadSession : IDisposable
         try
         {
             int channels = output.Channels;
-            if (channels < 2 || pcm.IsEmpty) return;
+            if (channels < 4 || pcm.IsEmpty) return;
 
             var span = pcm.Span;
-            int bytesPerFrame = channels * 2;
-            int frameCount = span.Length / bytesPerFrame;
-            if (frameCount == 0) return;
-
-            // Note: the voice-coil haptic lanes (3/4) are deliberately NOT
-            // folded into _lastLargeMotor/_lastSmallMotor. DualSense games
-            // drive haptics through this audio stream, not through a
-            // legacy-rumble interface, so folding their (irregular)
-            // waveform peaks into the rumble lanes made the phone buzz
-            // chaotically. The phone routes the haptic lanes per the
-            // user's audio-output settings instead.
-
-            // Queue the raw interleaved window for forwarding to the phone.
+            // Real-time: send the full 4-channel packet directly without
+            // any downmix or re-ordering. The phone will pick lanes it needs.
             if (!_audioFormatReady)
             {
                 _audioSampleRate = (uint)output.SampleRateHz;
-                _audioChannels = (byte)output.Channels;
+                _audioChannels = (byte)channels;
                 _audioBitsPerSample = (byte)output.BitsPerSample;
                 _audioFormatReady = true;
                 System.Diagnostics.Debug.WriteLine(
-                    $"[DualSenseAudio] stream opened: {output.SampleRateHz}Hz {output.Channels}ch {output.BitsPerSample}bit");
+                    $"[DualSenseAudio] stream opened: {output.SampleRateHz}Hz {channels}ch {output.BitsPerSample}bit");
             }
-            lock (_audioLock)
-            {
-                if (_audioPending.Count < 1024)
-                    _audioPending.Add(span.ToArray());
-            }
+
+            DrainSingleChunk(span.ToArray());
             _audioReceivedBytes += span.Length;
             _audioWindowsSeen++;
             _lastAudioWindowBytes = span.Length;
@@ -390,9 +376,8 @@ public class GamepadSession : IDisposable
     }
 
     /// <summary>One drain window of a synthesized 1 kHz sine wave,
-    /// 16-bit LE interleaved on the speaker lanes (channels 1/2) with the
-    /// haptic lanes (3/4) silent — the same 4-channel layout a host renders
-    /// to the UAC endpoint. 48000 / 125 = 384 samples per tick.</summary>
+    /// 16-bit LE interleaved on 4 channels (ch0=silent, ch1=ch2=speaker, ch3=haptic silent).
+    /// 48000 / 125 = 384 samples per tick.</summary>
     private byte[] BuildToneWindow()
     {
         const int sampleRate = 48000;
@@ -409,16 +394,44 @@ public class GamepadSession : IDisposable
             if (_tonePhase >= 2.0 * Math.PI) _tonePhase -= 2.0 * Math.PI;
             short v = (short)(Math.Sin(_tonePhase) * 32767.0 * amplitude);
             int o = i * channels * bytesPerSample;
-            buf[o] = (byte)(v & 0xFF);
-            buf[o + 1] = (byte)((v >> 8) & 0xFF);
-            buf[o + 2] = buf[o];
-            buf[o + 3] = buf[o + 1];
-            buf[o + 4] = 0;
-            buf[o + 5] = 0;
+            buf[o] = 0; buf[o + 1] = 0;
+            buf[o + 2] = (byte)(v & 0xFF);
+            buf[o + 3] = (byte)((v >> 8) & 0xFF);
+            buf[o + 4] = (byte)(v & 0xFF);
+            buf[o + 5] = (byte)((v >> 8) & 0xFF);
             buf[o + 6] = 0;
             buf[o + 7] = 0;
         }
         return buf;
+    }
+
+    /// <summary>Split an already-collected PCM buffer into frame-aligned
+    /// UDP chunks and send them. Called both by the old drain loop and
+    /// the new real-time path.</summary>
+    private void DrainSingleChunk(byte[] pcm)
+    {
+        if (!_audioFormatReady) return;
+
+        int bytesPerFrame = _audioChannels * (_audioBitsPerSample / 8);
+        if (bytesPerFrame <= 0) return;
+
+        int completeBytes = (pcm.Length / bytesPerFrame) * bytesPerFrame;
+        if (completeBytes == 0) return;
+
+        const int MaxPacketBytes = 4096;
+        int chunkBytes = (MaxPacketBytes / bytesPerFrame) * bytesPerFrame;
+
+        // Update tail so the caller's real-time path can keep partial frames.
+        // Here we just handle complete frames.
+
+        for (int sent = 0; sent < completeBytes; sent += chunkBytes)
+        {
+            int n = Math.Min(chunkBytes, completeBytes - sent);
+            var bytes = new byte[n];
+            Buffer.BlockCopy(pcm, sent, bytes, 0, n);
+            _ = SendAudioFrameAsync(bytes);
+        }
+        _audioDrainedBytes += completeBytes;
     }
 
     private void DrainAudio()
@@ -473,29 +486,18 @@ public class GamepadSession : IDisposable
             w.CopyTo(merged, off);
             off += w.Length;
         }
-        _audioTail = Array.Empty<byte>();
 
         int completeBytes = (total / bytesPerFrame) * bytesPerFrame;
         int remainder = total - completeBytes;
         if (remainder > 0)
             _audioTail = merged.AsSpan(completeBytes).ToArray();
+        else
+            _audioTail = Array.Empty<byte>();
 
         if (completeBytes == 0) return;
 
-        // The engine delivers whole URB windows (a 16 ms burst is 6144 B),
-        // so a drain can hold more than one UDP packet's worth. Never drop
-        // bytes — that tears the stream — split into frame-aligned chunks
-        // instead and send them all.
-        const int MaxPacketBytes = 4096;
-        int chunkBytes = (MaxPacketBytes / bytesPerFrame) * bytesPerFrame;
-        for (int sent = 0; sent < completeBytes; sent += chunkBytes)
-        {
-            int n = Math.Min(chunkBytes, completeBytes - sent);
-            var bytes = new byte[n];
-            Buffer.BlockCopy(merged, sent, bytes, 0, n);
-            _ = SendAudioFrameAsync(bytes);
-        }
-        _audioDrainedBytes += completeBytes;
+        // Forward to DrainSingleChunk which splits into UDP chunks.
+        DrainSingleChunk(merged.AsSpan(0, completeBytes).ToArray());
     }
 
     private Task SendAudioFrameAsync(byte[] pcm)
