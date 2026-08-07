@@ -33,6 +33,7 @@ public class GamepadSession : IDisposable
     private readonly Func<IMessage, Task> _sendToPhone;
     private readonly ViGEmClient _viGEm;
     private readonly HMContext _hmContext;
+    private readonly bool _hidMaestroAvailable;
     private CancellationTokenSource _cts = new();
     private Task _reportTask = Task.CompletedTask;
     private volatile bool _disposed;
@@ -97,12 +98,13 @@ public class GamepadSession : IDisposable
     public event Action<GamepadSession>? OnConnectionLost;
     public event Action<GamepadSession>? OnDisconnected;
 
-    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, ViGEmClient viGEm, HMContext hmContext)
+    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, ViGEmClient viGEm, HMContext hmContext, bool hidMaestroAvailable = true)
     {
         Device = device;
         _sendToPhone = sendToPhone;
         _viGEm = viGEm;
         _hmContext = hmContext;
+        _hidMaestroAvailable = hidMaestroAvailable;
     }
 
     public void Start()
@@ -329,6 +331,11 @@ public class GamepadSession : IDisposable
         else
         {
             _toneActive = false;
+            lock (_audioLock)
+            {
+                _audioPending.Clear();
+            }
+            _audioTail = Array.Empty<byte>();
         }
     }
 
@@ -728,9 +735,9 @@ public class GamepadSession : IDisposable
             _prevTouchActive[i] = isActive;
         }
 
-        byte currentCounter = (byte)(_ds4TouchCounter & 0x7F);
+        byte ds4CurrentCounter = (byte)(_ds4TouchCounter & 0x7F);
         buf[32] = 1;
-        buf[33] = currentCounter;
+        buf[33] = ds4CurrentCounter;
         WriteTouchData(buf, 34,
             (int)(t0?.X ?? 0), (int)(t0?.Y ?? 0),
             t0?.Active ?? false, _touchIds[0]);
@@ -750,7 +757,7 @@ public class GamepadSession : IDisposable
         byte tid5 = (byte)((_nextTrackingId + 5) & 0x7F);
         WriteTouchData(buf, 56, 0, 0, false, tid5);
 
-        _previousTouchCounter = currentCounter;
+        _previousTouchCounter = ds4CurrentCounter;
         _ds4TouchCounter++;
 
         ctrl.SubmitRawReport(buf);
@@ -828,12 +835,19 @@ public class GamepadSession : IDisposable
             _prevTouchActive[i] = isActive;
         }
 
+        byte ds5CurrentCounter = (byte)(_ds4TouchCounter & 0x7F);
+        byte ds5PreviousCounter = (byte)(_previousTouchCounter & 0x7F);
         WriteTouchData(buf, 32,
             (int)(t0?.X ?? 0), (int)(t0?.Y ?? 0),
-            t0?.Active ?? false, _touchIds[0]);
+            t0?.Active ?? false, (byte)(_touchIds[0] & 0x7F));
         WriteTouchData(buf, 36,
             (int)(t1?.X ?? 0), (int)(t1?.Y ?? 0),
-            t1?.Active ?? false, _touchIds[1]);
+            t1?.Active ?? false, (byte)(_touchIds[1] & 0x7F));
+        buf[40] = ds5CurrentCounter;
+        buf[41] = ds5PreviousCounter;
+
+        _previousTouchCounter = ds5CurrentCounter;
+        _ds4TouchCounter++;
 
         buf[52] = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
         if (input.IsCharging) buf[52] |= 0x10;
@@ -982,9 +996,16 @@ public class GamepadSession : IDisposable
         }
     }
 
-    public async Task SetControllerModeAsync(ControllerMode mode)
+    public async Task<ControllerMode> SetControllerModeAsync(ControllerMode mode)
     {
-        if (_disposed || _switchingMode) return;
+        if (_disposed || _switchingMode) return Mode;
+
+        bool wantsHm = mode is ControllerMode.SwitchPro or ControllerMode.Dualsense;
+        if (wantsHm && !_hidMaestroAvailable)
+        {
+            mode = ControllerMode.Ds4;
+        }
+
         _switchingMode = true;
         try
         {
@@ -1056,6 +1077,8 @@ public class GamepadSession : IDisposable
                 _readyFired = true;
                 OnReady?.Invoke(this);
             }
+
+            return Mode;
         }
         finally
         {

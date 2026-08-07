@@ -47,11 +47,7 @@ public partial class App : WinApplication
         try
         {
             Service = new NetworkService();
-            if (!Service.InitializeHidMaestro())
-            {
-                Service.Dispose();
-                Service = null;
-            }
+            Service.InitializeHidMaestro();
         }
         catch
         {

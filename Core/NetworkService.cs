@@ -25,6 +25,8 @@ public class NetworkService : IDisposable
     private readonly ViGEmClient _viGEm = new();
     private readonly HMContext _hmContext = new();
 
+    public bool HidMaestroAvailable { get; private set; }
+
     static NetworkService()
     {
         // HIDMaestro's TimeoutScale only honors [0.1, 100.0]; anything below the
@@ -69,10 +71,12 @@ public class NetworkService : IDisposable
             // runs the full pipeline when the installed driver actually differs.
             _hmContext.InstallDriver();
 
+            HidMaestroAvailable = true;
             return true;
         }
         catch
         {
+            HidMaestroAvailable = false;
             return false;
         }
     }
@@ -262,7 +266,7 @@ public class NetworkService : IDisposable
             };
             await SendToPhoneAsync(phoneEp, TypeServerToClient, hello);
 
-            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _viGEm, _hmContext);
+            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _viGEm, _hmContext, HidMaestroAvailable);
             session.OnReady += s =>
             {
                 OnSessionStarted?.Invoke(s);

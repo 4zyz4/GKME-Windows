@@ -47,6 +47,10 @@ public class MainViewModel : INotifyPropertyChanged
         }
 
         _driverOk = true;
+        if (_network != null && !_network.HidMaestroAvailable)
+        {
+            StatusText = "HIDMaestro 驱动不可用，仅支持 DS4 和 Xbox360 模式";
+        }
         _network.OnDeviceDiscovered += OnDeviceDiscovered;
         _network.OnSessionStarted += OnSessionStarted;
         _network.OnSessionEnded += OnSessionEnded;
@@ -114,11 +118,21 @@ public class MainViewModel : INotifyPropertyChanged
     public async Task SetModeAsync(DeviceCardViewModel card, ControllerMode mode)
     {
         var ip = card.IpAddress;
-        card.Mode = mode;
-        _modeStore.Set(card.Device.ModeKey, mode);
+
         if (_sessionMap.TryGetValue(ip, out var session))
         {
-            await session.SetControllerModeAsync(mode);
+            ControllerMode actualMode = await session.SetControllerModeAsync(mode);
+            card.Mode = actualMode;
+            _modeStore.Set(card.Device.ModeKey, actualMode);
+            if (actualMode != mode)
+            {
+                StatusText = "HIDMaestro 驱动不可用，已回退到 DS4 模式";
+            }
+        }
+        else
+        {
+            card.Mode = mode;
+            _modeStore.Set(card.Device.ModeKey, mode);
         }
     }
 
