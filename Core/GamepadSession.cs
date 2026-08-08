@@ -35,7 +35,6 @@ public class GamepadSession : IDisposable
     private readonly HMContext _hmContext;
     private readonly bool _hidMaestroAvailable;
     private CancellationTokenSource _cts = new();
-    private Task _reportTask = Task.CompletedTask;
     private volatile bool _disposed;
     private bool _readyFired;
     private DateTime _lastReceiveTime = DateTime.UtcNow;
@@ -46,8 +45,8 @@ public class GamepadSession : IDisposable
     private int _inputCountThisSecond;
     private int _measuredInputRate;
     private GamepadInput? _latestInput;
-    private GamepadInput? _lastReportedInput;
     private readonly object _inputLock = new();
+
     private volatile bool _switchingMode;
     private byte _previousTouchCounter;
     private int _ds4TouchCounter;
@@ -60,32 +59,38 @@ public class GamepadSession : IDisposable
 
     // 4-channel audio forwarding (DualSense): the phone needs the raw
     // speaker + voice-coil PCM, not just the rumble peaks folded above.
-    private readonly object _audioLock = new();
-    private readonly List<byte[]> _audioPending = new();
-    private byte[] _audioTail = Array.Empty<byte>();
     private uint _audioFrameIndex;
     private bool _audioFormatReady;
     private uint _audioSampleRate;
     private byte _audioChannels;
     private byte _audioBitsPerSample;
 
-    // Sony test-command tone (dualsense-tester's "1kHz sine wave" button):
-    // the tester writes feature report 0x80 (WAVEOUT_CTRL) instead of
-    // streaming UAC audio, so we synthesize the tone here and forward it
-    // through the normal audio lane. _toneActive is set on the output
-    // polling thread; the phase accumulator is only touched by the
-    // ReportLoop thread inside DrainAudio.
-    private volatile bool _toneActive;
-    private double _tonePhase;
+    // 4-channel PCM buffer for test tone. The phone side (dualsense-
+    // tester) expects 48 kHz / 4ch / 16-bit 2-byte PCM samples on
+    // channels 1/2 for the speaker and channels 3/4 for haptics.
+    // Pre-chunked into 10 ms UDP frames to tolerate network jitter.
+    private readonly List<byte[]> _toneFrames = new();
+    private int _toneFrameIdx;
+    private bool _toneRunning;
+    private double _tonePhase;              // 0..2π accumulator
 
-    // Audio telemetry (diagnostic only): how many PCM bytes arrived from
-    // the UAC endpoint and how many were drained to the phone, plus the
-    // last seen window size. Helps distinguish "game never sends audio to
-    // the endpoint" from "data flows but the phone doesn't play it".
+    private const double ToneAmplitude = 0.25;
+    private const int ToneSampleRate = 48000;
+    private const int ToneChannels = 4;
+    private const int ToneBitsPerSample = 16;
+    private const double ToneFreq = 1000.0;
+    private const double ToneStep = 2.0 * Math.PI * ToneFreq / ToneSampleRate;
+
+    // Tone drain: 10 ms frames to tolerate network jitter.
+    private const int ToneFrameMs = 10;
+    private const int ToneFrameSamples = (ToneSampleRate * ToneFrameMs) / 1000;
+    private const int ToneFrameBytes = ToneFrameSamples * ToneChannels * (ToneBitsPerSample / 8);
+
+    // Telemetry for the driver-delivered PCM stream (game → speaker).
     private long _audioReceivedBytes;
     private long _audioDrainedBytes;
-    private int _lastAudioWindowBytes;
     private int _audioWindowsSeen;
+    private int _lastAudioWindowBytes;
 
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
@@ -109,7 +114,7 @@ public class GamepadSession : IDisposable
 
     public void Start()
     {
-        _reportTask = Task.Run(async () =>
+        _ = Task.Run(async () =>
         {
             try
             {
@@ -127,6 +132,112 @@ public class GamepadSession : IDisposable
             catch (OperationCanceledException) { }
             catch { }
         });
+    }
+
+    /// <summary>Downstream loop — 125 Hz.  Sends vibration echoes + RTT
+    /// telemetry to the phone at a steady rate regardless of how fast
+    /// the phone pushes input to us.</summary>
+    private async Task ReportLoop(CancellationToken ct)
+    {
+        var intervalTicks = (long)(TimeSpan.TicksPerSecond / 125.0);
+        var sw = new System.Diagnostics.Stopwatch();
+        sw.Start();
+        long nextTick = intervalTicks;
+        long lastStatTicks = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            if (_disposed) return;
+
+            // Periodic audio-flow diagnostics (~every 500 ms).
+            if (sw.Elapsed.Ticks - lastStatTicks > TimeSpan.TicksPerMillisecond * 500)
+            {
+                lastStatTicks = sw.Elapsed.Ticks;
+                _audioReceivedBytes = 0;
+                _audioDrainedBytes = 0;
+                _audioWindowsSeen = 0;
+            }
+
+            // Drain pending test tone — sends PCM to the phone on the same
+            // 125 Hz cadence the phone expects.
+            DrainPendingTone();
+
+            // Read latest input report (reactionary: every UDP arrival
+            // calls HandleGamepadInput which saves into _latestInput).
+            GamepadInput? input;
+            lock (_inputLock)
+            {
+                input = _latestInput;
+            }
+
+            // If input arrived this tick, report the gamepad to the game
+            // (via ViGEmBus / HIDMaestro), then reset the buffer so the
+            // next tick waits for new input from the phone.
+            if (input != null && Controller != null)
+            {
+                try
+                {
+                    switch (Mode)
+                    {
+                        case ControllerMode.Ds4:
+                            SubmitDs4Report(input);
+                            break;
+                        case ControllerMode.SwitchPro:
+                            SubmitSwitchProReport(input);
+                            break;
+                        case ControllerMode.Dualsense:
+                            SubmitDualsenseReport(input);
+                            break;
+                        default:
+                            SubmitXbox360Report(input);
+                            break;
+                    }
+                }
+                catch { }
+
+                // Ack this input: send vibration echo back to phone.
+                if (_lastSeq > 0)
+                {
+                    _ = SendAsync(new ServerToClient
+                    {
+                        Vibration = new Vibration
+                        {
+                            LargeMotor = _lastLargeMotor,
+                            SmallMotor = _lastSmallMotor,
+                        },
+                        RttReport = new RttReport
+                        {
+                            AckSeq = _lastSeq,
+                            MeasuredUplinkRateHz = (uint)_measuredInputRate,
+                            RecommendedUplinkIntervalUs = 8000,
+                        }
+                    });
+                }
+                else if (_lastLargeMotor > 0 || _lastSmallMotor > 0)
+                {
+                    _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
+                }
+
+                lock (_inputLock)
+                {
+                    _latestInput = null;
+                }
+            }
+
+            // Precise timing: keep 125 Hz regardless of how much work we did.
+            var remainingTicks = nextTick - sw.Elapsed.Ticks;
+            if (remainingTicks > 0)
+            {
+                var waitMs = (int)(remainingTicks / TimeSpan.TicksPerMillisecond);
+                if (waitMs > 1)
+                {
+                    await Task.Delay(waitMs - 1, ct);
+                    while (sw.Elapsed.Ticks < nextTick && !ct.IsCancellationRequested)
+                        Thread.SpinWait(1);
+                }
+            }
+            nextTick += intervalTicks;
+        }
     }
 
     private async Task WatchdogLoop(CancellationToken ct)
@@ -307,35 +418,115 @@ public class GamepadSession : IDisposable
         if (Mode != ControllerMode.Dualsense) return;
         if (d.Length < 3) return;
 
-        // setTestCommandWithParams layout: [0]=deviceId, [1]=actionId,
-        // [2..]=params. AUDIO device (6) + WAVEOUT_CTRL (2) controls the
-        // internal 1 kHz sine-wave generator; params[0] != 0 starts it.
+        // Feature report 0x80 with bytes [0]=6 (AUDIO), [1]=2 (WAVEOUT_CTRL),
+        // [2]!=0 = enable internal 1 kHz sine-wave generator on the phone side.
+        // We synthesise 1 kHz PCM and forward it to the phone through the
+        // normal audio lane so dualsense-tester can verify speaker output.
         byte deviceId = d[0];
         byte actionId = d[1];
         if (deviceId != 6 || actionId != 2) return;
 
-        bool enable = d[2] != 0;
-        if (enable)
+        if (d[2] != 0)
         {
-            // (Re)arm the tone. Phase keeps its previous value so a
-            // restart stays sample-continuous.
-            _toneActive = true;
-            if (!_audioFormatReady)
-            {
-                _audioSampleRate = 48000;
-                _audioChannels = 4;
-                _audioBitsPerSample = 16;
-                _audioFormatReady = true;
-            }
+            ArmTestTone();
         }
         else
         {
-            _toneActive = false;
-            lock (_audioLock)
+            StopTestTone();
+        }
+    }
+
+    /// <summary>Pre-generate a 1 kHz sine-wave PCM buffer (2 seconds of
+    /// continuous tone, already split into 10 ms frames) and prime the
+    /// drain cycle.  Phase continues from its previous value so repeated
+    /// arming stays sample-continuous.</summary>
+    private void ArmTestTone()
+    {
+        if (_toneRunning) return;
+        _toneRunning = true;
+
+        // Initialise audio format if not yet known.
+        if (!_audioFormatReady)
+        {
+            _audioSampleRate = ToneSampleRate;
+            _audioChannels = ToneChannels;
+            _audioBitsPerSample = ToneBitsPerSample;
+            _audioFormatReady = true;
+        }
+
+        if (_toneFrames.Count == 0)
+        {
+            GenerateToneFrames();
+        }
+
+        _toneFrameIdx = 0;
+        DrainPendingTone();
+    }
+
+    private void StopTestTone()
+    {
+        _toneRunning = false;
+        _toneFrameIdx = 0;
+        _toneFrames.Clear();
+    }
+
+    /// <summary>Generate 2 seconds of 1 kHz PCM at 48 kHz / 4 ch / 16 bit
+    /// and split into 10 ms frames stored in _toneFrames.</summary>
+    private void GenerateToneFrames()
+    {
+        int totalSamples = ToneSampleRate * 2; // 2 seconds
+        int samplesPerFrame = ToneFrameSamples;
+        int bytesPerSample = ToneChannels * (ToneBitsPerSample / 8); // 8 bytes per sample
+        int frameCount = totalSamples / samplesPerFrame;
+
+        for (int f = 0; f < frameCount; f++)
+        {
+            var frameBytes = new byte[ToneFrameBytes];
+            int startSample = f * samplesPerFrame;
+            int bo = 0;
+            for (int s = 0; s < samplesPerFrame; s++)
             {
-                _audioPending.Clear();
+                int i = startSample + s;
+                double angle = _tonePhase + i * ToneStep;
+                short v = (short)(Math.Sin(angle) * short.MaxValue * ToneAmplitude);
+
+                // interleaved 4ch: ch0=silent, ch1=speaker, ch2=speaker, ch3=silent
+                frameBytes[bo    ] = 0;                                          // ch0 LSB
+                frameBytes[bo + 1] = 0;                                          // ch0 MSB
+                frameBytes[bo + 2] = (byte)(v & 0xFF);                           // ch1 LSB
+                frameBytes[bo + 3] = (byte)((v >> 8) & 0xFF);                    // ch1 MSB
+                frameBytes[bo + 4] = (byte)(v & 0xFF);                           // ch2 LSB
+                frameBytes[bo + 5] = (byte)((v >> 8) & 0xFF);                    // ch2 MSB
+                frameBytes[bo + 6] = 0;                                          // ch3 LSB
+                frameBytes[bo + 7] = 0;                                          // ch3 MSB
+
+                bo += bytesPerSample;
             }
-            _audioTail = Array.Empty<byte>();
+            _toneFrames.Add(frameBytes);
+        }
+        // Advance phase so next arm restart is sample-continuous.
+        _tonePhase += totalSamples * ToneStep;
+        if (_tonePhase >= 2.0 * Math.PI)
+            _tonePhase -= 2.0 * Math.PI;
+    }
+
+    /// <summary>Drain one 10 ms tone frame through DrainSingleChunk so the
+    /// phone receives them as a continuous audio stream.  Called from the
+    /// 125 Hz ReportLoop.  When frame index wraps around, re-generate the
+    /// buffer with fresh phase.</summary>
+    private void DrainPendingTone()
+    {
+        if (!_toneRunning || _toneFrames.Count == 0) return;
+
+        var chunk = _toneFrames[_toneFrameIdx];
+        _toneFrameIdx++;
+        DrainSingleChunk(chunk);
+
+        if (_toneFrameIdx >= _toneFrames.Count)
+        {
+            _toneFrameIdx = 0;
+            _toneFrames.Clear();
+            GenerateToneFrames();
         }
     }
 
@@ -382,39 +573,9 @@ public class GamepadSession : IDisposable
         catch { }
     }
 
-    /// <summary>One drain window of a synthesized 1 kHz sine wave,
-    /// 16-bit LE interleaved on 4 channels (ch0=silent, ch1=ch2=speaker, ch3=haptic silent).
-    /// 48000 / 125 = 384 samples per tick.</summary>
-    private byte[] BuildToneWindow()
-    {
-        const int sampleRate = 48000;
-        const int channels = 4;
-        const int bytesPerSample = 2;
-        const int samples = sampleRate / 125;
-        const double amplitude = 0.25;
-        const double step = 2.0 * Math.PI * 1000.0 / sampleRate;
-
-        var buf = new byte[samples * channels * bytesPerSample];
-        for (int i = 0; i < samples; i++)
-        {
-            _tonePhase += step;
-            if (_tonePhase >= 2.0 * Math.PI) _tonePhase -= 2.0 * Math.PI;
-            short v = (short)(Math.Sin(_tonePhase) * 32767.0 * amplitude);
-            int o = i * channels * bytesPerSample;
-            buf[o] = 0; buf[o + 1] = 0;
-            buf[o + 2] = (byte)(v & 0xFF);
-            buf[o + 3] = (byte)((v >> 8) & 0xFF);
-            buf[o + 4] = (byte)(v & 0xFF);
-            buf[o + 5] = (byte)((v >> 8) & 0xFF);
-            buf[o + 6] = 0;
-            buf[o + 7] = 0;
-        }
-        return buf;
-    }
-
     /// <summary>Split an already-collected PCM buffer into frame-aligned
-    /// UDP chunks and send them. Called both by the old drain loop and
-    /// the new real-time path.</summary>
+    /// UDP chunks and send them. Called by OnDualsenseAudioFrames and
+    /// DrainPendingTone.</summary>
     private void DrainSingleChunk(byte[] pcm)
     {
         if (!_audioFormatReady) return;
@@ -428,9 +589,6 @@ public class GamepadSession : IDisposable
         const int MaxPacketBytes = 4096;
         int chunkBytes = (MaxPacketBytes / bytesPerFrame) * bytesPerFrame;
 
-        // Update tail so the caller's real-time path can keep partial frames.
-        // Here we just handle complete frames.
-
         for (int sent = 0; sent < completeBytes; sent += chunkBytes)
         {
             int n = Math.Min(chunkBytes, completeBytes - sent);
@@ -439,72 +597,6 @@ public class GamepadSession : IDisposable
             _ = SendAudioFrameAsync(bytes);
         }
         _audioDrainedBytes += completeBytes;
-    }
-
-    private void DrainAudio()
-    {
-        if (Mode != ControllerMode.Dualsense) return;
-
-        // Synthesize the test tone (1 kHz, speaker L/R, haptics silent)
-        // when the tester armed it. One window per 125 Hz tick keeps the
-        // sample cadence aligned with the drain rate.
-        if (_toneActive)
-        {
-            if (!_audioFormatReady)
-            {
-                _audioSampleRate = 48000;
-                _audioChannels = 4;
-                _audioBitsPerSample = 16;
-                _audioFormatReady = true;
-            }
-            lock (_audioLock)
-            {
-                if (_audioPending.Count < 1024)
-                    _audioPending.Add(BuildToneWindow());
-            }
-        }
-
-        if (!_audioFormatReady) return;
-
-        byte[][] windows;
-        lock (_audioLock)
-        {
-            if (_audioPending.Count == 0) return;
-            windows = _audioPending.ToArray();
-            _audioPending.Clear();
-        }
-
-        int bytesPerFrame = _audioChannels * (_audioBitsPerSample / 8);
-        if (bytesPerFrame <= 0) return;
-
-        int total = _audioTail.Length;
-        foreach (var w in windows) total += w.Length;
-        if (total == 0) return;
-
-        var merged = new byte[total];
-        int off = 0;
-        if (_audioTail.Length > 0)
-        {
-            _audioTail.CopyTo(merged, 0);
-            off = _audioTail.Length;
-        }
-        foreach (var w in windows)
-        {
-            w.CopyTo(merged, off);
-            off += w.Length;
-        }
-
-        int completeBytes = (total / bytesPerFrame) * bytesPerFrame;
-        int remainder = total - completeBytes;
-        if (remainder > 0)
-            _audioTail = merged.AsSpan(completeBytes).ToArray();
-        else
-            _audioTail = Array.Empty<byte>();
-
-        if (completeBytes == 0) return;
-
-        // Forward to DrainSingleChunk which splits into UDP chunks.
-        DrainSingleChunk(merged.AsSpan(0, completeBytes).ToArray());
     }
 
     private Task SendAudioFrameAsync(byte[] pcm)
@@ -533,14 +625,11 @@ public class GamepadSession : IDisposable
 
     private void ClearPendingAudio()
     {
-        lock (_audioLock)
-        {
-            _audioPending.Clear();
-        }
-        _audioTail = Array.Empty<byte>();
         _audioFrameIndex = 0;
-        _toneActive = false;
-        _tonePhase = 0;
+        _toneRunning = false;
+        _toneFrameIdx = 0;
+        _toneFrames.Clear();
+        _audioFormatReady = false;
     }
 
     private void HandleGamepadInput(GamepadInput input)
@@ -914,104 +1003,6 @@ public class GamepadSession : IDisposable
         });
     }
 
-    private async Task ReportLoop(CancellationToken ct)
-    {
-        var intervalTicks = (long)(TimeSpan.TicksPerSecond / 125.0);
-        var sw = new System.Diagnostics.Stopwatch();
-        sw.Start();
-        long nextTick = intervalTicks;
-        long lastStatTicks = 0;
-
-        while (!ct.IsCancellationRequested)
-        {
-            if (_disposed) return;
-
-            DrainAudio();
-
-            // Periodic audio-flow diagnostics (~every 500 ms). Received = PCM
-            // the UAC endpoint delivered; drained = PCM forwarded to the phone.
-            if (sw.Elapsed.Ticks - lastStatTicks > TimeSpan.TicksPerMillisecond * 500)
-            {
-                lastStatTicks = sw.Elapsed.Ticks;
-                System.Diagnostics.Debug.WriteLine(
-                    $"[DualSenseAudio] windows={_audioWindowsSeen} lastWindow={_lastAudioWindowBytes}B " +
-                    $"received={_audioReceivedBytes}B drained={_audioDrainedBytes}B tone={_toneActive}");
-                _audioReceivedBytes = 0;
-                _audioDrainedBytes = 0;
-                _audioWindowsSeen = 0;
-            }
-
-            GamepadInput? input;
-            lock (_inputLock)
-            {
-                input = _latestInput;
-            }
-
-            var report = input ?? _lastReportedInput;
-
-            if (report != null && Controller != null)
-            {
-                try
-                {
-                    if (Mode == ControllerMode.Ds4)
-                        SubmitDs4Report(report);
-                    else if (Mode == ControllerMode.SwitchPro)
-                        SubmitSwitchProReport(report);
-                    else if (Mode == ControllerMode.Dualsense)
-                        SubmitDualsenseReport(report);
-                    else
-                        SubmitXbox360Report(report);
-                }
-                catch { }
-
-                if (input != null)
-                    _lastReportedInput = input;
-            }
-
-            if (_lastSeq > 0)
-            {
-                try
-                {
-                    await SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
-                    await SendAsync(new ServerToClient
-                    {
-                        RttReport = new RttReport
-                        {
-                            AckSeq = _lastSeq,
-                            MeasuredUplinkRateHz = (uint)_measuredInputRate,
-                            RecommendedUplinkIntervalUs = 8000,
-                        }
-                    });
-                }
-                catch { }
-            }
-            else if (_lastLargeMotor > 0 || _lastSmallMotor > 0)
-            {
-                try
-                {
-                    await SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
-                }
-                catch { }
-            }
-
-            var remainingTicks = nextTick - sw.Elapsed.Ticks;
-            if (remainingTicks > 0)
-            {
-                var waitMs = (int)(remainingTicks / TimeSpan.TicksPerMillisecond);
-                if (waitMs > 1)
-                {
-                    await Task.Delay(waitMs - 1, ct);
-                    while (sw.Elapsed.Ticks < nextTick && !ct.IsCancellationRequested)
-                        Thread.SpinWait(1);
-                }
-            }
-            nextTick += intervalTicks;
-
-            if (sw.Elapsed.Ticks > nextTick + intervalTicks)
-                nextTick = sw.Elapsed.Ticks + intervalTicks;
-        }
-    }
-
     public async Task<ControllerMode> SetControllerModeAsync(ControllerMode mode)
     {
         if (_disposed || _switchingMode) return Mode;
@@ -1027,7 +1018,6 @@ public class GamepadSession : IDisposable
         {
             _lastLargeMotor = 0;
             _lastSmallMotor = 0;
-            _lastReportedInput = null;
             ClearPendingAudio();
 
             var oldCtrl = Controller;
@@ -1233,7 +1223,6 @@ public class GamepadSession : IDisposable
                     xbox.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
                     xbox.SetSliderValue(Xbox360Slider.RightTrigger, 0);
                     xbox.SubmitReport();
-                    ClearLatestInput();
                     break;
                 case IDualShock4Controller ds4:
                     var buf = new byte[63];
@@ -1251,7 +1240,6 @@ public class GamepadSession : IDisposable
                     buf[52] = 0x80;
                     buf[56] = 0x80;
                     ds4.SubmitRawReport(buf);
-                    ClearLatestInput();
                     break;
                 case HMController hm:
                 {
@@ -1270,21 +1258,11 @@ public class GamepadSession : IDisposable
                     hmBuf[41] = (byte)(_previousTouchCounter & 0x7F);
                     hmBuf[52] = 0x09; // battery full (level 9 = 90%+, tester case 9)
                     hm.SubmitRawReport(hmBuf.AsSpan());
-                    ClearLatestInput();
                     break;
                 }
             }
         }
         catch { }
-    }
-
-    private void ClearLatestInput()
-    {
-        lock (_inputLock)
-        {
-            _latestInput = null;
-            _lastReportedInput = null;
-        }
     }
 
     private static void DestroyController(object? ctrl)
