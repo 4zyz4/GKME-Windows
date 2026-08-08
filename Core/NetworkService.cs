@@ -214,11 +214,10 @@ public class NetworkService : IDisposable
 
     private void RouteClientToServer(IPEndPoint remoteEp, byte[] payload)
     {
+        var key = $"{new IPEndPoint(remoteEp.Address, Port)}";
         try
         {
             var cts = ClientToServer.Parser.ParseFrom(payload);
-            var key = $"{new IPEndPoint(remoteEp.Address, Port)}";
-
             if (_sessions.TryGetValue(key, out var session))
             {
                 session.HandleClientToServer(cts);

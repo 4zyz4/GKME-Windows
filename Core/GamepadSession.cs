@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -44,8 +45,7 @@ public class GamepadSession : IDisposable
     private DateTime _lastInputTime = DateTime.MinValue;
     private int _inputCountThisSecond;
     private int _measuredInputRate;
-    private GamepadInput? _latestInput;
-    private readonly object _inputLock = new();
+    private readonly ConcurrentQueue<GamepadInput> _inputQueue = new();
 
     private volatile bool _switchingMode;
     private byte _previousTouchCounter;
@@ -134,9 +134,10 @@ public class GamepadSession : IDisposable
         });
     }
 
-    /// <summary>Downstream loop — 125 Hz.  Sends vibration echoes + RTT
+    /// <summary>Downstream loop — ~125 Hz.  Sends vibration echoes + RTT
     /// telemetry to the phone at a steady rate regardless of how fast
-    /// the phone pushes input to us.</summary>
+    /// the phone pushes input to us.  Also drains the input queue so no
+    /// phone report is left unsubmitted.</summary>
     private async Task ReportLoop(CancellationToken ct)
     {
         var intervalTicks = (long)(TimeSpan.TicksPerSecond / 125.0);
@@ -162,18 +163,9 @@ public class GamepadSession : IDisposable
             // 125 Hz cadence the phone expects.
             DrainPendingTone();
 
-            // Read latest input report (reactionary: every UDP arrival
-            // calls HandleGamepadInput which saves into _latestInput).
-            GamepadInput? input;
-            lock (_inputLock)
-            {
-                input = _latestInput;
-            }
-
-            // If input arrived this tick, report the gamepad to the game
-            // (via ViGEmBus / HIDMaestro), then reset the buffer so the
-            // next tick waits for new input from the phone.
-            if (input != null && Controller != null)
+            // Drain the input queue — submit every arrived report to the
+            // emulated controller so no phone input is silently dropped.
+            while (_inputQueue.TryDequeue(out var input) && Controller != null)
             {
                 try
                 {
@@ -216,11 +208,6 @@ public class GamepadSession : IDisposable
                 else if (_lastLargeMotor > 0 || _lastSmallMotor > 0)
                 {
                     _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
-                }
-
-                lock (_inputLock)
-                {
-                    _latestInput = null;
                 }
             }
 
@@ -647,10 +634,7 @@ public class GamepadSession : IDisposable
         }
         _lastInputTime = now;
 
-        lock (_inputLock)
-        {
-            _latestInput = input;
-        }
+        _inputQueue.Enqueue(input);
     }
 
     private void SubmitXbox360Report(GamepadInput input)
