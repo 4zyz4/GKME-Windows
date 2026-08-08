@@ -822,6 +822,7 @@ public class GamepadSession : IDisposable
         buf[28] = (byte)((_ds4Timestamp.ElapsedMilliseconds >> 8) & 0xFF);
         buf[29] = (byte)((_ds4Timestamp.ElapsedMilliseconds >> 16) & 0xFF);
         buf[30] = (byte)((_ds4Timestamp.ElapsedMilliseconds >> 24) & 0xFF);
+        buf[31] = 0x80; // no-touch placeholder for byte 32 (reserved/temp in real DS5); prevents phantom id=0 touch
 
         var t0 = input.Touches.Count > 0 ? input.Touches[0] : null;
         var t1 = input.Touches.Count > 1 ? input.Touches[1] : null;
@@ -837,19 +838,34 @@ public class GamepadSession : IDisposable
 
         byte ds5CurrentCounter = (byte)(_ds4TouchCounter & 0x7F);
         byte ds5PreviousCounter = (byte)(_previousTouchCounter & 0x7F);
-        WriteTouchData(buf, 32,
-            (int)(t0?.X ?? 0), (int)(t0?.Y ?? 0),
-            t0?.Active ?? false, (byte)(_touchIds[0] & 0x7F));
-        WriteTouchData(buf, 36,
-            (int)(t1?.X ?? 0), (int)(t1?.Y ?? 0),
-            t1?.Active ?? false, (byte)(_touchIds[1] & 0x7F));
+
+        int f0x = (int)(t0?.X ?? 0);
+        int f0y = (int)(t0?.Y ?? 0);
+        int f1x = (int)(t1?.X ?? 0);
+        int f1y = (int)(t1?.Y ?? 0);
+        bool f0Active = t0?.Active ?? false;
+        bool f1Active = t1?.Active ?? false;
+
+        buf[32] = f0Active
+            ? (byte)(_touchIds[0] & 0x7F)
+            : (byte)0x80;
+        buf[33] = (byte)(Math.Clamp(f0x, 0, 1919) & 0xFF);
+        buf[34] = (byte)(((Math.Clamp(f0x, 0, 1919) >> 8) & 0x0F) | ((Math.Clamp(f0y, 0, 1079) & 0x0F) << 4));
+        buf[35] = (byte)(Math.Clamp(f0y, 0, 1079) >> 4);
+
+        buf[36] = f1Active
+            ? (byte)(_touchIds[1] & 0x7F)
+            : (byte)0x80;
+        buf[37] = (byte)(Math.Clamp(f1x, 0, 1919) & 0xFF);
+        buf[38] = (byte)(((Math.Clamp(f1x, 0, 1919) >> 8) & 0x0F) | ((Math.Clamp(f1y, 0, 1079) & 0x0F) << 4));
+        buf[39] = (byte)(Math.Clamp(f1y, 0, 1079) >> 4);
         buf[40] = ds5CurrentCounter;
         buf[41] = ds5PreviousCounter;
 
         _previousTouchCounter = ds5CurrentCounter;
         _ds4TouchCounter++;
 
-        buf[52] = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
+        buf[52] = input.BatteryLevel > 0 ? (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 9u) : (byte)0x09;
         if (input.IsCharging) buf[52] |= 0x10;
 
         ctrl.SubmitRawReport(buf.AsSpan());
@@ -1238,14 +1254,25 @@ public class GamepadSession : IDisposable
                     ClearLatestInput();
                     break;
                 case HMController hm:
-                    hm.SubmitState(new HMGamepadState
-                    {
-                        Axes = HMGamepadStateHelpers.StandardAxes(hm.Profile),
-                        Buttons = HMButton.None,
-                        Hat = HMHat.None,
-                    });
+                {
+                    var hmBuf = new byte[64];
+                    // left stick center (128 = center for uint8), right stick center, triggers = 0
+                    hmBuf[0] = 128; hmBuf[1] = 128;
+                    hmBuf[2] = 128; hmBuf[3] = 128;
+                    hmBuf[4] = 0; hmBuf[5] = 0; // LT = RT = 0
+                    hmBuf[7] = 8; // hat neutral
+                    hmBuf[8] = 0; // no buttons
+                    hmBuf[9] = 0;
+                    // gyro = accel = 0 (zeroed by new byte[64])
+                    hmBuf[32] = 0x80; // finger0 not touching
+                    hmBuf[36] = 0x80; // finger1 not touching
+                    hmBuf[40] = (byte)(_ds4TouchCounter & 0x7F);
+                    hmBuf[41] = (byte)(_previousTouchCounter & 0x7F);
+                    hmBuf[52] = 0x09; // battery full (level 9 = 90%+, tester case 9)
+                    hm.SubmitRawReport(hmBuf.AsSpan());
                     ClearLatestInput();
                     break;
+                }
             }
         }
         catch { }
