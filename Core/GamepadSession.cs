@@ -808,7 +808,7 @@ public class GamepadSession : IDisposable
         if ((input.Buttons & (1 << 16)) != 0) buf[9] |= 1 << 0; // PS
         if ((input.Buttons & (1 << 17)) != 0) buf[9] |= 1 << 1; // Touchpad
 
-        buf[10] = 0x0F;
+        if ((input.Buttons & (1u << 18)) != 0) buf[9] |= 1 << 2; // Mic Mute
 
         WriteInt16LE(buf, 15, (short)SoftLimit(input.GyroX, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
         WriteInt16LE(buf, 17, (short)SoftLimit(input.GyroY, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
