@@ -42,10 +42,6 @@ public class GamepadSession : IDisposable
     private DateTime _lastReceiveTime = DateTime.UtcNow;
     private byte _lastLargeMotor;
     private byte _lastSmallMotor;
-    private ulong _lastSeq;
-    private DateTime _lastInputTime = DateTime.MinValue;
-    private int _inputCountThisSecond;
-    private int _measuredInputRate;
     private readonly ConcurrentQueue<GamepadInput> _inputQueue = new();
 
     private volatile bool _switchingMode;
@@ -105,13 +101,14 @@ public class GamepadSession : IDisposable
     public event Action<GamepadSession>? OnConnectionLost;
     public event Action<GamepadSession>? OnDisconnected;
 
-    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, ViGEmClient viGEm, HMContext hmContext, bool hidMaestroAvailable = true)
+    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, ViGEmClient viGEm, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
     {
         Device = device;
         _sendToPhone = sendToPhone;
         _viGEm = viGEm;
         _hmContext = hmContext;
         _hidMaestroAvailable = hidMaestroAvailable;
+        Mode = ResolveMode(initialMode);
     }
 
     public void Start()
@@ -190,27 +187,7 @@ public class GamepadSession : IDisposable
                 catch { }
 
                 // Ack this input: send vibration echo back to phone.
-                if (_lastSeq > 0)
-                {
-                    _ = SendAsync(new ServerToClient
-                    {
-                        Vibration = new Vibration
-                        {
-                            LargeMotor = _lastLargeMotor,
-                            SmallMotor = _lastSmallMotor,
-                        },
-                        RttReport = new RttReport
-                        {
-                            AckSeq = _lastSeq,
-                            MeasuredUplinkRateHz = (uint)_measuredInputRate,
-                            RecommendedUplinkIntervalUs = 8000,
-                        }
-                    });
-                }
-                else if (_lastLargeMotor > 0 || _lastSmallMotor > 0)
-                {
-                    _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
-                }
+                _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
             }
 
             // Precise timing: keep 125 Hz regardless of how much work we did.
@@ -256,8 +233,6 @@ public class GamepadSession : IDisposable
                 case ClientToServer.PayloadOneofCase.Hello:
                     HandleHello(cts.Hello);
                     break;
-                case ClientToServer.PayloadOneofCase.KeepAlive:
-                    break;
             }
         }
         catch { }
@@ -292,12 +267,12 @@ public class GamepadSession : IDisposable
                 {
                     try
                     {
-                        _controller = CreateController(ControllerMode.Ds4);
+                        _controller = CreateController(Mode);
                     }
                     catch (Exception ex)
                     {
                         System.Diagnostics.Debug.WriteLine(
-                            $"[GamepadSession] create default DS4 failed: {ex.Message}");
+                            $"[GamepadSession] create controller {Mode} failed: {ex.Message}");
                     }
                 }
             }
@@ -312,16 +287,7 @@ public class GamepadSession : IDisposable
         // Acknowledge the phone's hello so an already-existing session (e.g.
         // one that survived a watchdog timeout) can re-sync on the auto-reconnect
         // path — otherwise the phone never receives any packet and stays stuck.
-        _ = SendAsync(new ServerToClient
-        {
-            ServerHello = new ServerHello
-            {
-                ProtocolVersion = 1,
-                HostName = Environment.MachineName,
-                MaxDownlinkRateHz = 1000,
-                RecommendedUplinkIntervalUs = 0,
-            }
-        });
+        _ = SendAsync(NetworkService.BuildServerHello());
     }
 
     private object? CreateController(ControllerMode mode)
@@ -646,18 +612,6 @@ public class GamepadSession : IDisposable
     private void HandleGamepadInput(GamepadInput input)
     {
         if (Controller == null) return;
-
-        _lastSeq = input.Seq;
-        var now = DateTime.UtcNow;
-        if ((now - _lastInputTime).TotalSeconds < 1)
-            _inputCountThisSecond++;
-        else
-        {
-            _measuredInputRate = _inputCountThisSecond;
-            _inputCountThisSecond = 1;
-        }
-        _lastInputTime = now;
-
         _inputQueue.Enqueue(input);
     }
 
@@ -1011,15 +965,19 @@ public class GamepadSession : IDisposable
         });
     }
 
+    private ControllerMode ResolveMode(ControllerMode mode)
+    {
+        // SwitchPro / DualSense require HIDMaestro; fall back to DS4 when
+        // the driver is unavailable (same rule as SetControllerModeAsync).
+        bool wantsHm = mode is ControllerMode.SwitchPro or ControllerMode.Dualsense;
+        return wantsHm && !_hidMaestroAvailable ? ControllerMode.Ds4 : mode;
+    }
+
     public async Task<ControllerMode> SetControllerModeAsync(ControllerMode mode)
     {
         if (_disposed || _switchingMode) return Mode;
 
-        bool wantsHm = mode is ControllerMode.SwitchPro or ControllerMode.Dualsense;
-        if (wantsHm && !_hidMaestroAvailable)
-        {
-            mode = ControllerMode.Ds4;
-        }
+        mode = ResolveMode(mode);
 
         _switchingMode = true;
         try

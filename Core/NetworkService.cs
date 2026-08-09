@@ -27,6 +27,12 @@ public class NetworkService : IDisposable
 
     public bool HidMaestroAvailable { get; private set; }
 
+    /// <summary>Resolves a previously persisted controller mode for a device
+    /// (keyed by <see cref="DiscoveredDevice.ModeKey"/>), or null when none is
+    /// saved. Used by every connection path (manual + auto-reconnect) so the
+    /// initial controller matches what the user last picked.</summary>
+    public Func<DiscoveredDevice, ControllerMode?>? SavedModeResolver { get; set; }
+
     static NetworkService()
     {
         // HIDMaestro's TimeoutScale only honors [0.1, 100.0]; anything below the
@@ -126,6 +132,20 @@ public class NetworkService : IDisposable
     public event Action<GamepadSession>? OnSessionEnded;
     public event Action<string>? OnSessionConnectionLost;
 
+    private static string GetSessionKey(IPEndPoint remoteEp) =>
+        $"{new IPEndPoint(remoteEp.Address, Port)}";
+
+    internal static ServerToClient BuildServerHello() => new()
+    {
+        ServerHello = new ServerHello
+        {
+            ProtocolVersion = 1,
+            HostName = Environment.MachineName,
+            MaxDownlinkRateHz = 1000,
+            RecommendedUplinkIntervalUs = 0,
+        }
+    };
+
     public void StartDiscovery()
     {
         if (_listenerCts != null) return;
@@ -198,7 +218,7 @@ public class NetworkService : IDisposable
         var deviceName = msg[BroadcastPrefix.Length..];
 
         var phoneEp = new IPEndPoint(remoteEp.Address, Port);
-        var key = $"{phoneEp}";
+        var key = GetSessionKey(remoteEp);
 
         var device = _discovered.GetOrAdd(key, _ => new DiscoveredDevice
         {
@@ -213,16 +233,7 @@ public class NetworkService : IDisposable
         // resume the handshake even if it hasn't sent a Hello yet.
         if (_sessions.TryGetValue(key, out var session))
         {
-            _ = SendToPhoneAsync(phoneEp, TypeServerToClient, new ServerToClient
-            {
-                ServerHello = new ServerHello
-                {
-                    ProtocolVersion = 1,
-                    HostName = Environment.MachineName,
-                    MaxDownlinkRateHz = 1000,
-                    RecommendedUplinkIntervalUs = 0,
-                }
-            });
+            _ = SendToPhoneAsync(phoneEp, TypeServerToClient, BuildServerHello());
         }
 
         OnDeviceDiscovered?.Invoke(device);
@@ -230,10 +241,12 @@ public class NetworkService : IDisposable
 
     private readonly object _autoLock = new();
     private readonly HashSet<string> _autoConnecting = new();
+    private readonly object _connectLock = new();
+    private readonly HashSet<string> _connecting = new();
 
     private void RouteClientToServer(IPEndPoint remoteEp, byte[] payload)
     {
-        var key = $"{new IPEndPoint(remoteEp.Address, Port)}";
+        var key = GetSessionKey(remoteEp);
         try
         {
             var cts = ClientToServer.Parser.ParseFrom(payload);
@@ -280,7 +293,7 @@ public class NetworkService : IDisposable
         try
         {
             var input = GamepadInput.Parser.ParseFrom(payload);
-            var key = $"{new IPEndPoint(remoteEp.Address, Port)}";
+            var key = GetSessionKey(remoteEp);
 
             if (_sessions.TryGetValue(key, out var session))
             {
@@ -292,33 +305,35 @@ public class NetworkService : IDisposable
 
     public async Task<GamepadSession?> ConnectAsync(DiscoveredDevice device, int connectTimeoutMs = 5000)
     {
+        var key = device.Key;
+        GamepadSession? oldSession = null;
+
+        // 串行化同一手机的所有连接入口（手动连接、设备卡片、自动重连），
+        // 避免并发各建一个 session / 虚拟控制器。
+        lock (_connectLock)
+        {
+            if (_connecting.Contains(key)) return null;
+            if (_sessions.TryGetValue(key, out var existing) && existing.IsConnected)
+                return existing;
+            _sessions.TryRemove(key, out oldSession);
+            _connecting.Add(key);
+        }
+
         try
         {
-            // Disconnect existing session for this device if any, and wait for
-            // its controllers to be fully torn down before creating a new one.
-            // Otherwise a slow HIDMaestro teardown (~seconds) overlaps with the
-            // new session's controllers and Windows briefly shows two pads.
-            if (_sessions.TryRemove(device.Key, out var oldSession))
+            // 拆旧控制器（HIDMaestro teardown 慢，等它彻底释放再建新的，
+            // 否则 Windows 会短暂同时显示两个手柄）。只影响同一时刻唯一的连接流程。
+            if (oldSession != null)
             {
                 oldSession.Disconnect();
                 await oldSession.WaitForCleanupAsync();
             }
 
             var phoneEp = new IPEndPoint(device.IpAddress, Port);
+            await SendToPhoneAsync(phoneEp, TypeServerToClient, BuildServerHello());
 
-            var hello = new ServerToClient
-            {
-                ServerHello = new ServerHello
-                {
-                    ProtocolVersion = 1,
-                    HostName = Environment.MachineName,
-                    MaxDownlinkRateHz = 1000,
-                    RecommendedUplinkIntervalUs = 0,
-                }
-            };
-            await SendToPhoneAsync(phoneEp, TypeServerToClient, hello);
-
-            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _viGEm, _hmContext, HidMaestroAvailable);
+            var initialMode = SavedModeResolver?.Invoke(device) ?? ControllerMode.Ds4;
+            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _viGEm, _hmContext, HidMaestroAvailable, initialMode);
             session.OnReady += s =>
             {
                 OnSessionStarted?.Invoke(s);
@@ -334,13 +349,28 @@ public class NetworkService : IDisposable
             };
 
             session.Start();
-            _sessions[device.Key] = session;
+
+            lock (_connectLock)
+            {
+                // 等待期间另一个流程抢先把 session 建好了：销毁本流程刚建的，
+                // 复用已注册的那个，避免出现两个虚拟控制器。
+                if (_sessions.TryGetValue(key, out var current) && !ReferenceEquals(current, session))
+                {
+                    session.Disconnect();
+                    return current;
+                }
+                _sessions[key] = session;
+            }
 
             return session;
         }
         catch
         {
             return null;
+        }
+        finally
+        {
+            lock (_connectLock) _connecting.Remove(key);
         }
     }
 

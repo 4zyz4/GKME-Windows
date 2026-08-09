@@ -51,6 +51,7 @@ public class MainViewModel : INotifyPropertyChanged
         {
             StatusText = "HIDMaestro 驱动不可用，仅支持 DS4 和 Xbox360 模式";
         }
+        _network.SavedModeResolver = d => _modeStore.Get(d.ModeKey);
         _network.OnDeviceDiscovered += OnDeviceDiscovered;
         _network.OnSessionStarted += OnSessionStarted;
         _network.OnSessionEnded += OnSessionEnded;
@@ -262,28 +263,11 @@ public class MainViewModel : INotifyPropertyChanged
                 card.IsConnected = true;
                 card.IsConnecting = false;
                 card.IsReconnecting = false;
-                var saved = _modeStore.Get(session.Device.ModeKey);
-                // Don't create a new controller on reconnect -- the old one is still alive.
-                // Just sync the UI to the restored mode.
-                card.SetModeRestored(saved ?? session.Mode);
+                // The session already created its controller with the persisted
+                // mode (GamepadSession ctor + SavedModeResolver); sync the card.
+                card.SetModeRestored(session.Mode);
             }
         });
-    }
-
-    private async Task ApplySavedModeAsync(GamepadSession session, DeviceCardViewModel card, ControllerMode mode)
-    {
-        try
-        {
-            await session.SetControllerModeAsync(mode);
-        }
-        catch { }
-        finally
-        {
-            // Sync the UI to the actual mode afterwards. A failed restore (e.g.
-            // HIDMaestro busy) leaves the DS4 controller in place — the card must
-            // not keep showing DualSense while Windows shows a DualShock 4.
-            UiInvoke(() => card.SetModeRestored(session.Mode));
-        }
     }
 
     private void OnSessionEnded(GamepadSession session)
