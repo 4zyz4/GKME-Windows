@@ -209,6 +209,22 @@ public class NetworkService : IDisposable
         device.DeviceName = deviceName;
         device.LastSeen = DateTime.UtcNow;
 
+        // Phone restarted its broadcast — send ServerHello so the phone can
+        // resume the handshake even if it hasn't sent a Hello yet.
+        if (_sessions.TryGetValue(key, out var session))
+        {
+            _ = SendToPhoneAsync(phoneEp, TypeServerToClient, new ServerToClient
+            {
+                ServerHello = new ServerHello
+                {
+                    ProtocolVersion = 1,
+                    HostName = Environment.MachineName,
+                    MaxDownlinkRateHz = 1000,
+                    RecommendedUplinkIntervalUs = 0,
+                }
+            });
+        }
+
         OnDeviceDiscovered?.Invoke(device);
     }
 

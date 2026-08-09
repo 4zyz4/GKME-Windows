@@ -263,15 +263,9 @@ public class MainViewModel : INotifyPropertyChanged
                 card.IsConnecting = false;
                 card.IsReconnecting = false;
                 var saved = _modeStore.Get(session.Device.ModeKey);
-                if (saved != null && saved.Value != session.Mode)
-                {
-                    card.SetModeRestored(saved.Value);
-                    _ = ApplySavedModeAsync(session, card, saved.Value);
-                }
-                else
-                {
-                    card.SetModeRestored(session.Mode);
-                }
+                // Don't create a new controller on reconnect -- the old one is still alive.
+                // Just sync the UI to the restored mode.
+                card.SetModeRestored(saved ?? session.Mode);
             }
         });
     }
