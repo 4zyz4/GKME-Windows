@@ -212,6 +212,9 @@ public class NetworkService : IDisposable
         OnDeviceDiscovered?.Invoke(device);
     }
 
+    private readonly object _autoLock = new();
+    private readonly HashSet<string> _autoConnecting = new();
+
     private void RouteClientToServer(IPEndPoint remoteEp, byte[] payload)
     {
         var key = $"{new IPEndPoint(remoteEp.Address, Port)}";
@@ -222,8 +225,38 @@ public class NetworkService : IDisposable
             {
                 session.HandleClientToServer(cts);
             }
+            else if (cts.PayloadCase == ClientToServer.PayloadOneofCase.Hello)
+            {
+                // Phone is (re)connecting but no session exists (session was torn
+                // down on this side). Rebuild it automatically so reconnect works
+                // even after a PC-side teardown/restart.
+                _ = AutoConnectAsync(remoteEp, key, cts.Hello.DeviceName);
+            }
         }
         catch { }
+    }
+
+    private async Task AutoConnectAsync(IPEndPoint remoteEp, string key, string deviceName)
+    {
+        lock (_autoLock)
+        {
+            if (_sessions.ContainsKey(key) || !_autoConnecting.Add(key)) return;
+        }
+        try
+        {
+            var device = new DiscoveredDevice
+            {
+                DeviceName = string.IsNullOrWhiteSpace(deviceName)
+                    ? remoteEp.Address.ToString()
+                    : deviceName,
+                IpAddress = remoteEp.Address,
+            };
+            await ConnectAsync(device);
+        }
+        finally
+        {
+            lock (_autoLock) _autoConnecting.Remove(key);
+        }
     }
 
     private void RouteGamepadInput(IPEndPoint remoteEp, byte[] payload)
@@ -245,10 +278,14 @@ public class NetworkService : IDisposable
     {
         try
         {
-            // Disconnect existing session for this device if any
+            // Disconnect existing session for this device if any, and wait for
+            // its controllers to be fully torn down before creating a new one.
+            // Otherwise a slow HIDMaestro teardown (~seconds) overlaps with the
+            // new session's controllers and Windows briefly shows two pads.
             if (_sessions.TryRemove(device.Key, out var oldSession))
             {
                 oldSession.Disconnect();
+                await oldSession.WaitForCleanupAsync();
             }
 
             var phoneEp = new IPEndPoint(device.IpAddress, Port);

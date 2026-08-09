@@ -35,6 +35,7 @@ public class GamepadSession : IDisposable
     private readonly ViGEmClient _viGEm;
     private readonly HMContext _hmContext;
     private readonly bool _hidMaestroAvailable;
+    private readonly object _controllerLock = new();
     private CancellationTokenSource _cts = new();
     private volatile bool _disposed;
     private bool _readyFired;
@@ -94,7 +95,8 @@ public class GamepadSession : IDisposable
 
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
-    public object? Controller { get; private set; }
+    private volatile object? _controller;
+    public object? Controller => _controller;
     public bool IsConnected => !_disposed;
     public bool IsReady => Controller != null;
     public bool HasBeenReady => _readyFired;
@@ -282,9 +284,23 @@ public class GamepadSession : IDisposable
     {
         if (_disposed) return;
 
-        if (Controller == null && !_switchingMode)
+        if (_controller == null && !_switchingMode)
         {
-            CreateController(ControllerMode.Ds4);
+            lock (_controllerLock)
+            {
+                if (_controller == null && !_switchingMode)
+                {
+                    try
+                    {
+                        _controller = CreateController(ControllerMode.Ds4);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine(
+                            $"[GamepadSession] create default DS4 failed: {ex.Message}");
+                    }
+                }
+            }
         }
 
         if (!_readyFired)
@@ -292,12 +308,24 @@ public class GamepadSession : IDisposable
             _readyFired = true;
             OnReady?.Invoke(this);
         }
+
+        // Acknowledge the phone's hello so an already-existing session (e.g.
+        // one that survived a watchdog timeout) can re-sync on the auto-reconnect
+        // path — otherwise the phone never receives any packet and stays stuck.
+        _ = SendAsync(new ServerToClient
+        {
+            ServerHello = new ServerHello
+            {
+                ProtocolVersion = 1,
+                HostName = Environment.MachineName,
+                MaxDownlinkRateHz = 1000,
+                RecommendedUplinkIntervalUs = 0,
+            }
+        });
     }
 
-    private void CreateController(ControllerMode mode)
+    private object? CreateController(ControllerMode mode)
     {
-        Mode = mode;
-
         switch (mode)
         {
             case ControllerMode.SwitchPro:
@@ -311,8 +339,7 @@ public class GamepadSession : IDisposable
                 var ctrl = _hmContext.CreateController(profile);
                 ctrl.OutputDecoded += OnHmOutputDecoded;
                 ctrl.OutputReceived += OnHmOutputReceived;
-                Controller = ctrl;
-                break;
+                return ctrl;
             }
             case ControllerMode.Dualsense:
             {
@@ -322,9 +349,8 @@ public class GamepadSession : IDisposable
                 var ctrl = _hmContext.CreateController(profile);
                 ctrl.OutputDecoded += OnHmOutputDecoded;
                 ctrl.OutputReceived += OnHmOutputReceived;
-                Controller = ctrl;
                 AttachDualsenseAudio(ctrl);
-                break;
+                return ctrl;
             }
             case ControllerMode.Xbox360:
             {
@@ -332,16 +358,14 @@ public class GamepadSession : IDisposable
                 ctrl.FeedbackReceived += OnXbox360Feedback;
                 ctrl.AutoSubmitReport = false;
                 ctrl.Connect();
-                Controller = ctrl;
-                break;
+                return ctrl;
             }
             default:
             {
                 var ctrl = _viGEm.CreateDualShock4Controller();
                 ctrl.FeedbackReceived += OnDs4Feedback;
                 ctrl.Connect();
-                Controller = ctrl;
-                break;
+                return ctrl;
             }
         }
     }
@@ -1004,59 +1028,51 @@ public class GamepadSession : IDisposable
             _lastSmallMotor = 0;
             ClearPendingAudio();
 
-            var oldCtrl = Controller;
-            var oldMode = Mode;
-
-            bool oldIsHm = oldMode is ControllerMode.SwitchPro or ControllerMode.Dualsense;
-            bool newIsHm = mode is ControllerMode.SwitchPro or ControllerMode.Dualsense;
-
-            if (oldCtrl != null && oldIsHm)
+            // 创建新控制器；成功前保留旧控制器。若创建失败，系统仍只有一个旧手柄，
+            // 不会出现 "多出一个 DS4" 或切换后无手柄的状态。
+            object? newCtrl;
+            try
             {
-                // HIDMaestro teardown is slow (~5s). Create new first, destroy old in background.
-                Controller = null;
-                if (newIsHm)
+                newCtrl = await Task.Run(() => CreateController(mode));
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[GamepadSession] create controller {mode} failed: {ex.Message}; keep current {Controller}");
+                return Mode;
+            }
+
+            object? oldCtrl;
+            lock (_controllerLock)
+            {
+                if (_disposed)
                 {
-                    // HIDMaestro → HIDMaestro: recreate via background
-                    var newCtrl = await Task.Run(() =>
-                    {
-                        CreateController(mode);
-                        return Controller;
-                    });
-                    Controller = newCtrl;
+                    DestroyController(newCtrl);
+                    return Mode;
                 }
-                else
-                {
-                    // HIDMaestro → DS4/Xbox: ViGEm is fast, create inline
-                    CreateController(mode);
-                }
+                oldCtrl = _controller;
+                _controller = newCtrl;
                 Mode = mode;
+            }
+
+            // 销毁旧控制器（HIDMaestro teardown 慢，放后台）；ViGEm 控制器销毁快。
+            if (oldCtrl != null && !ReferenceEquals(oldCtrl, newCtrl))
+            {
                 var toDestroy = oldCtrl;
                 _ = Task.Run(() =>
                 {
                     try
                     {
-                        PreRemoveDevice((HMController)toDestroy);
+                        if (toDestroy is HMController hm)
+                            PreRemoveDevice(hm);
                         DestroyController(toDestroy);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine(
+                            $"[GamepadSession] destroy old controller failed: {ex.Message}");
+                    }
                 });
-            }
-            else
-            {
-                Controller = null;
-                if (oldCtrl != null)
-                    DestroyController(oldCtrl);
-
-                if (newIsHm)
-                {
-                    // ViGEm → HIDMaestro: HIDMaestro creation is slow
-                    await Task.Run(() => CreateController(mode));
-                }
-                else
-                {
-                    CreateController(mode);
-                }
-                Mode = mode;
             }
 
             _lastLargeMotor = 0;
@@ -1089,14 +1105,18 @@ public class GamepadSession : IDisposable
             _cleanupTask = Task.Run(() =>
             {
                 PreRemoveDevice(ctrl);
-                try { ctrl.Dispose(); } catch { }
+                try { ctrl.Dispose(); }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[GamepadSession] dispose HM controller failed: {ex.Message}");
+                }
             });
         }
         else
         {
             DestroyController(Controller);
         }
-        Controller = null;
+        _controller = null;
 
         OnDisconnected?.Invoke(this);
     }
@@ -1266,7 +1286,10 @@ public class GamepadSession : IDisposable
                     break;
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[GamepadSession] destroy {ctrl?.GetType().Name} failed: {ex.Message}");
+        }
     }
 
     public Task WaitForCleanupAsync()

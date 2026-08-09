@@ -281,9 +281,15 @@ public class MainViewModel : INotifyPropertyChanged
         try
         {
             await session.SetControllerModeAsync(mode);
-            UiInvoke(() => card.SetModeRestored(session.Mode));
         }
         catch { }
+        finally
+        {
+            // Sync the UI to the actual mode afterwards. A failed restore (e.g.
+            // HIDMaestro busy) leaves the DS4 controller in place — the card must
+            // not keep showing DualSense while Windows shows a DualShock 4.
+            UiInvoke(() => card.SetModeRestored(session.Mode));
+        }
     }
 
     private void OnSessionEnded(GamepadSession session)
