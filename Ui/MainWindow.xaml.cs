@@ -42,12 +42,14 @@ public partial class MainWindow : Window
             await _vm.ShutdownAsync();
         }
         catch { }
-        Application.Current.Shutdown();
+        // 先移除 OnClosing（它的 e.Cancel=true 会把窗口"关到托盘"），
+        // 否则 Application.Shutdown() 关闭窗口时被取消，进程永不退出。
         try
         {
             Closing -= OnClosing;
         }
         catch { }
+        Application.Current.Shutdown();
     }
 
     private async void OnManualConnectClick(object sender, RoutedEventArgs e)

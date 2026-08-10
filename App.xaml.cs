@@ -234,9 +234,18 @@ public partial class App : WinApplication
         {
             _notifyIcon?.Visible = false;
             _notifyIcon?.Dispose();
-            Service?.Dispose();
         }
         catch { }
         base.OnExit(e);
+        // Service.Dispose() 会调用 ViGEm / HIDMaestro 的原生清理，可能被驱动调用
+        // 阻塞挂起；放后台线程并限时等待，超时则放弃，确保 Environment.Exit(0)
+        // 必然执行——否则进程会在托盘退出后残留。
+        try
+        {
+            if (Service != null)
+                Task.Run(Service.Dispose).Wait(TimeSpan.FromSeconds(3));
+        }
+        catch { }
+        Environment.Exit(0);
     }
 }

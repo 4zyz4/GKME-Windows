@@ -239,10 +239,14 @@ public class NetworkService : IDisposable
         OnDeviceDiscovered?.Invoke(device);
     }
 
-    private readonly object _autoLock = new();
-    private readonly HashSet<string> _autoConnecting = new();
     private readonly object _connectLock = new();
     private readonly HashSet<string> _connecting = new();
+
+    // 已从 _sessions 移除、但虚拟手柄仍在后台清理中的 session（key = 设备 key）。
+    // 新连接必须先等这些旧手柄彻底销毁，保证同一 IP 同时只出现一个虚拟手柄
+    // （"断开 → 手机自动重连" / "反复手动连接断开" 时容易触发双柄并存）。
+    private readonly object _retireLock = new();
+    private readonly Dictionary<string, List<GamepadSession>> _retired = new();
 
     private void RouteClientToServer(IPEndPoint remoteEp, byte[] payload)
     {
@@ -254,38 +258,53 @@ public class NetworkService : IDisposable
             {
                 session.HandleClientToServer(cts);
             }
-            else if (cts.PayloadCase == ClientToServer.PayloadOneofCase.Hello)
-            {
-                // Phone is (re)connecting but no session exists (session was torn
-                // down on this side). Rebuild it automatically so reconnect works
-                // even after a PC-side teardown/restart.
-                _ = AutoConnectAsync(remoteEp, key, cts.Hello.DeviceName);
-            }
+            // 无 session 时不自动创建虚拟手柄：PC 端只能通过用户手动点“连接”建立，
+            // 否则手机 app 一打开、广播 Hello，就会在用户未选择的情况下冒出虚拟手柄。
         }
         catch { }
     }
 
-    private async Task AutoConnectAsync(IPEndPoint remoteEp, string key, string deviceName)
+    /// <summary>登记一个已断开、但虚拟手柄仍在后台销毁中的 session。新连接在
+    /// <see cref="DrainRetiredAsync"/> 里等待它彻底清理完，避免新旧手柄并存。</summary>
+    private void Retire(GamepadSession s)
     {
-        lock (_autoLock)
+        lock (_retireLock)
         {
-            if (_sessions.ContainsKey(key) || !_autoConnecting.Add(key)) return;
+            if (!_retired.TryGetValue(s.Device.Key, out var list))
+                _retired[s.Device.Key] = list = new List<GamepadSession>();
+            list.Add(s);
         }
-        try
+
+        // 清理完成后自行脱离登记，避免长期持有已释放的引用。
+        _ = Task.Run(async () =>
         {
-            var device = new DiscoveredDevice
+            try { await s.WaitForCleanupAsync(); }
+            catch { }
+            finally
             {
-                DeviceName = string.IsNullOrWhiteSpace(deviceName)
-                    ? remoteEp.Address.ToString()
-                    : deviceName,
-                IpAddress = remoteEp.Address,
-            };
-            await ConnectAsync(device);
-        }
-        finally
+                lock (_retireLock)
+                {
+                    if (_retired.TryGetValue(s.Device.Key, out var l))
+                    {
+                        l.Remove(s);
+                        if (l.Count == 0) _retired.Remove(s.Device.Key);
+                    }
+                }
+            }
+        });
+    }
+
+    /// <summary>等待指定设备的全部已退役 session 完成虚拟手柄销毁（幂等）。</summary>
+    private async Task DrainRetiredAsync(string key)
+    {
+        List<GamepadSession>? list;
+        lock (_retireLock)
         {
-            lock (_autoLock) _autoConnecting.Remove(key);
+            if (!_retired.TryGetValue(key, out list)) return;
+            _retired.Remove(key);
         }
+        try { await Task.WhenAll(list.Select(s => s.WaitForCleanupAsync())); }
+        catch { }
     }
 
     private void RouteGamepadInput(IPEndPoint remoteEp, byte[] payload)
@@ -329,8 +348,12 @@ public class NetworkService : IDisposable
                 await oldSession.WaitForCleanupAsync();
             }
 
+            // 手动断开 / DisconnectAll 留下的 session 不在 _sessions 里，但虚拟手柄
+            // 可能仍在后台清理。等它们全部释放后再建新控制器，保证同一 IP 同时
+            // 只有一个虚拟手柄（"断开 → 自动重连" 场景最容易触发双柄并存）。
+            await DrainRetiredAsync(key);
+
             var phoneEp = new IPEndPoint(device.IpAddress, Port);
-            await SendToPhoneAsync(phoneEp, TypeServerToClient, BuildServerHello());
 
             var initialMode = SavedModeResolver?.Invoke(device) ?? ControllerMode.Ds4;
             var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _viGEm, _hmContext, HidMaestroAvailable, initialMode);
@@ -345,22 +368,29 @@ public class NetworkService : IDisposable
             session.OnDisconnected += s =>
             {
                 _sessions.TryRemove(s.Device.Key, out _);
+                // 旧手柄仍在后台销毁中；新连接必须等它释放，否则 Windows 里会
+                // 同时出现旧+新两个虚拟手柄。
+                Retire(s);
                 OnSessionEnded?.Invoke(s);
             };
 
-            session.Start();
-
             lock (_connectLock)
             {
+                // 尽快注册 session 防止并发的连接流程各建一个 session / 虚拟控制器。
                 // 等待期间另一个流程抢先把 session 建好了：销毁本流程刚建的，
                 // 复用已注册的那个，避免出现两个虚拟控制器。
-                if (_sessions.TryGetValue(key, out var current) && !ReferenceEquals(current, session))
+                if (_sessions.TryGetValue(key, out var current))
                 {
                     session.Disconnect();
                     return current;
                 }
                 _sessions[key] = session;
             }
+
+            session.Start();
+
+            // 注册后再发送 ServerHello，让手机端可以完成握手。
+            await SendToPhoneAsync(phoneEp, TypeServerToClient, BuildServerHello());
 
             return session;
         }
@@ -435,7 +465,7 @@ public class NetworkService : IDisposable
         if (_disposed) return;
         _disposed = true;
         StopDiscovery();
-        DisconnectAllAsync().GetAwaiter().GetResult();
+        DisconnectAll();
         _viGEm.Dispose();
         _hmContext.Dispose();
     }

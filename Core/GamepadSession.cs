@@ -185,8 +185,11 @@ public class GamepadSession : IDisposable
                     }
                 }
                 catch { }
+            }
 
-                // Ack this input: send vibration echo back to phone.
+            // Send vibration echo back to phone at fixed 125 Hz regardless of input.
+            if (Controller != null)
+            {
                 _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
             }
 
@@ -253,6 +256,11 @@ public class GamepadSession : IDisposable
             await _sendToPhone(message);
         }
         catch { }
+    }
+
+    public async Task SendServerHelloAsync()
+    {
+        await SendAsync(NetworkService.BuildServerHello());
     }
 
     private void HandleHello(Hello hello)
