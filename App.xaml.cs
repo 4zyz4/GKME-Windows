@@ -1,9 +1,11 @@
 using System.Diagnostics;
 using System.IO;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using WinApplication = System.Windows.Application;
 using WinFormsApplication = System.Windows.Forms.Application;
 using WinFormsNotifyIcon = System.Windows.Forms.NotifyIcon;
@@ -19,6 +21,63 @@ namespace GamepadEmuHost;
 
 public partial class App : WinApplication
 {
+    private bool _crashing;
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        if (_crashing) return;
+        ExceptionLogger.Record(e.Exception, $"Dispatcher: {e.Exception.Source ?? "Unknown"}");
+        ShowCrashDialog(e.Exception);
+        e.Handled = true;
+    }
+
+    private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        if (_crashing) return;
+        var ex = e.ExceptionObject as Exception;
+        if (ex != null)
+            ExceptionLogger.Record(ex, "AppDomain.UnhandledException");
+
+        ShowCrashDialog(ex);
+    }
+
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        if (_crashing) return;
+        ExceptionLogger.Record(e.Exception, "TaskScheduler.UnobservedTaskException");
+        ShowCrashDialog(e.Exception);
+    }
+
+    private void ShowCrashDialog(Exception? ex)
+    {
+        _crashing = true;
+        try
+        {
+            var text = ExceptionLogger.FormatForClipboard();
+            var dialog = new ExceptionDialog(text);
+            dialog.Owner = _mainWindow;
+            dialog.ShowDialog();
+        }
+        catch
+        {
+            try
+            {
+                var msg = ex != null
+                    ? $"异常：{ex.GetType().Name}\n{ex.Message}\n\n{ex.StackTrace}"
+                    : "发生未知异常";
+                MessageBox.Show(msg, "程序错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch { }
+        }
+        finally
+        {
+            try
+            {
+                Shutdown(-1);
+            }
+            catch { }
+        }
+    }
     private const string VigemInstallerName = "ViGEmBus_1.22.0_x64_x86_arm64.exe";
 
     public NetworkService? Service { get; private set; }
@@ -33,6 +92,10 @@ public partial class App : WinApplication
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+
         base.OnStartup(e);
 
         if (!NetworkService.IsVigemBusInstalled())
@@ -75,6 +138,21 @@ public partial class App : WinApplication
 
         var menu = new WinFormsContextMenuStrip();
         var showItem = new WinFormsToolStripMenuItem("显示窗口");
+        var exceptionItem = new WinFormsToolStripMenuItem("异常日志");
+        exceptionItem.Click += (_, _) =>
+        {
+            try
+            {
+                if (_mainWindow != null)
+                {
+                    var dialog = new ExceptionDialog();
+                    dialog.Owner = _mainWindow;
+                    dialog.ShowDialog();
+                }
+            }
+            catch { }
+        };
+
         var exitItem = new WinFormsToolStripMenuItem("退出");
         exitItem.Click += async (_, _) =>
         {
@@ -94,6 +172,7 @@ public partial class App : WinApplication
             }
         };
         menu.Items.Add(showItem);
+        menu.Items.Add(exceptionItem);
         menu.Items.Add(exitItem);
         _notifyIcon.ContextMenuStrip = menu;
         _notifyIcon.MouseClick += (_, e) =>
