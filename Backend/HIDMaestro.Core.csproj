@@ -1,0 +1,53 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+
+    <!-- Library identity: kept as HIDMaestro.Core so the host's existing
+         'using HIDMaestro;' surface keeps resolving after the project
+         reference replaces the precompiled DLL. -->
+    <AssemblyName>HIDMaestro.Core</AssemblyName>
+    <RootNamespace>HIDMaestro</RootNamespace>
+    <Description>Pure USB/IP virtual gamepad backend (UMDF2 driver removed).</Description>
+
+    <!-- Single-file publish friendliness: nothing driver-shaped is embedded
+         anymore. Only the usbip-win2 transport installer (already present on
+         the dev machine and used in-place) and the profile catalog ship as
+         embedded resources, so the consuming app needs no sibling files. -->
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- usbip-win2 0.9.7.7 installer, bundled (issue #39). The transport is
+         already installed on this machine at C:\Program Files\USBip, so at
+         runtime EnsureInstalled() short-circuits to a no-op. The embedded
+         copy is only a fallback for machines without it. It is extracted from
+         the precompiled HIDMaestro.Core.dll (NOT rebuilt from source, and
+         definitely NOT compiled with WDK) and verified against a fixed
+         SHA256, matching the original build contract. -->
+    <EmbeddedResource Include="Resources\USBip-0.9.7.7-x64.exe">
+      <LogicalName>HIDMaestro.Resources.USBip-0.9.7.7-x64.exe</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Resources\THIRD-PARTY-NOTICES.txt">
+      <LogicalName>HIDMaestro.Resources.THIRD-PARTY-NOTICES.txt</LogicalName>
+    </EmbeddedResource>
+
+    <!-- Profile catalog. Embedded with stable HIDMaestro.Profiles.* logical
+         names so HMContext.LoadDefaultProfiles() can read them via
+         Assembly.GetManifestResourceStream regardless of disk layout. The
+         repo's profiles/ directory (at the solution root) is the single
+         source of truth and is linked, not copied. -->
+    <EmbeddedResource Include="..\profiles\**\*.json"
+                      Exclude="..\profiles\schema.json;..\profiles\scraped_descriptors.json;..\profiles\linux-kernel-fixed-descriptors.json">
+      <LogicalName>HIDMaestro.Profiles.%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+      <Link>Profiles\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

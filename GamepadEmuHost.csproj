@@ -13,12 +13,12 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <AssemblyVersion>3.0.2</AssemblyVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="Install\VigemDrv\ViGEmBus_1.22.0_x64_x86_arm64.exe">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
     <Content Include="icon.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -34,14 +34,10 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-
-    <PackageReference Include="Nefarius.ViGEm.Client" Version="1.21.223" />
   </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="HIDMaestro.Core">
-      <HintPath>lib\HIDMaestro.Core.dll</HintPath>
-    </Reference>
+    <ProjectReference Include="Backend\HIDMaestro.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

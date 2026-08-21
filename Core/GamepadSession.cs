@@ -5,10 +5,6 @@ using System.Runtime.InteropServices;
 using GamepadEmu.Protocol;
 using Google.Protobuf;
 using HIDMaestro;
-using Nefarius.ViGEm.Client;
-using Nefarius.ViGEm.Client.Targets;
-using Nefarius.ViGEm.Client.Targets.Xbox360;
-using Nefarius.ViGEm.Client.Targets.DualShock4;
 
 namespace GamepadEmuHost.Core;
 
@@ -32,7 +28,6 @@ public class GamepadSession : IDisposable
     private const float Ds4AccelMaxOutput = 32760f;
 
     private readonly Func<IMessage, Task> _sendToPhone;
-    private readonly ViGEmClient _viGEm;
     private readonly HMContext _hmContext;
     private readonly bool _hidMaestroAvailable;
     private readonly object _controllerLock = new();
@@ -101,11 +96,10 @@ public class GamepadSession : IDisposable
     public event Action<GamepadSession>? OnConnectionLost;
     public event Action<GamepadSession>? OnDisconnected;
 
-    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, ViGEmClient viGEm, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
+    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
     {
         Device = device;
         _sendToPhone = sendToPhone;
-        _viGEm = viGEm;
         _hmContext = hmContext;
         _hidMaestroAvailable = hidMaestroAvailable;
         Mode = ResolveMode(initialMode);
@@ -174,7 +168,7 @@ public class GamepadSession : IDisposable
                             SubmitDs4Report(input);
                             break;
                         case ControllerMode.SwitchPro:
-                            SubmitSwitchProReport(input);
+                            SubmitDualsenseReport(input);
                             break;
                         case ControllerMode.Dualsense:
                             SubmitDualsenseReport(input);
@@ -300,60 +294,25 @@ public class GamepadSession : IDisposable
 
     private object? CreateController(ControllerMode mode)
     {
-        switch (mode)
+        // All controllers are presented through the USB/IP backend. Pick the
+        // matching composite profile; the Xbox 360 wired persona is a
+        // vendor-class device, the others are HID composite personas.
+        string profileId = mode switch
         {
-            case ControllerMode.SwitchPro:
-            {
-                var profileId = "switch-pro";
-                var profile = _hmContext.GetProfile(profileId)
-                    ?? _hmContext.AllProfiles.FirstOrDefault(p =>
-                        p.Id.StartsWith("dualshock-4", StringComparison.OrdinalIgnoreCase))
-                    ?? throw new InvalidOperationException($"No HIDMaestro profile found for mode {mode}");
+            ControllerMode.Xbox360 => "xbox360-composite",
+            ControllerMode.Dualsense => "dualsense-composite",
+            _ => "dualshock-4-v2-composite",
+        };
 
-                var ctrl = _hmContext.CreateController(profile);
-                ctrl.OutputDecoded += OnHmOutputDecoded;
-                ctrl.OutputReceived += OnHmOutputReceived;
-                return ctrl;
-            }
-            case ControllerMode.Dualsense:
-            {
-                var profile = _hmContext.GetProfile("dualsense-composite")
-                    ?? throw new InvalidOperationException($"No HIDMaestro profile found for mode {mode}");
+        var profile = _hmContext.GetProfile(profileId)
+            ?? throw new InvalidOperationException($"No HIDMaestro profile found for mode {mode} (profile '{profileId}').");
 
-                var ctrl = _hmContext.CreateController(profile);
-                ctrl.OutputDecoded += OnHmOutputDecoded;
-                ctrl.OutputReceived += OnHmOutputReceived;
-                AttachDualsenseAudio(ctrl);
-                return ctrl;
-            }
-            case ControllerMode.Xbox360:
-            {
-                var ctrl = _viGEm.CreateXbox360Controller();
-                ctrl.FeedbackReceived += OnXbox360Feedback;
-                ctrl.AutoSubmitReport = false;
-                ctrl.Connect();
-                return ctrl;
-            }
-            default:
-            {
-                var ctrl = _viGEm.CreateDualShock4Controller();
-                ctrl.FeedbackReceived += OnDs4Feedback;
-                ctrl.Connect();
-                return ctrl;
-            }
-        }
-    }
-
-    private void OnDs4Feedback(object? sender, DualShock4FeedbackReceivedEventArgs e)
-    {
-        _lastLargeMotor = e.LargeMotor;
-        _lastSmallMotor = e.SmallMotor;
-    }
-
-    private void OnXbox360Feedback(object? sender, Xbox360FeedbackReceivedEventArgs e)
-    {
-        _lastLargeMotor = e.LargeMotor;
-        _lastSmallMotor = e.SmallMotor;
+        var ctrl = _hmContext.CreateController(profile);
+        ctrl.OutputDecoded += OnHmOutputDecoded;
+        ctrl.OutputReceived += OnHmOutputReceived;
+        if (mode == ControllerMode.Dualsense)
+            AttachDualsenseAudio(ctrl);
+        return ctrl;
     }
 
     private void OnHmOutputDecoded(object? sender, HMOutputDecodedEventArgs e)
@@ -391,6 +350,17 @@ public class GamepadSession : IDisposable
             // [3]=leftMotor(large).
             _lastSmallMotor = d[2];
             _lastLargeMotor = d[3];
+            return;
+        }
+
+        if (Mode == ControllerMode.Xbox360 && packet.Source == HMOutputSource.HidOutput)
+        {
+            // Xbox 360 wired output report arrives on the interrupt OUT
+            // endpoint: wire bytes are [RID=0x00][len=0x08][0x00][large][small]...
+            // The device strips the RID, so the payload here starts at len.
+            // [2]=large motor, [3]=small motor.
+            _lastLargeMotor = d[2];
+            _lastSmallMotor = d[3];
             return;
         }
 
@@ -625,36 +595,53 @@ public class GamepadSession : IDisposable
 
     private void SubmitXbox360Report(GamepadInput input)
     {
-        var ctrl = (IXbox360Controller)Controller!;
+        var ctrl = (HMController)Controller!;
 
-        ctrl.SetButtonState(Xbox360Button.A, (input.Buttons & (1 << 0)) != 0);
-        ctrl.SetButtonState(Xbox360Button.B, (input.Buttons & (1 << 1)) != 0);
-        ctrl.SetButtonState(Xbox360Button.X, (input.Buttons & (1 << 2)) != 0);
-        ctrl.SetButtonState(Xbox360Button.Y, (input.Buttons & (1 << 3)) != 0);
-        ctrl.SetButtonState(Xbox360Button.LeftShoulder, (input.Buttons & (1 << 4)) != 0);
-        ctrl.SetButtonState(Xbox360Button.RightShoulder, (input.Buttons & (1 << 5)) != 0);
-        ctrl.SetButtonState(Xbox360Button.LeftThumb, (input.Buttons & (1 << 10)) != 0);
-        ctrl.SetButtonState(Xbox360Button.RightThumb, (input.Buttons & (1 << 11)) != 0);
-        ctrl.SetButtonState(Xbox360Button.Back, (input.Buttons & (1 << 8)) != 0);
-        ctrl.SetButtonState(Xbox360Button.Start, (input.Buttons & (1 << 9)) != 0);
-        ctrl.SetButtonState(Xbox360Button.Guide, (input.Buttons & (1 << 16)) != 0);
+        // XInput button word: A/B/X/Y live in the high byte, LB/RB/Guide and
+        // the menu/d-pad buttons in the low byte. This is the native layout a
+        // real Xbox 360 controller reports to Windows, so the host's XInput
+        // stack decodes it correctly.
+        ushort xb = 0;
+        if ((input.Buttons & (1u << 0)) != 0) xb |= 0x1000; // A
+        if ((input.Buttons & (1u << 1)) != 0) xb |= 0x2000; // B
+        if ((input.Buttons & (1u << 2)) != 0) xb |= 0x4000; // X
+        if ((input.Buttons & (1u << 3)) != 0) xb |= 0x8000; // Y
+        if ((input.Buttons & (1u << 4)) != 0) xb |= 0x0100; // LB
+        if ((input.Buttons & (1u << 5)) != 0) xb |= 0x0200; // RB
+        if ((input.Buttons & (1u << 8)) != 0) xb |= 0x0020; // Back
+        if ((input.Buttons & (1u << 9)) != 0) xb |= 0x0010; // Start
+        if ((input.Buttons & (1u << 10)) != 0) xb |= 0x0040; // LS
+        if ((input.Buttons & (1u << 11)) != 0) xb |= 0x0080; // RS
+        if ((input.Buttons & (1u << 16)) != 0) xb |= 0x0400; // Guide
+        if ((input.Dpad & 1) != 0) xb |= 0x0001; // Up
+        if ((input.Dpad & 2) != 0) xb |= 0x0002; // Down
+        if ((input.Dpad & 4) != 0) xb |= 0x0004; // Left
+        if ((input.Dpad & 8) != 0) xb |= 0x0008; // Right
 
-        ctrl.SetButtonState(Xbox360Button.Up, (input.Dpad & 1) != 0);
-        ctrl.SetButtonState(Xbox360Button.Down, (input.Dpad & 2) != 0);
-        ctrl.SetButtonState(Xbox360Button.Left, (input.Dpad & 4) != 0);
-        ctrl.SetButtonState(Xbox360Button.Right, (input.Dpad & 8) != 0);
+        var lt = input.LeftTrigger > 0 ? input.LeftTrigger : ((input.Buttons & (1u << 6)) != 0 ? 255u : 0u);
+        var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1u << 7)) != 0 ? 255u : 0u);
 
-        ctrl.SetAxisValue(Xbox360Axis.LeftThumbX, (short)input.LeftStickX);
-        ctrl.SetAxisValue(Xbox360Axis.LeftThumbY, (short)-input.LeftStickY);
-        ctrl.SetAxisValue(Xbox360Axis.RightThumbX, (short)input.RightStickX);
-        ctrl.SetAxisValue(Xbox360Axis.RightThumbY, (short)-input.RightStickY);
+        // 20-byte Xbox 360 wired input report (verbatim, no separate Report ID
+        // handling — the USB/IP backend transmits vendor reports as-is).
+        var buf = new byte[20];
+        buf[0] = 0x00; // report id
+        buf[1] = 0x14; // payload size
+        buf[2] = (byte)(xb & 0xFF);
+        buf[3] = (byte)(xb >> 8);
+        buf[4] = (byte)Math.Clamp(lt, 0u, 255u);
+        buf[5] = (byte)Math.Clamp(rt, 0u, 255u);
 
-        var lt = input.LeftTrigger > 0 ? input.LeftTrigger : ((input.Buttons & (1 << 6)) != 0 ? 255u : 0u);
-        var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1 << 7)) != 0 ? 255u : 0u);
-        ctrl.SetSliderValue(Xbox360Slider.LeftTrigger, (byte)Math.Clamp(lt, 0, 255));
-        ctrl.SetSliderValue(Xbox360Slider.RightTrigger, (byte)Math.Clamp(rt, 0, 255));
+        short lx = (short)input.LeftStickX;
+        short ly = (short)(-input.LeftStickY);
+        short rx = (short)input.RightStickX;
+        short ry = (short)(-input.RightStickY);
+        buf[6] = (byte)(lx & 0xFF); buf[7] = (byte)((lx >> 8) & 0xFF);
+        buf[8] = (byte)(ly & 0xFF); buf[9] = (byte)((ly >> 8) & 0xFF);
+        buf[10] = (byte)(rx & 0xFF); buf[11] = (byte)((rx >> 8) & 0xFF);
+        buf[12] = (byte)(ry & 0xFF); buf[13] = (byte)((ry >> 8) & 0xFF);
+        // 14..19 reserved (zero)
 
-        ctrl.SubmitReport();
+        ctrl.SubmitRawReport(buf.AsSpan());
     }
 
     private void SubmitSwitchProReport(GamepadInput input)
@@ -721,7 +708,7 @@ public class GamepadSession : IDisposable
 
     private void SubmitDs4Report(GamepadInput input)
     {
-        var ctrl = (IDualShock4Controller)Controller!;
+        var ctrl = (HMController)Controller!;
         var buf = new byte[63];
 
         buf[0] = (byte)((input.LeftStickX + 32768) / 256);
@@ -975,10 +962,12 @@ public class GamepadSession : IDisposable
 
     private ControllerMode ResolveMode(ControllerMode mode)
     {
-        // SwitchPro / DualSense require HIDMaestro; fall back to DS4 when
-        // the driver is unavailable (same rule as SetControllerModeAsync).
-        bool wantsHm = mode is ControllerMode.SwitchPro or ControllerMode.Dualsense;
-        return wantsHm && !_hidMaestroAvailable ? ControllerMode.Ds4 : mode;
+        // Switch Pro simulation is dropped; route it to the DualSense persona
+        // so the device still presents a usable gamepad. Every persona now
+        // rides the USB/IP backend, which is always available once the bundled
+        // transport is installed.
+        if (mode == ControllerMode.SwitchPro) return ControllerMode.Dualsense;
+        return mode;
     }
 
     public async Task<ControllerMode> SetControllerModeAsync(ControllerMode mode)
@@ -1166,70 +1155,21 @@ public class GamepadSession : IDisposable
 
     private void ResetController()
     {
+        if (Controller == null) return;
         try
         {
-            switch (Controller)
+            var neutral = new GamepadInput();
+            switch (Mode)
             {
-                case IXbox360Controller xbox:
-                    xbox.SetButtonState(Xbox360Button.A, false);
-                    xbox.SetButtonState(Xbox360Button.B, false);
-                    xbox.SetButtonState(Xbox360Button.X, false);
-                    xbox.SetButtonState(Xbox360Button.Y, false);
-                    xbox.SetButtonState(Xbox360Button.LeftShoulder, false);
-                    xbox.SetButtonState(Xbox360Button.RightShoulder, false);
-                    xbox.SetButtonState(Xbox360Button.LeftThumb, false);
-                    xbox.SetButtonState(Xbox360Button.RightThumb, false);
-                    xbox.SetButtonState(Xbox360Button.Back, false);
-                    xbox.SetButtonState(Xbox360Button.Start, false);
-                    xbox.SetButtonState(Xbox360Button.Guide, false);
-                    xbox.SetButtonState(Xbox360Button.Up, false);
-                    xbox.SetButtonState(Xbox360Button.Down, false);
-                    xbox.SetButtonState(Xbox360Button.Left, false);
-                    xbox.SetButtonState(Xbox360Button.Right, false);
-                    xbox.SetAxisValue(Xbox360Axis.LeftThumbX, 0);
-                    xbox.SetAxisValue(Xbox360Axis.LeftThumbY, 0);
-                    xbox.SetAxisValue(Xbox360Axis.RightThumbX, 0);
-                    xbox.SetAxisValue(Xbox360Axis.RightThumbY, 0);
-                    xbox.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
-                    xbox.SetSliderValue(Xbox360Slider.RightTrigger, 0);
-                    xbox.SubmitReport();
+                case ControllerMode.Xbox360:
+                    SubmitXbox360Report(neutral);
                     break;
-                case IDualShock4Controller ds4:
-                    var buf = new byte[63];
-                    buf[0] = 128; buf[1] = 128;
-                    buf[2] = 128; buf[3] = 128;
-                    buf[4] = 8;
-                    buf[11] = 10;
-                    buf[24] = 0xE9;
-                    buf[29] = 0x10 | 10;
-                    buf[30] = 0x1B;
-                    buf[34] = 0x80;
-                    buf[38] = 0x80;
-                    buf[43] = 0x80;
-                    buf[47] = 0x80;
-                    buf[52] = 0x80;
-                    buf[56] = 0x80;
-                    ds4.SubmitRawReport(buf);
+                case ControllerMode.Dualsense:
+                    SubmitDualsenseReport(neutral);
                     break;
-                case HMController hm:
-                {
-                    var hmBuf = new byte[64];
-                    // left stick center (128 = center for uint8), right stick center, triggers = 0
-                    hmBuf[0] = 128; hmBuf[1] = 128;
-                    hmBuf[2] = 128; hmBuf[3] = 128;
-                    hmBuf[4] = 0; hmBuf[5] = 0; // LT = RT = 0
-                    hmBuf[7] = 8; // hat neutral
-                    hmBuf[8] = 0; // no buttons
-                    hmBuf[9] = 0;
-                    // gyro = accel = 0 (zeroed by new byte[64])
-                    hmBuf[32] = 0x80; // finger0 not touching
-                    hmBuf[36] = 0x80; // finger1 not touching
-                    hmBuf[40] = (byte)(_ds4TouchCounter & 0x7F);
-                    hmBuf[41] = (byte)(_previousTouchCounter & 0x7F);
-                    hmBuf[52] = 0x09; // battery full (level 9 = 90%+, tester case 9)
-                    hm.SubmitRawReport(hmBuf.AsSpan());
+                default:
+                    SubmitDs4Report(neutral);
                     break;
-                }
             }
         }
         catch { }
@@ -1239,18 +1179,7 @@ public class GamepadSession : IDisposable
     {
         try
         {
-            switch (ctrl)
-            {
-                case IXbox360Controller xbox:
-                    xbox.Disconnect();
-                    break;
-                case IDualShock4Controller ds4:
-                    ds4.Disconnect();
-                    break;
-                case HMController hm:
-                    hm.Dispose();
-                    break;
-            }
+            if (ctrl is HMController hm) hm.Dispose();
         }
         catch (Exception ex)
         {

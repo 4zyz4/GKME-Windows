@@ -7,7 +7,6 @@ using System.Text;
 using GamepadEmu.Protocol;
 using Google.Protobuf;
 using HIDMaestro;
-using Nefarius.ViGEm.Client;
 
 namespace GamepadEmuHost.Core;
 
@@ -22,7 +21,6 @@ public class NetworkService : IDisposable
 
     private readonly ConcurrentDictionary<string, DiscoveredDevice> _discovered = new();
     private readonly ConcurrentDictionary<string, GamepadSession> _sessions = new();
-    private readonly ViGEmClient _viGEm = new();
     private readonly HMContext _hmContext = new();
 
     public bool HidMaestroAvailable { get; private set; }
@@ -41,10 +39,6 @@ public class NetworkService : IDisposable
         Environment.SetEnvironmentVariable("HIDMAESTRO_TIMEOUT_SCALE", "0.1");
     }
 
-    public static bool IsVigemBusInstalled()
-    {
-        return File.Exists(@"C:\Windows\System32\drivers\ViGEmBus.sys");
-    }
     private CancellationTokenSource? _listenerCts;
     private Task? _listenerTask;
     private UdpClient? _listener;
@@ -356,7 +350,7 @@ public class NetworkService : IDisposable
             var phoneEp = new IPEndPoint(device.IpAddress, Port);
 
             var initialMode = SavedModeResolver?.Invoke(device) ?? ControllerMode.Ds4;
-            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _viGEm, _hmContext, HidMaestroAvailable, initialMode);
+            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _hmContext, HidMaestroAvailable, initialMode);
             session.OnReady += s =>
             {
                 OnSessionStarted?.Invoke(s);
@@ -466,7 +460,6 @@ public class NetworkService : IDisposable
         _disposed = true;
         StopDiscovery();
         DisconnectAll();
-        _viGEm.Dispose();
         _hmContext.Dispose();
     }
 }
