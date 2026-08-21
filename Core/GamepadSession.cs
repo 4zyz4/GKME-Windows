@@ -312,6 +312,8 @@ public class GamepadSession : IDisposable
         ctrl.OutputReceived += OnHmOutputReceived;
         if (mode == ControllerMode.Dualsense)
             AttachDualsenseAudio(ctrl);
+        else if (mode == ControllerMode.Ds4)
+            AttachDs4Audio(ctrl);
         return ctrl;
     }
 
@@ -500,6 +502,91 @@ public class GamepadSession : IDisposable
         catch { }
     }
 
+    private void AttachDs4Audio(HMController ctrl)
+    {
+        try
+        {
+            var audio = ctrl.UsbAudio;
+            if (audio == null) return;
+
+            // DS4 has 2-channel 32 kHz stereo headset audio (headsetLeft/headsetRight).
+            // Convert to 4-channel format expected by phone: ch0=silent, ch1=mono mix, ch2=0, ch3=0.
+            audio.Output.FramesReceived += OnDs4AudioFrames;
+        }
+        catch { }
+    }
+
+    private void OnDs4AudioFrames(HMAudioOutput output, ReadOnlyMemory<byte> pcm)
+    {
+        try
+        {
+            int channels = output.Channels;
+            if (channels != 2 || pcm.IsEmpty) return;
+
+            var span = pcm.Span;
+            // DS4 has 2-channel 32 kHz stereo. Resample to TargetSampleRate (44.1 kHz)
+            // and convert to phone's expected 4-channel layout.
+            if (!_audioFormatReady)
+            {
+                _audioSampleRate = (uint)TargetSampleRate;
+                _audioChannels = 4;
+                _audioBitsPerSample = (byte)output.BitsPerSample;
+                _audioFormatReady = true;
+                System.Diagnostics.Debug.WriteLine(
+                    $"[Ds4Audio] stream opened: {output.SampleRateHz}Hz {channels}ch {output.BitsPerSample}bit -> 4ch @ {TargetSampleRate}Hz");
+            }
+
+            int bitsPerSample = output.BitsPerSample;
+            int bytesPerSample = bitsPerSample / 8;
+            int srcChannels = channels;
+            int srcBytesPerFrame = srcChannels * bytesPerSample;
+            int srcSampleRate = output.SampleRateHz;
+            int srcNumSamples = span.Length / srcBytesPerFrame;
+
+            // Resample from srcSampleRate to TargetSampleRate using linear interpolation
+            double ratio = (double)TargetSampleRate / srcSampleRate;
+            int dstNumSamples = (int)(srcNumSamples * ratio);
+            int dstChannels = 4;
+            int dstBytesPerFrame = dstChannels * bytesPerSample;
+            var dst = new byte[dstNumSamples * dstBytesPerFrame];
+
+            for (int s = 0; s < dstNumSamples; s++)
+            {
+                double srcPos = s / ratio;
+                int srcIdx0 = (int)srcPos;
+                int srcIdx1 = Math.Min(srcIdx0 + 1, srcNumSamples - 1);
+                double frac = srcPos - srcIdx0;
+
+                int srcOff0 = srcIdx0 * srcBytesPerFrame;
+                int srcOff1 = srcIdx1 * srcBytesPerFrame;
+                int dstOff = s * dstBytesPerFrame;
+
+                short left0 = BitConverter.ToInt16(span[srcOff0..(srcOff0 + 2)]);
+                short left1 = BitConverter.ToInt16(span[srcOff1..(srcOff1 + 2)]);
+                short right0 = BitConverter.ToInt16(span[(srcOff0 + 2)..(srcOff0 + 4)]);
+                short right1 = BitConverter.ToInt16(span[(srcOff1 + 2)..(srcOff1 + 4)]);
+
+                short left = (short)(left0 + frac * (left1 - left0));
+                short right = (short)(right0 + frac * (right1 - right0));
+                short mono = (short)((left + right) / 2);
+
+                dst[dstOff] = 0; dst[dstOff + 1] = 0;
+                dst[dstOff + 2] = (byte)(mono & 0xFF); dst[dstOff + 3] = (byte)((mono >> 8) & 0xFF);
+                dst[dstOff + 4] = 0; dst[dstOff + 5] = 0;
+                dst[dstOff + 6] = 0; dst[dstOff + 7] = 0;
+            }
+
+            DrainSingleChunk(dst);
+            _audioReceivedBytes += span.Length;
+            _audioWindowsSeen++;
+            _lastAudioWindowBytes = span.Length;
+        }
+        catch { }
+    }
+
+    // Target sample rate for phone playback (universally supported on Android)
+    private const int TargetSampleRate = 44100;
+
     private void OnDualsenseAudioFrames(HMAudioOutput output, ReadOnlyMemory<byte> pcm)
     {
         try
@@ -508,19 +595,71 @@ public class GamepadSession : IDisposable
             if (channels < 4 || pcm.IsEmpty) return;
 
             var span = pcm.Span;
-            // Real-time: send the full 4-channel packet directly without
-            // any downmix or re-ordering. The phone will pick lanes it needs.
+            // DualSense 4-channel layout: ch0=speakerLeft, ch1=speakerRight, ch2=hapticLeft, ch3=hapticRight
+            // Phone expects: ch0=silent, ch1=controller audio (mono speaker mix), ch2=left voice coil, ch3=right voice coil
             if (!_audioFormatReady)
             {
-                _audioSampleRate = (uint)output.SampleRateHz;
-                _audioChannels = (byte)channels;
+                _audioSampleRate = (uint)TargetSampleRate;
+                _audioChannels = 4;
                 _audioBitsPerSample = (byte)output.BitsPerSample;
                 _audioFormatReady = true;
                 System.Diagnostics.Debug.WriteLine(
-                    $"[DualSenseAudio] stream opened: {output.SampleRateHz}Hz {channels}ch {output.BitsPerSample}bit");
+                    $"[DualSenseAudio] stream opened: {output.SampleRateHz}Hz {channels}ch {output.BitsPerSample}bit -> remapped 4ch @ {TargetSampleRate}Hz");
             }
 
-            DrainSingleChunk(span.ToArray());
+            int bitsPerSample = output.BitsPerSample;
+            int bytesPerSample = bitsPerSample / 8;
+            int srcChannels = channels;
+            int srcBytesPerFrame = srcChannels * bytesPerSample;
+            int srcSampleRate = output.SampleRateHz;
+            int srcNumSamples = span.Length / srcBytesPerFrame;
+
+            // Resample from srcSampleRate to TargetSampleRate using linear interpolation
+            double ratio = (double)TargetSampleRate / srcSampleRate;
+            int dstNumSamples = (int)(srcNumSamples * ratio);
+            int dstChannels = 4;
+            int dstBytesPerFrame = dstChannels * bytesPerSample;
+            var dst = new byte[dstNumSamples * dstBytesPerFrame];
+
+            for (int s = 0; s < dstNumSamples; s++)
+            {
+                double srcPos = s / ratio;
+                int srcIdx0 = (int)srcPos;
+                int srcIdx1 = Math.Min(srcIdx0 + 1, srcNumSamples - 1);
+                double frac = srcPos - srcIdx0;
+
+                int srcOff0 = srcIdx0 * srcBytesPerFrame;
+                int srcOff1 = srcIdx1 * srcBytesPerFrame;
+                int dstOff = s * dstBytesPerFrame;
+
+                // Channel 0: speakerLeft
+                short speakerL0 = BitConverter.ToInt16(span[srcOff0..(srcOff0 + 2)]);
+                short speakerL1 = BitConverter.ToInt16(span[srcOff1..(srcOff1 + 2)]);
+                // Channel 1: speakerRight
+                short speakerR0 = BitConverter.ToInt16(span[(srcOff0 + 2)..(srcOff0 + 4)]);
+                short speakerR1 = BitConverter.ToInt16(span[(srcOff1 + 2)..(srcOff1 + 4)]);
+                // Channel 2: hapticLeft
+                short hapticL0 = BitConverter.ToInt16(span[(srcOff0 + 4)..(srcOff0 + 6)]);
+                short hapticL1 = BitConverter.ToInt16(span[(srcOff1 + 4)..(srcOff1 + 6)]);
+                // Channel 3: hapticRight
+                short hapticR0 = BitConverter.ToInt16(span[(srcOff0 + 6)..(srcOff0 + 8)]);
+                short hapticR1 = BitConverter.ToInt16(span[(srcOff1 + 6)..(srcOff1 + 8)]);
+
+                // Linear interpolation
+                short speakerL = (short)(speakerL0 + frac * (speakerL1 - speakerL0));
+                short speakerR = (short)(speakerR0 + frac * (speakerR1 - speakerR0));
+                short hapticL = (short)(hapticL0 + frac * (hapticL1 - hapticL0));
+                short hapticR = (short)(hapticR0 + frac * (hapticR1 - hapticR0));
+
+                short monoSpeaker = (short)((speakerL + speakerR) / 2);
+
+                dst[dstOff] = 0; dst[dstOff + 1] = 0;                    // ch0: silent
+                dst[dstOff + 2] = (byte)(monoSpeaker & 0xFF); dst[dstOff + 3] = (byte)((monoSpeaker >> 8) & 0xFF); // ch1: mono speaker
+                dst[dstOff + 4] = (byte)(hapticL & 0xFF); dst[dstOff + 5] = (byte)((hapticL >> 8) & 0xFF);         // ch2: left voice coil
+                dst[dstOff + 6] = (byte)(hapticR & 0xFF); dst[dstOff + 7] = (byte)((hapticR >> 8) & 0xFF);         // ch3: right voice coil
+            }
+
+            DrainSingleChunk(dst);
             _audioReceivedBytes += span.Length;
             _audioWindowsSeen++;
             _lastAudioWindowBytes = span.Length;
