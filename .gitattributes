@@ -58,3 +58,4 @@
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
 *.dll filter=lfs diff=lfs merge=lfs -text
+Backend/Resources/USBip-0.9.7.7-x64.exe filter=lfs diff=lfs merge=lfs -text
