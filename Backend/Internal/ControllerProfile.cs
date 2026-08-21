@@ -34,6 +34,9 @@ public sealed class ControllerProfile
     [JsonPropertyName("manufacturerString")]
     public string? ManufacturerString { get; set; }
 
+    [JsonPropertyName("serialNumberString")]
+    public string? SerialNumberString { get; set; }
+
     [JsonPropertyName("type")]
     public string Type { get; set; } = "";
 

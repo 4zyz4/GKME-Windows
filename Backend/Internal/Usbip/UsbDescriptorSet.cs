@@ -49,6 +49,7 @@ internal sealed class UsbDescriptorSet
 
     private readonly string? _manufacturer;
     private readonly string? _product;
+    private readonly string? _serialNumber;
     private readonly byte _iManufacturer;
     private readonly byte _iProduct;
     private readonly byte _iSerial;
@@ -104,6 +105,7 @@ internal sealed class UsbDescriptorSet
         _iSerial = DeviceDescriptor[16];
         _manufacturer = profile.ManufacturerString;
         _product = profile.ProductString;
+        _serialNumber = profile.SerialNumberString;
 
         ushort profileVid = profile.VendorId, profilePid = profile.ProductId;
         if (VendorId != profileVid || ProductId != profilePid)
@@ -270,7 +272,7 @@ internal sealed class UsbDescriptorSet
             return new byte[] { 0x04, 0x03, 0x09, 0x04 }; // one LANGID: en-US
         string? s = index == _iManufacturer && _iManufacturer != 0 ? _manufacturer
                   : index == _iProduct && _iProduct != 0 ? _product
-                  : index == _iSerial && _iSerial != 0 ? null // real pad has no serial string
+                  : index == _iSerial && _iSerial != 0 ? _serialNumber
                   : null;
         if (s == null) return null;
         var bytes = Encoding.Unicode.GetBytes(s);

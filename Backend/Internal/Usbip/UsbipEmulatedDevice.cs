@@ -73,6 +73,10 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     private byte[] _lastInputReport;
     private uint _lastSharedSeqNo;
 
+    // DS4 authentication state (for genuine check)
+    private enum Ds4AuthState { None, ChallengeSent }
+    private Ds4AuthState _ds4AuthState = Ds4AuthState.None;
+
     // Device state.
     private volatile byte _configurationValue;
 
@@ -586,6 +590,18 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                 var payload = outPayload ?? Array.Empty<byte>();
                 byte rid = payload.Length > 0 ? payload[0] : reportId;
                 var data = payload.Length > 0 ? payload.AsSpan(1) : ReadOnlySpan<byte>.Empty;
+
+                // DS4 authentication protocol:
+                // SET_FEATURE 0x80 with [0x03, 0x03] -> next GET_FEATURE 0x81 returns challenge response
+                // SET_FEATURE 0x80 with [0x03, 0x01] -> next GET_FEATURE 0x20 returns serial (already in Ds4FeatureReport20)
+                if (reportType == 0x03 && rid == 0x80 && data.Length >= 2 && data[0] == 0x03)
+                {
+                    if (data[1] == 0x03)
+                        _ds4AuthState = Ds4AuthState.ChallengeSent;
+                    else if (data[1] == 0x01)
+                        _ds4AuthState = Ds4AuthState.None; // serial is static in Ds4FeatureReport20
+                }
+
                 PublishOutput(reportType == 0x03 ? SourceHidFeature : SourceHidOutput, rid, data);
                 SendRetSubmit(cmd.Seqnum, 0, payload.Length, null);
                 return;
@@ -624,21 +640,28 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                     return p;
                 }
             case 0x20:
+                // DS4 feature report 0x20: 64-byte structure with serial at offset 12-20.
+                // DualSense uses Ds5FirmwareInfo; DS4 uses Ds4FeatureReport20.
                 if (wLength < 64) return null;
                 {
+                    if (Descriptors.ProductId == 0x09CC || Descriptors.ProductId == 0x05C4)
+                    {
+                        // DS4 (CUH-ZCT1/2)
+                        return (byte[])Ds4FeatureReport20.Clone();
+                    }
                     var p = (byte[])Ds5FirmwareInfo.Clone();
-                    // DualSense Edge is a different firmware line: Sony's
-                    // updater data records the base pad as type 0x0004 and
-                    // the Edge as type 0x0044. See driver.c for why those
-                    // two offsets are identified rather than guessed, and
-                    // for what in this blob is still the base pad's.
                     if (Descriptors.ProductId == 0x0DF2)
                     {
-                        p[22] = 0x44; p[23] = 0x00;   // swSeries      0x0044
-                        p[44] = 0x17; p[45] = 0x02;   // updateVersion 0x0217
+                        p[22] = 0x44; p[23] = 0x00;
+                        p[44] = 0x17; p[45] = 0x02;
                     }
                     return p;
                 }
+            case 0x81:
+                // DS4 authentication challenge response (after SET_FEATURE 0x80 subcommand 0x03).
+                // Returns 50528769 (0x03030301) big-endian at offset 1.
+                if (wLength < 64) return null;
+                return (byte[])Ds4FeatureReport81.Clone();
             case 0x12:
                 // DS4 pairing info over USB. The DS4's equivalent of 0x09,
                 // and the one Sony read whose absence is fatal rather than
@@ -725,16 +748,93 @@ internal sealed class UsbipEmulatedDevice : IDisposable
 
     /// <summary>DS4 firmware / hardware info, verbatim from WinUHid's
     /// WinUHidPS4.cpp. ASCII build date "Aug  3 2013" and time "07:01:12"
-    /// followed by the hardware and firmware words.</summary>
+    /// followed by the hardware and firmware words. Byte 28 (0-indexed) high
+    /// byte = 0xA4 (164) encodes motherboard model JDM-050 per the test-tool
+    /// mapping: e >> 8 == 164 → "JDM-050".</summary>
     private static readonly byte[] Ds4FirmwareInfo =
     {
         0xA3, 0x41, 0x75, 0x67, 0x20, 0x20, 0x33, 0x20,
         0x32, 0x30, 0x31, 0x33, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x30, 0x37, 0x3A, 0x30, 0x31, 0x3A, 0x31,
         0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x01, 0x00, 0x31, 0x03, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0xA4, 0x03, 0x00, 0x00,
         0x00, 0x49, 0x00, 0x05, 0x00, 0x00, 0x80, 0x03,
         0x00
+    };
+
+    /// <summary>DS4 feature report 0x20 (32) — 64-byte structure used by
+    /// hid-playstation's authentication (checkReportStructure, getSerialNumber).
+    /// Byte 0 = report ID (0x20). Bytes 12-27 = UTF-16LE serial number "JDM-050".</summary>
+    private static readonly byte[] Ds4FeatureReport20 =
+    {
+        0x20, // report ID
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 1-8
+        0x00, 0x00, 0x00, 0x00,                            // 9-12
+        // Serial "JDM-050" as UTF-16LE at offset 12 (13th byte):
+        0x4A, 0x00, // 'J'
+        0x44, 0x00, // 'D'
+        0x4D, 0x00, // 'M'
+        0x2D, 0x00, // '-'
+        0x30, 0x00, // '0'
+        0x35, 0x00, // '5'
+        0x30, 0x00, // '0'
+        0x00, 0x00, // null terminator
+        // rest zeroed
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+
+    /// <summary>DS4 feature report 0x81 (129) — authentication challenge response.
+    /// Returned after host sends SET_FEATURE 0x80 with subcommand 0x03.
+    /// Value 50528769 (0x03030301) or 50528768 (0x03030300) at offset 1 (big-endian).</summary>
+    private static readonly byte[] Ds4FeatureReport81 =
+    {
+        0x81, // report ID
+        0x03, 0x03, 0x03, 0x01, // 50528769 big-endian at offset 1
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
     };
 
     private void ResetDeviceState()
