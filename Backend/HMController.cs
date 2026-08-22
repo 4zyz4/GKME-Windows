@@ -47,7 +47,7 @@ public sealed class HMController : IDisposable
 
     // Encoder built once from the profile descriptor at construction time;
     // SubmitState reuses it for every frame.
-    private readonly HidReportBuilder _reportBuilder;
+    private readonly HidReportBuilder? _reportBuilder;
     private readonly IntPtr _inputView;
     // Named auto-reset event signaled by WriteInputFrame so the driver's
     // worker thread can wake immediately instead of busy-polling. Cached at
@@ -348,8 +348,7 @@ public sealed class HMController : IDisposable
         // GetOrBuildReportBuilder returns null — we handle them by using
         // InputReportSize for buffer sizing and skipping HidReportBuilder logic.
         _reportBuilder = profile.Inner.GetOrBuildReportBuilder();
-        bool isVendor = _reportBuilder == null;
-        int reportSize = isVendor ? (profile.Inner.InputReportSize ?? 64) : _reportBuilder.InputReportByteSize;
+        int reportSize = _reportBuilder != null ? _reportBuilder.InputReportByteSize : (profile.Inner.InputReportSize ?? 64);
         _reportBuffer = new byte[reportSize];
         _rawReportBuffer = new byte[reportSize];
 
@@ -694,7 +693,7 @@ public sealed class HMController : IDisposable
         }
         else
         {
-            int dataStart = _reportBuilder.InputReportId != 0 ? 1 : 0;
+            int dataStart = _reportBuilder!.InputReportId != 0 ? 1 : 0;
             int dataLen = Math.Min(report.Length - dataStart, SharedMemoryIO.DATA_CAPACITY);
             SharedMemoryIO.WriteInputFrame(
                 _inputView, _inputEvent, ref _inputSeqNo, report, dataLen,

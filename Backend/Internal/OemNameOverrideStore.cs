@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Threading;
 using Microsoft.Win32;
 
+#pragma warning disable CA1416 // 平台兼容性检查：此类仅用于 Windows
+
 namespace HIDMaestro.Internal;
 
 /// <summary>

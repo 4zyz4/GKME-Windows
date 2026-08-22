@@ -11,7 +11,7 @@ namespace GamepadEmuHost.Ui;
 public class MainViewModel : INotifyPropertyChanged
 {
     private readonly NetworkService? _network;
-    private readonly DeviceModeStore _modeStore;
+    private readonly DeviceModeStore _modeStore = null!;
     private string _statusText = "就绪";
     private bool _driverOk;
     private string _manualIp = "";
@@ -51,7 +51,7 @@ public class MainViewModel : INotifyPropertyChanged
         {
             StatusText = "HIDMaestro 驱动不可用，仅支持 DS4 和 Xbox360 模式";
         }
-        _network.SavedModeResolver = d => _modeStore.Get(d.ModeKey);
+        _network!.SavedModeResolver = (DiscoveredDevice d) => _modeStore.Get(d.ModeKey);
         _network.OnDeviceDiscovered += OnDeviceDiscovered;
         _network.OnSessionStarted += OnSessionStarted;
         _network.OnSessionEnded += OnSessionEnded;

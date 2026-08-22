@@ -11,7 +11,7 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <AssemblyVersion>3.0.2</AssemblyVersion>
+    <AssemblyVersion>3.1.0</AssemblyVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
@@ -37,7 +37,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="Backend\HIDMaestro.Core.csproj" />
+    <ProjectReference Include="Backend\HIDMaestro.Core.csproj">
+      <SetConfiguration>GenerateAssemblyInfo=false</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- Exclude Backend source files to prevent CS0436 conflicts in WPF wpftmp -->
+  <ItemGroup>
+    <Compile Remove="Backend\**" />
   </ItemGroup>
 
   <ItemGroup>

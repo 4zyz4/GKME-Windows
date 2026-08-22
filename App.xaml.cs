@@ -17,6 +17,8 @@ using WinFormsIcon = System.Drawing.Icon;
 using GamepadEmuHost.Core;
 using GamepadEmuHost.Ui;
 
+[assembly: System.Runtime.Versioning.SupportedOSPlatform("windows6.1")]
+
 namespace GamepadEmuHost;
 
 public partial class App : WinApplication

@@ -73,10 +73,6 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     private byte[] _lastInputReport;
     private uint _lastSharedSeqNo;
 
-    // DS4 authentication state (for genuine check)
-    private enum Ds4AuthState { None, ChallengeSent }
-    private Ds4AuthState _ds4AuthState = Ds4AuthState.None;
-
     // Device state.
     private volatile byte _configurationValue;
 
@@ -596,10 +592,8 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                 // SET_FEATURE 0x80 with [0x03, 0x01] -> next GET_FEATURE 0x20 returns serial (already in Ds4FeatureReport20)
                 if (reportType == 0x03 && rid == 0x80 && data.Length >= 2 && data[0] == 0x03)
                 {
-                    if (data[1] == 0x03)
-                        _ds4AuthState = Ds4AuthState.ChallengeSent;
-                    else if (data[1] == 0x01)
-                        _ds4AuthState = Ds4AuthState.None; // serial is static in Ds4FeatureReport20
+                    // DS4 authentication: [0x03, 0x03] = challenge, [0x03, 0x01] = serial
+                    // state tracking is unused; the reports are already served correctly
                 }
 
                 PublishOutput(reportType == 0x03 ? SourceHidFeature : SourceHidOutput, rid, data);
