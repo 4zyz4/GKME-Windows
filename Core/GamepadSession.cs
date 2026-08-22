@@ -8,6 +8,151 @@ using HIDMaestro;
 
 namespace GamepadEmuHost.Core;
 
+/// <summary>
+/// Win32 API mouse controller using SendInput for cursor movement, clicks, and scroll.
+/// </summary>
+internal static class Win32Mouse
+{
+    private const uint INPUT_MOUSE = 0;
+    private const uint MOUSEEVENTF_MOVE = 0x0001;
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    private const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+    private const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
+    private const uint MOUSEEVENTF_WHEEL = 0x0800;
+    private const uint MOUSEEVENTF_HWHEEL = 0x1000;
+    private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public UIntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public MOUSEINPUT mi;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X; public int Y; }
+
+    private static int _lastTouchX = 0;
+    private static int _lastTouchY = 0;
+    private static bool _hasLastTouch = false;
+
+    /// <summary>Move mouse by relative delta (dx, dy).</summary>
+    public static void MoveRelative(int dx, int dy)
+    {
+        var input = new INPUT
+        {
+            type = INPUT_MOUSE,
+            mi = new MOUSEINPUT { dx = dx, dy = dy, dwFlags = MOUSEEVENTF_MOVE }
+        };
+        SendInput(1, new[] { input }, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>Set mouse button state (left/right/middle).</summary>
+    public static void SetButton(int button, bool down)
+    {
+        uint flag = button switch
+        {
+            0 => down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP,
+            1 => down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP,
+            2 => down ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP,
+            _ => 0
+        };
+        if (flag == 0) return;
+        var input = new INPUT { type = INPUT_MOUSE, mi = new MOUSEINPUT { dwFlags = flag } };
+        SendOpaqueInput(input);
+    }
+
+    private static void SendOpaqueInput(INPUT input)
+    {
+        try
+        {
+            uint result = SendInput(1, new[] { input }, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
+        }
+        catch { }
+    }
+
+    /// <summary>Scroll vertical wheel (positive = up).</summary>
+    public static void ScrollVertical(int delta)
+    {
+        var input = new INPUT
+        {
+            type = INPUT_MOUSE,
+            mi = new MOUSEINPUT { mouseData = (uint)delta, dwFlags = MOUSEEVENTF_WHEEL }
+        };
+        SendInput(1, new[] { input }, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>Scroll horizontal wheel (positive = right).</summary>
+    public static void ScrollHorizontal(int delta)
+    {
+        var input = new INPUT
+        {
+            type = INPUT_MOUSE,
+            mi = new MOUSEINPUT { mouseData = (uint)delta, dwFlags = MOUSEEVENTF_HWHEEL }
+        };
+        SendInput(1, new[] { input }, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>
+    /// Process touchpad input: convert finger 0 delta to relative mouse move,
+    /// handle touchpad click as left button, and apply scroll wheel/pan from protobuf.
+    /// </summary>
+    public static void ProcessTouchpad(
+        bool finger0Active, int finger0X, int finger0Y,
+        bool touchpadClick, int mouseWheel, int mousePan, int mouseButtons)
+    {
+        // Relative move from finger 0
+        if (finger0Active && _hasLastTouch)
+        {
+            int dx = finger0X - _lastTouchX;
+            int dy = finger0Y - _lastTouchY;
+            if (dx != 0 || dy != 0) MoveRelative(dx, dy);
+        }
+        if (finger0Active)
+        {
+            _lastTouchX = finger0X;
+            _lastTouchY = finger0Y;
+            _hasLastTouch = true;
+        }
+        else
+        {
+            _hasLastTouch = false;
+        }
+
+        // Touchpad click -> left mouse button
+        if (touchpadClick) SetButton(0, true);
+        else SetButton(0, false);
+
+        // Mouse wheel/pan from protobuf (high-precision scroll)
+        if (mouseWheel != 0) ScrollVertical(mouseWheel);
+        if (mousePan != 0) ScrollHorizontal(mousePan);
+
+        // Additional mouse buttons from protobuf (bits 1=right, 2=middle)
+        if ((mouseButtons & 0x02) != 0) SetButton(1, true); else SetButton(1, false);
+        if ((mouseButtons & 0x04) != 0) SetButton(2, true); else SetButton(2, false);
+    }
+}
+
 public class GamepadSession : IDisposable
 {
     private const int ConnectionTimeoutMs = 3000;
@@ -48,6 +193,7 @@ public class GamepadSession : IDisposable
     private byte _nextTrackingId;
     private byte _ds5SequenceCounter;
     private Task? _cleanupTask;
+    private uint _lastMouseButtons;
 
     // 4-channel audio forwarding (DualSense): the phone needs the raw
     // speaker + voice-coil PCM, not just the rumble peaks folded above.
@@ -236,7 +382,7 @@ public class GamepadSession : IDisposable
     {
         _lastReceiveTime = DateTime.UtcNow;
         if (!IsReady) return;
-        HandleGamepadInput(input);
+        _inputQueue.Enqueue(input);
     }
 
     public async Task SendAsync(IMessage message)
@@ -778,6 +924,9 @@ public class GamepadSession : IDisposable
         // 14..19 reserved (zero)
 
         ctrl.SubmitRawReport(buf.AsSpan());
+
+        // Mousepad handled via SubmitMouseAndTouchpad (reads protobuf mouse fields)
+        SubmitMouseAndTouchpad(input);
     }
 
     private void SubmitSwitchProReport(GamepadInput input)
@@ -840,6 +989,9 @@ public class GamepadSession : IDisposable
         }
 
         ctrl.SubmitRawReport(buf.AsSpan());
+
+        // Mousepad handled via SubmitMouseAndTouchpad (reads protobuf mouse fields)
+        SubmitMouseAndTouchpad(input);
     }
 
     private void SubmitDs4Report(GamepadInput input)
@@ -943,6 +1095,8 @@ public class GamepadSession : IDisposable
         _ds4TouchCounter++;
 
         ctrl.SubmitRawReport(buf);
+        // Mousepad handled via SubmitMouseAndTouchpad (reads protobuf mouse fields)
+        SubmitMouseAndTouchpad(input);
     }
 
     private void SubmitDualsenseReport(GamepadInput input)
@@ -1051,6 +1205,42 @@ public class GamepadSession : IDisposable
         if (input.IsCharging) buf[52] |= 0x10;
 
         ctrl.SubmitRawReport(buf.AsSpan());
+
+        // Mousepad handled via SubmitMouseAndTouchpad (reads protobuf mouse fields)
+        SubmitMouseAndTouchpad(input);
+    }
+
+    /// <summary>
+    /// Process mousepad data from protobuf (WiFi/UDP mode).
+    /// Reads mouse_dx, mouse_dy, mouse_wheel, mouse_pan, mouse_buttons from protobuf
+    /// and uses Win32 SendInput for actual cursor control.
+    /// </summary>
+    private void SubmitMouseAndTouchpad(GamepadInput input)
+    {
+        if (input.MouseDx != 0 || input.MouseDy != 0)
+        {
+            Win32Mouse.MoveRelative(input.MouseDx, input.MouseDy);
+        }
+        if (input.MouseWheel != 0)
+        {
+            Win32Mouse.ScrollVertical(input.MouseWheel);
+        }
+        if (input.MousePan != 0)
+        {
+            Win32Mouse.ScrollHorizontal(input.MousePan);
+        }
+        if (input.MouseButtons != _lastMouseButtons)
+        {
+            uint released = _lastMouseButtons & ~input.MouseButtons;
+            if ((released & 0x01) != 0) Win32Mouse.SetButton(0, false);
+            if ((released & 0x02) != 0) Win32Mouse.SetButton(1, false);
+            if ((released & 0x04) != 0) Win32Mouse.SetButton(2, false);
+            uint pressed = input.MouseButtons & ~_lastMouseButtons;
+            if ((pressed & 0x01) != 0) Win32Mouse.SetButton(0, true);
+            if ((pressed & 0x02) != 0) Win32Mouse.SetButton(1, true);
+            if ((pressed & 0x04) != 0) Win32Mouse.SetButton(2, true);
+            _lastMouseButtons = input.MouseButtons;
+        }
     }
 
     private static void WriteInt16LE(byte[] buf, int offset, short value)
