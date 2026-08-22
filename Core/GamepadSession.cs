@@ -102,7 +102,7 @@ public class GamepadSession : IDisposable
         _sendToPhone = sendToPhone;
         _hmContext = hmContext;
         _hidMaestroAvailable = hidMaestroAvailable;
-        Mode = ResolveMode(initialMode);
+        Mode = initialMode;
     }
 
     public void Start()
@@ -166,9 +166,6 @@ public class GamepadSession : IDisposable
                     {
                         case ControllerMode.Ds4:
                             SubmitDs4Report(input);
-                            break;
-                        case ControllerMode.SwitchPro:
-                            SubmitDualsenseReport(input);
                             break;
                         case ControllerMode.Dualsense:
                             SubmitDualsenseReport(input);
@@ -1099,21 +1096,9 @@ public class GamepadSession : IDisposable
         });
     }
 
-    private ControllerMode ResolveMode(ControllerMode mode)
-    {
-        // Switch Pro simulation is dropped; route it to the DualSense persona
-        // so the device still presents a usable gamepad. Every persona now
-        // rides the USB/IP backend, which is always available once the bundled
-        // transport is installed.
-        if (mode == ControllerMode.SwitchPro) return ControllerMode.Dualsense;
-        return mode;
-    }
-
     public async Task<ControllerMode> SetControllerModeAsync(ControllerMode mode)
     {
         if (_disposed || _switchingMode) return Mode;
-
-        mode = ResolveMode(mode);
 
         _switchingMode = true;
         try
