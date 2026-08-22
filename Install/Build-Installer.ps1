@@ -2,13 +2,12 @@ param(
     [ValidateSet('Release', 'Debug')]
     [string]$Configuration = 'Release',
     [string]$OutputDir = "$PSScriptRoot\Output",
-    [string]$InnoSetupPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-    [string]$VigemInstallerPath = "$PSScriptRoot\VigemDrv\ViGEmBus_1.22.0_x64_x86_arm64.exe"
+    [string]$InnoSetupPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 )
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Resolve-Path "$PSScriptRoot\.."
-$PublishDir = "$RepoRoot\bin\$Configuration\net8.0-windows\win-x64\publish"
+$PublishDir = "$RepoRoot\bin\$Configuration\net10.0-windows\win-x64\publish"
 
 # ---------- step 1: publish self-contained ----------
 Write-Host "=== Publishing self-contained app ==="
@@ -22,13 +21,7 @@ dotnet publish "$RepoRoot\GamepadEmuHost.csproj" `
 
 if (-not $?) { throw "dotnet publish failed" }
 
-# ---------- step 2: verify ViGEM Bus driver installer ----------
-if (-not (Test-Path $VigemInstallerPath)) {
-    throw "ViGEM Bus installer not found at: $VigemInstallerPath"
-}
-Write-Host "Using ViGEM Bus installer: $VigemInstallerPath"
-
-# ---------- step 3: compile InnoSetup installer ----------
+# ---------- step 2: compile InnoSetup installer ----------
 Write-Host "=== Compiling InnoSetup installer ==="
 if (-not (Test-Path $InnoSetupPath)) {
     throw "InnoSetup not found at $InnoSetupPath. Please install InnoSetup 6 from https://jrsoftware.org/isdl.php"

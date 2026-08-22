@@ -6,7 +6,7 @@
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-	  <ApplicationIcon>icon.ico</ApplicationIcon>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
     <StartupObject>GamepadEmuHost.App</StartupObject>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
@@ -37,17 +37,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="Backend\HIDMaestro.Core.csproj">
-      <SetConfiguration>GenerateAssemblyInfo=false</SetConfiguration>
-    </ProjectReference>
-  </ItemGroup>
-
-  <!-- Exclude Backend source files to prevent CS0436 conflicts in WPF wpftmp -->
-  <ItemGroup>
-    <Compile Remove="Backend\**" />
-  </ItemGroup>
-
-  <ItemGroup>
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
   </ItemGroup>
 
@@ -57,4 +46,25 @@
     </Protobuf>
   </ItemGroup>
 
-  </Project>
+  <!-- Driver source files are automatically included by SDK -->
+
+  <!-- Embedded resources: USBIP installer + license notices -->
+  <ItemGroup>
+    <EmbeddedResource Include="Driver\Resources\USBip-0.9.7.7-x64.exe">
+      <LogicalName>HIDMaestro.Resources.USBip-0.9.7.7-x64.exe</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Driver\Resources\THIRD-PARTY-NOTICES.txt">
+      <LogicalName>HIDMaestro.Resources.THIRD-PARTY-NOTICES.txt</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- Profile catalog as embedded resources -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\profiles\**\*.json"
+                      Exclude="..\profiles\schema.json;..\profiles\scraped_descriptors.json;..\profiles\linux-kernel-fixed-descriptors.json">
+      <LogicalName>HIDMaestro.Profiles.%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+      <Link>Profiles\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

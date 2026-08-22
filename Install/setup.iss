@@ -8,7 +8,6 @@
 #define MyAppExeName "GamepadEmuHost.exe"
 
 #define BuildDir "..\bin\Release\net10.0-windows\win-x64"
-#define VigemDir "VigemDrv"
 
 [Setup]
 AppName=GamepadEmuHost
@@ -39,9 +38,6 @@ Source: "{#BuildDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsource
 Source: "{#BuildDir}\*.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#BuildDir}\*.pdb"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
-; ViGEM Bus driver installer (bundled, installed by main program)
-Source: "{#VigemDir}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; DestDir: "{app}"; Flags: ignoreversion
-
 [Icons]
 Name: "{group}\GamepadEmuHost"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\GamepadEmuHost"; Filename: "{app}\{#MyAppExeName}"
@@ -49,7 +45,6 @@ Name: "{group}\Uninstall GamepadEmuHost"; Filename: "{uninstallexe}"
 
 [Code]
 const
-  VIGEM_DRIVER_PATH = 'C:\Windows\System32\drivers\ViGEmBus.sys';
   MyAppName = 'GamepadEmuHost';
   MyAppVersion = '3.1.0';
 
@@ -59,11 +54,6 @@ var
   InstalledVersion: String;
   IsUpgradeMode: Boolean;
   PageCreated: Boolean;
-
-function IsVigemInstalled: Boolean;
-begin
-  Result := FileExists(VIGEM_DRIVER_PATH);
-end;
 
 function GetUninstallKey: String;
 var
