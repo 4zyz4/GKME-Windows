@@ -8,7 +8,7 @@ namespace HIDMaestro.Internal;
 
 /// <summary>
 /// Per-controller shared-memory IPC between the elevated user-mode SDK
-/// process and the kernel-adjacent UMDF2 driver / XUSB companion. Owns the
+/// process and the USB/IP backend. Owns the
 /// pagefile-backed Global\HIDMaestroInput&lt;N&gt; (input) and Global\HIDMaestroOutput&lt;N&gt;
 /// (output passthrough) named sections, plus the lock-free seqlock writer
 /// for input frames.
@@ -88,53 +88,8 @@ internal static class SharedMemoryIO
     public const int OUTPUT_SLOT_OFFSET_SIZE      = 6;
     public const int OUTPUT_SLOT_OFFSET_DATA      = 8;
 
-    // HIDMAESTRO_SHARED_PID_STATE — match driver/driver.h:
-    //   ULONG   SeqNo                       offset  0   (seqlock)
-    //   UCHAR   PidEnabled                  offset  4   (gate; 0 = no FFB)
-    //   UCHAR   _pad0[3]                    offset  5
-    //   UCHAR   BL_EffectBlockIndex         offset  8
-    //   UCHAR   BL_LoadStatus               offset  9
-    //   USHORT  BL_RAMPoolAvailable         offset 10
-    //   USHORT  Pool_RAMPoolSize            offset 12
-    //   UCHAR   Pool_MaxSimultaneousEffects offset 14
-    //   UCHAR   Pool_MemoryManagement       offset 15
-    //   UCHAR   State_EffectBlockIndex      offset 16
-    //   UCHAR   State_Flags                 offset 17
-    //   UCHAR   _pad1[2]                    offset 18
-    //   ULONG   EbiAllocBitmap              offset 20  (v1.1.37)
-    //   ULONG   EbiAllocatedCount           offset 24  (v1.1.37)
-    //   UCHAR   PoolReportId                offset 28  (v1.3.7 — 0=canonical 0x13)
-    //   UCHAR   StateReportId               offset 29  (v1.3.7 — 0=canonical 0x14)
-    //   UCHAR   BlockLoadReportId           offset 30  (v1.3.7 — 0=canonical 0x12)
-    //   UCHAR   CreateNewEffectReportId     offset 31  (v1.3.7 — 0=canonical 0x11)
-    //   UCHAR   BlockFreeReportId           offset 32  (v1.3.7 — 0=canonical 0x1B)
-    //   UCHAR   DeviceControlReportId       offset 33  (v1.3.7 — 0=canonical 0x1C)
-    //   UCHAR   _pad2[2]                    offset 34
-    //   total: 36 bytes (rounded to 40 for 8-byte alignment)
-    public const int PID_STATE_SIZE                  = 40;
-    public const int PID_OFFSET_SEQNO                = 0;
-    public const int PID_OFFSET_ENABLED              = 4;
-    public const int PID_OFFSET_BL_EBI               = 8;
-    public const int PID_OFFSET_BL_LOADSTATUS        = 9;
-    public const int PID_OFFSET_BL_RAMAVAIL          = 10;
-    public const int PID_OFFSET_POOL_RAMSIZE         = 12;
-    public const int PID_OFFSET_POOL_MAXSIM          = 14;
-    public const int PID_OFFSET_POOL_MEMMGMT         = 15;
-    public const int PID_OFFSET_STATE_EBI            = 16;
-    public const int PID_OFFSET_STATE_FLAGS          = 17;
-    public const int PID_OFFSET_EBI_BITMAP           = 20;
-    public const int PID_OFFSET_EBI_COUNT            = 24;
-    public const int PID_OFFSET_POOL_RID             = 28;
-    public const int PID_OFFSET_STATE_RID            = 29;
-    public const int PID_OFFSET_BL_RID               = 30;
-    public const int PID_OFFSET_NEW_EFFECT_RID       = 31;
-    public const int PID_OFFSET_BLOCK_FREE_RID       = 32;
-    public const int PID_OFFSET_DEVICE_CONTROL_RID   = 33;
-
     // SDDL granting Local System, Builtin Admins, and LocalService full
-    // access plus World read. LocalService is what WUDFHost runs as for
-    // UMDF2, so the driver/companion need full access to read input and
-    // write output. World read is for non-elevated diagnostic tools.
+    // access plus World read. LocalService is what WUDFHost runs as.
     private const string Sddl =
         "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;LS)(A;;GR;;;WD)";
 
@@ -154,8 +109,6 @@ internal static class SharedMemoryIO
     private static readonly Dictionary<int, IntPtr> s_outputHandles = new();
     private static readonly Dictionary<int, IntPtr> s_outputViews   = new();
     private static readonly Dictionary<int, IntPtr> s_outputEvents  = new();
-    private static readonly Dictionary<int, IntPtr> s_pidStateHandles = new();
-    private static readonly Dictionary<int, IntPtr> s_pidStateViews   = new();
 
     /// <summary>Live output-poll threads, keyed by controller index (issue
     /// #45).
@@ -256,7 +209,7 @@ internal static class SharedMemoryIO
             Marshal.Copy(new byte[SHARED_INPUT_SIZE], 0, view, SHARED_INPUT_SIZE);
 
             // Companion signaling event. Auto-reset (manual_reset=FALSE), not
-            // initially set. The driver's per-device worker thread waits on
+            // initially set. The USB/IP device emulator's input pump waits on
             // this with a 50ms safety timeout to replace the old 1ms busy poll.
             // SDDL matches the section so WUDFHost (LocalService) can open it.
             string evName = $@"Global\HIDMaestroInputEvent{controllerIndex}";
@@ -267,8 +220,8 @@ internal static class SharedMemoryIO
             // timer-quantized, which put a 0-8 ms (median ~4 ms) phase
             // delay on the WGI/GameInput input path and 125 idle wakes/s
             // per Xbox controller. A SECOND named auto-reset event (the
-            // main input event is consumed by the HID driver's worker,
-            // an auto-reset event cannot serve two waiters) lets the
+            // main input event is consumed by the USB/IP device emulator's
+            // input pump, an auto-reset event cannot serve two waiters) lets the
             // companion complete a parked WAIT_FOR_INPUT at frame
             // arrival. Old companions never open it: timer fallback.
             string cevName = $@"Global\HIDMaestroCompanionInputEvent{controllerIndex}";
@@ -307,13 +260,12 @@ internal static class SharedMemoryIO
     }
 
     /// <summary>Create (or return) the output-ring doorbell
-    /// <c>Global\HIDMaestroOutputEvent&lt;N&gt;</c> from the SDK side. In
-    /// UMDF2 mode the DRIVER creates this event; the USB/IP backend
-    /// (issue #39) has no driver, so its in-process device emulator
-    /// creates it here, with the same SDDL, BEFORE the HMController's
-    /// OutputPollLoop calls <see cref="TryOpenOutputEvent"/>, so the
-    /// reader comes up in event mode exactly as it does against the
-    /// driver. Cached per index and closed by DestroyController.</summary>
+    /// <c>Global\HIDMaestroOutputEvent&lt;N&gt;</c> from the SDK side.
+    /// The USB/IP backend (issue #39) has no external driver, so the
+    /// in-process device emulator creates it here, with the same SDDL,
+    /// BEFORE the HMController's OutputPollLoop calls
+    /// <see cref="TryOpenOutputEvent"/>, so the reader comes up in
+    /// event mode. Cached per index and closed by DestroyController.</summary>
     public static IntPtr EnsureOutputEvent(int controllerIndex)
     {
         lock (s_outputViews)
@@ -330,8 +282,7 @@ internal static class SharedMemoryIO
     /// <c>Global\HIDMaestroInputEvent&lt;N&gt;</c> for a waiter. The handle
     /// EnsureInputMapping caches is the writer's SetEvent handle; the
     /// USB/IP device emulator's input pump is the auto-reset event's sole
-    /// waiter (the role the UMDF2 driver's worker plays otherwise) and
-    /// owns the returned handle.</summary>
+    /// waiter and owns the returned handle.</summary>
     public static IntPtr OpenInputEventForWait(int controllerIndex)
     {
         return OpenEventW(SYNCHRONIZE | EVENT_MODIFY_STATE, false,
@@ -339,7 +290,7 @@ internal static class SharedMemoryIO
     }
 
     /// <summary>Returns the view pointer for the controller's OUTPUT section,
-    /// creating the section on first call. The driver/companion attach to
+    /// creating the section on first call. The backend attaches to
     /// this section read-write to publish captured rumble/haptics/FFB/LED.</summary>
     public static IntPtr EnsureOutputMapping(int controllerIndex)
     {
@@ -353,7 +304,7 @@ internal static class SharedMemoryIO
 
             // Zero-init: pagefile sections start zero, BUT a residual kernel
             // object from a prior SDK process (kept alive by a still-loaded
-            // driver view) may retain a non-zero SeqNo and stale Data. Without
+            // backend view) may retain a non-zero SeqNo and stale Data. Without
             // this, a fresh OutputPollLoop sees `SeqNo != lastSeq(0)` on its
             // first sample and replays prior-session FFB as a brand-new
             // OutputReceived packet — on repeat if a consumer process's
@@ -369,168 +320,7 @@ internal static class SharedMemoryIO
         }
     }
 
-    /// <summary>Returns the view pointer for the controller's PID FFB
-    /// state section, creating the section on first call. The driver
-    /// attaches read-only and reads on every IOCTL_UMDF_HID_GET_FEATURE.
-    /// Lazy: a non-FFB consumer that never publishes PID state never
-    /// triggers this — the section simply doesn't exist and the driver
-    /// falls back to STATUS_NO_SUCH_DEVICE / STATUS_NOT_SUPPORTED for
-    /// any PID GetFeature, matching pre-FFB behavior.</summary>
-    public static IntPtr EnsurePidStateMapping(int controllerIndex)
-    {
-        lock (s_pidStateViews)
-        {
-            if (s_pidStateViews.TryGetValue(controllerIndex, out IntPtr existing))
-                return existing;
-
-            string name = $@"Global\HIDMaestroPidState{controllerIndex}";
-            (IntPtr h, IntPtr view) = CreateSection(name, PID_STATE_SIZE);
-
-            // v1.1.38 — initialize with vJoy-compatible defaults rather
-            // than zeros. vJoy's Ffb_ResetPIDData
-            // (vJoy-Brunner/driver/sys/hid.c:2627) sets RAMPoolSize=200,
-            // MaxSimultaneousEffects=10, MemoryManagement=0 unconditionally
-            // at device-add. dinput8 reads Pool defaults during enumeration
-            // (before any consumer has called PublishPidPool); zero
-            // RAMPoolSize / MaxSim could lead dinput into degenerate
-            // branches (divide-by-zero, no-effects path).
-            //
-            // PidEnabled stays 0 — the consumer still has to PublishPidPool
-            // to flip that, at which point GetFeature(0x13 Pool) starts
-            // returning the consumer's values (overwriting these defaults).
-            // Until then, GetFeature(0x13) returns STATUS_NO_SUCH_DEVICE
-            // per the vJoy "FFB not enabled" convention, but if a path
-            // ever bypasses that gate, sane bytes are present.
-            // PID_STATE_SIZE is small (24 bytes) but bulk-zero is still
-            // a single P/Invoke vs PID_STATE_SIZE separate WriteBytes.
-            Marshal.Copy(new byte[PID_STATE_SIZE], 0, view, PID_STATE_SIZE);
-            Marshal.WriteInt16(view, PID_OFFSET_POOL_RAMSIZE, 200);
-            Marshal.WriteByte (view, PID_OFFSET_POOL_MAXSIM, 10);
-            // MemoryManagement stays 0 (host-managed pool, no shared param blocks).
-
-            s_pidStateHandles[controllerIndex] = h;
-            s_pidStateViews[controllerIndex] = view;
-            return view;
-        }
-    }
-
-    /// <summary>Atomic seqlock write of the full PID state struct. The
-    /// caller has already mutated the relevant fields; this method
-    /// publishes the new SeqNo so the driver's seqlocked read picks up
-    /// a consistent snapshot. Single-writer (the SDK consumer) →
-    /// single-reader (the driver per-IOCTL); seqlock retry handles the
-    /// (rare) reader-mid-write window.</summary>
-    private static void PidStateBeginWrite(IntPtr view, ref uint seqNo)
-    {
-        // Mark write-in-progress (odd seqNo)
-        uint pending = seqNo + 1;
-        Marshal.WriteInt32(view, PID_OFFSET_SEQNO, (int)pending);
-        Thread.MemoryBarrier();
-    }
-
-    private static void PidStateEndWrite(IntPtr view, ref uint seqNo)
-    {
-        // Mark write-complete (even seqNo)
-        Thread.MemoryBarrier();
-        seqNo += 2;
-        Marshal.WriteInt32(view, PID_OFFSET_SEQNO, (int)seqNo);
-    }
-
-    /// <summary>Publish PID Pool Report fields and flip PidEnabled to 1.
-    /// First call enables FFB on this controller; subsequent calls update
-    /// the pool state.</summary>
-    public static void WritePidPool(IntPtr view, ref uint seqNo,
-                                    ushort ramPoolSize, byte maxSimultaneousEffects,
-                                    bool deviceManagedPool, bool sharedParameterBlocks)
-    {
-        PidStateBeginWrite(view, ref seqNo);
-        Marshal.WriteByte(view,  PID_OFFSET_ENABLED,           1);
-        Marshal.WriteInt16(view, PID_OFFSET_POOL_RAMSIZE,      (short)ramPoolSize);
-        Marshal.WriteByte(view,  PID_OFFSET_POOL_MAXSIM,       maxSimultaneousEffects);
-        byte memMgmt = (byte)((deviceManagedPool ? 0x01 : 0x00) |
-                              (sharedParameterBlocks ? 0x02 : 0x00));
-        Marshal.WriteByte(view,  PID_OFFSET_POOL_MEMMGMT,      memMgmt);
-        PidStateEndWrite(view, ref seqNo);
-    }
-
-    /// <summary>Publish PID Block Load Report fields. Single-slot
-    /// last-write-wins per HID PID 1.0 §5.5 — call from the
-    /// OutputReceived handler that received the Create New Effect
-    /// SetFeature, before returning, so the host's matching
-    /// GetFeature(BlockLoad) reads this snapshot.</summary>
-    public static void WritePidBlockLoad(IntPtr view, ref uint seqNo,
-                                         byte effectBlockIndex, byte loadStatus,
-                                         ushort ramPoolAvailable)
-    {
-        PidStateBeginWrite(view, ref seqNo);
-        Marshal.WriteByte(view,  PID_OFFSET_BL_EBI,        effectBlockIndex);
-        Marshal.WriteByte(view,  PID_OFFSET_BL_LOADSTATUS, loadStatus);
-        Marshal.WriteInt16(view, PID_OFFSET_BL_RAMAVAIL,   (short)ramPoolAvailable);
-        PidStateEndWrite(view, ref seqNo);
-    }
-
-    /// <summary>Publish the descriptor-derived PID Report ID overrides.
-    /// Called once per controller right after section creation. Driver
-    /// reads these from shared state and uses them in
-    /// IOCTL_UMDF_HID_GET_FEATURE / IOCTL_UMDF_HID_SET_FEATURE /
-    /// IOCTL_UMDF_HID_SET_OUTPUT_REPORT instead of the canonical
-    /// 0x11/0x12/0x13/0x14/0x1B/0x1C constants. Profiles whose
-    /// descriptor uses the canonical IDs (every builder-emitted
-    /// AddPidFfbBlock descriptor) get zero overrides written here, so
-    /// the driver's `if (sec-&gt;XxxReportId) ...` guards keep canonical
-    /// behavior. Outside the seqlock — written exactly once at
-    /// section setup, before any consumer publishes Pool/State/BL.</summary>
-    public static void WritePidReportIds(IntPtr view,
-        byte poolRid, byte stateRid, byte blockLoadRid,
-        byte createNewEffectRid, byte blockFreeRid, byte deviceControlRid)
-    {
-        Marshal.WriteByte(view, PID_OFFSET_POOL_RID,           poolRid);
-        Marshal.WriteByte(view, PID_OFFSET_STATE_RID,          stateRid);
-        Marshal.WriteByte(view, PID_OFFSET_BL_RID,             blockLoadRid);
-        Marshal.WriteByte(view, PID_OFFSET_NEW_EFFECT_RID,     createNewEffectRid);
-        Marshal.WriteByte(view, PID_OFFSET_BLOCK_FREE_RID,     blockFreeRid);
-        Marshal.WriteByte(view, PID_OFFSET_DEVICE_CONTROL_RID, deviceControlRid);
-    }
-
-    /// <summary>Publish PID State Report fields.</summary>
-    public static void WritePidState(IntPtr view, ref uint seqNo,
-                                     byte effectBlockIndex, byte stateFlags)
-    {
-        PidStateBeginWrite(view, ref seqNo);
-        Marshal.WriteByte(view, PID_OFFSET_STATE_EBI,   effectBlockIndex);
-        Marshal.WriteByte(view, PID_OFFSET_STATE_FLAGS, stateFlags);
-        PidStateEndWrite(view, ref seqNo);
-    }
-
-    /// <summary>v1.1.37 — seqlocked read of the Block Load fields the
-    /// driver populates synchronously inside its
-    /// IOCTL_UMDF_HID_SET_FEATURE(0x11) handler. Returns the EBI the
-    /// driver just assigned, the load status (1=Success, 2=Full,
-    /// 3=Error), and the remaining RAM pool. Retries on writer-mid-update
-    /// (very brief; the driver writes 4 bytes under SeqNo).</summary>
-    public static (byte ebi, byte loadStatus, ushort ramPoolAvailable)
-        ReadPidBlockLoad(IntPtr view)
-    {
-        for (int attempt = 0; attempt < 4; attempt++)
-        {
-            uint seq1 = (uint)Marshal.ReadInt32(view, PID_OFFSET_SEQNO);
-            if ((seq1 & 1) != 0) { Thread.SpinWait(8); continue; } /* writer mid-update */
-            Thread.MemoryBarrier();
-            byte ebi   = Marshal.ReadByte(view,  PID_OFFSET_BL_EBI);
-            byte stat  = Marshal.ReadByte(view,  PID_OFFSET_BL_LOADSTATUS);
-            ushort ram = (ushort)Marshal.ReadInt16(view, PID_OFFSET_BL_RAMAVAIL);
-            Thread.MemoryBarrier();
-            uint seq2 = (uint)Marshal.ReadInt32(view, PID_OFFSET_SEQNO);
-            if (seq1 == seq2) return (ebi, stat, ram);
-        }
-        // Fall through after retries — return whatever the last sample was.
-        return (
-            Marshal.ReadByte(view,  PID_OFFSET_BL_EBI),
-            Marshal.ReadByte(view,  PID_OFFSET_BL_LOADSTATUS),
-            (ushort)Marshal.ReadInt16(view, PID_OFFSET_BL_RAMAVAIL));
-    }
-
-    /// <summary>Returns the signaling event handle for a controller's input
+/// <summary>Returns the signaling event handle for a controller's input
     /// section, or <see cref="IntPtr.Zero"/> if no mapping has been created
     /// for that index yet. Used by <see cref="HMController"/> to cache the
     /// handle alongside the view pointer so <see cref="WriteInputFrame"/>
@@ -574,7 +364,7 @@ internal static class SharedMemoryIO
         // calls per frame. At 250 Hz × 6 controllers that was ~400 000
         // P/Invokes/sec; a single bulk copy per region is two
         // P/Invokes/frame total. We don't zero the unused data tail past
-        // dataLen — driver/consumer reads DataSize and uses only
+        // dataLen — backend/consumer reads DataSize and uses only
         // data[0..DataSize-1]; the tail is irrelevant. T26-2 — gipData
         // is null for non-Xbox profiles (no XUSB companion bound), so we
         // can skip the 14-byte copy entirely. Section is zero-initialized
@@ -582,7 +372,7 @@ internal static class SharedMemoryIO
         //
         // v1.3.5 — when extendedData != null AND extendedLen > 0, copy
         // the full RID-included extended report into ExtendedReportData
-        // and set ExtendedReportSize. Driver branches on
+        // and set ExtendedReportSize. Backend branches on
         // ExtendedReportSize > 0 and emits ExtendedReportData verbatim
         // (no FirstInputReportId prepend). When extendedData is null we
         // explicitly clear ExtendedReportSize so a previously-armed
@@ -609,7 +399,7 @@ internal static class SharedMemoryIO
             // BETWEEN restarts a foreign writer could have left ExtendedReportSize
             // > 0 + ExtendedReportData populated; with the legacy path running
             // (USB Sony, generic profiles) that stale extended buffer would be
-            // emitted by the driver, breaking input. Cost is one P/Invoke per
+            // emitted by the backend, breaking input. Cost is one P/Invoke per
             // frame.
             Marshal.WriteInt32(view, EXTENDED_SIZE_OFFSET, 0);
         }
@@ -619,8 +409,8 @@ internal static class SharedMemoryIO
         seqNo = pending + 1;
         Marshal.WriteInt32(view, 0, (int)seqNo);
 
-        // 4. Wake the driver's worker thread. Auto-reset event: one
-        // successful wait consumes the signal. If the driver is still
+        // 4. Wake the backend's input pump. Auto-reset event: one
+        // successful wait consumes the signal. If the backend is still
         // processing a previous frame the signal stays latched until
         // it returns to WaitForMultipleObjects.
         if (eventHandle != IntPtr.Zero)
@@ -743,16 +533,6 @@ internal static class SharedMemoryIO
                 CloseHandle(oe);
             s_outputEvents.Remove(controllerIndex);
         }
-        lock (s_pidStateViews)
-        {
-            if (s_pidStateViews.TryGetValue(controllerIndex, out IntPtr v) && v != IntPtr.Zero)
-                UnmapViewOfFile(v);
-            s_pidStateViews.Remove(controllerIndex);
-
-            if (s_pidStateHandles.TryGetValue(controllerIndex, out IntPtr h) && h != IntPtr.Zero)
-                CloseHandle(h);
-            s_pidStateHandles.Remove(controllerIndex);
-        }
     }
 
     /// <summary>Releases all input and output sections owned by the process.
@@ -793,15 +573,6 @@ internal static class SharedMemoryIO
             foreach (var ev in s_outputEvents.Values)
                 if (ev != IntPtr.Zero) CloseHandle(ev);
             s_outputEvents.Clear();
-        }
-        lock (s_pidStateViews)
-        {
-            foreach (var v in s_pidStateViews.Values)
-                if (v != IntPtr.Zero) UnmapViewOfFile(v);
-            s_pidStateViews.Clear();
-            foreach (var h in s_pidStateHandles.Values)
-                if (h != IntPtr.Zero) CloseHandle(h);
-            s_pidStateHandles.Clear();
         }
     }
 

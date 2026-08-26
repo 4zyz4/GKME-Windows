@@ -30,17 +30,16 @@ public sealed class HMController : IDisposable
     internal string? InstanceId { get; }
     public HMProfile Profile { get; }
 
-    // Issue #39: non-null when this controller runs on the USB/IP
-    // backend instead of the UMDF2 driver. The backend's device emulator
-    // speaks the SAME shared-memory contract the driver does (it reads the
-    // input section this class writes and publishes to the output ring
-    // this class's poll loop reads), which is why nothing else in this
-    // class changes per backend. Dispose routing in HMContext keys on it.
+    // Issue #39: non-null when this controller runs on the USB/IP backend.
+    // The backend's device emulator speaks the SAME shared-memory contract
+    // (it reads the input section this class writes and publishes to the
+    // output ring this class's poll loop reads), which is why nothing else
+    // in this class changes per backend. Dispose routing in HMContext keys on it.
     internal Internal.Usbip.UsbipBackendHandle? UsbipHandle { get; }
 
     /// <summary>Issue #39: the audio surfaces of a composite USB persona
     /// (speaker/haptic PCM out, microphone in, volume/mute control
-    /// events). Null on every UMDF2 profile; non-null exactly when
+    /// events). Null for HID profiles; non-null exactly when
     /// <see cref="HMProfile.RequiresUsbipBackend"/> and the controller
     /// was created through the USB/IP backend.</summary>
     public HMUsbAudio? UsbAudio { get; }
@@ -49,9 +48,9 @@ public sealed class HMController : IDisposable
     // SubmitState reuses it for every frame.
     private readonly HidReportBuilder? _reportBuilder;
     private readonly IntPtr _inputView;
-    // Named auto-reset event signaled by WriteInputFrame so the driver's
-    // worker thread can wake immediately instead of busy-polling. Cached at
-    // construction time alongside the view pointer.
+    // Named auto-reset event signaled by WriteInputFrame so the USB/IP
+    // device emulator's input pump can wake immediately instead of
+    // busy-polling. Cached at construction time alongside the view pointer.
     private readonly IntPtr _inputEvent;
     private uint _inputSeqNo;
 
@@ -97,16 +96,16 @@ public sealed class HMController : IDisposable
     /// application sends a rumble, haptic, FFB, feature, or LED command to
     /// this virtual controller. Subscribers must be thread-safe.
     ///
-    /// <para><b>Cadence and ordering:</b> the reader wakes on the driver's
+    /// <para><b>Cadence and ordering:</b> the reader wakes on the
     /// per-packet event signal (issue #34; 8 ms poll fallback against
-    /// older drivers) and drains every slot written since the last wake,
+    /// older backends) and drains every slot written since the last wake,
     /// in monotonic SeqNo order. Multiple <c>OutputReceived</c> invocations
     /// per wake are normal. DirectInput PID FFB writes 3 packets in
     /// 1-3 ms (Set Effect → Set Constant Force → Effect Operation Start)
     /// and all three surface here.</para>
     ///
     /// <para><b>Ring depth:</b> 64 slots × 256-byte payload. If the
-    /// consumer's handler stalls for &gt; 512 ms while the driver is
+    /// consumer's handler stalls for &gt; 512 ms while the backend is
     /// writing at burst rate, the oldest packets get overwritten —
     /// keep the handler cheap (no synchronous I/O, no long locks).
     /// Pre-1.1.40 was a single-slot channel that silently coalesced
@@ -172,155 +171,9 @@ public sealed class HMController : IDisposable
     /// <see cref="SubmitState"/> with the elapsed microseconds. Wire this
     /// when investigating per-frame submit latency (e.g. issue #21 USB
     /// stalls). Called inline on the caller's thread; keep the handler
-    /// short — log to a ring buffer or counter, don't block.</summary>
+/// short — log to a ring buffer or counter, don't block.</summary>
     public Action<long>? OnSubmitLatencyMicros { get; set; }
 
-    // PID FFB state section. Lazy: created on the first PublishPid* call so
-    // a non-FFB consumer never allocates the section. Once created, the
-    // driver's IOCTL_UMDF_HID_GET_FEATURE handler reads from it on every
-    // HidD_GetFeature for the canonical PID Report IDs (0x12, 0x13, 0x14).
-    private IntPtr _pidStateView;
-    private uint _pidStateSeqNo;
-    private readonly object _pidStateLock = new();
-
-    private IntPtr EnsurePidStateViewLocked()
-    {
-        if (_pidStateView == IntPtr.Zero)
-        {
-            _pidStateView = SharedMemoryIO.EnsurePidStateMapping(Index);
-            // v1.3.7 — write the profile descriptor's PID Report ID
-            // layout to shared state immediately after section creation,
-            // before any IOCTL handler reads. Builder-emitted descriptors
-            // (every existing profile that uses HidDescriptorBuilder.
-            // AddPidFfbBlock) come back with canonical IDs and the driver's
-            // `if (sec->XxxReportId)` guards skip the override; vendor-PID
-            // descriptors (Microsoft SideWinder Force Feedback 2 with
-            // Pool=0x03, BlockLoad=0x02, Set Effect=0x01) return non-zero
-            // overrides and the driver dispatches IOCTLs to the right RIDs.
-            // See PidReportIdExtractor for the LC-usage match table.
-            var rids = PidReportIdExtractor.Extract(Profile.Inner.GetDescriptorBytes());
-            SharedMemoryIO.WritePidReportIds(_pidStateView,
-                rids.PoolReportId, rids.StateReportId, rids.BlockLoadReportId,
-                rids.CreateNewEffectReportId, rids.BlockFreeReportId, rids.DeviceControlReportId);
-        }
-        return _pidStateView;
-    }
-
-    /// <summary>Publish the current PID Pool Report state (HID PID 1.0 §5.7).
-    /// First call enables FFB on this controller — until called at least once,
-    /// HidD_GetFeature on the Pool Report ID returns STATUS_NO_SUCH_DEVICE
-    /// (matching vJoy's "FFB not enabled" convention), so DInput cleanly
-    /// concludes "device exists but no FFB" rather than retrying.
-    /// Subsequent calls update the pool state.
-    ///
-    /// <para><b>Descriptor requirements:</b> the controller's HID descriptor
-    /// must declare the PID FFB report block. Use
-    /// <see cref="HidDescriptorBuilder.AddPidFfbBlock"/> — that method emits
-    /// the canonical "minimum viable" block (Set Effect 0x11, Set Constant
-    /// Force 0x15, Effect Operation 0x1A, Device Control 0x1C, etc., plus
-    /// the single Feature report Create New Effect 0x11). Do NOT add
-    /// additional Feature reports (0x12 Block Load, 0x13 PID Pool, 0x14
-    /// PID State) inside the same Application Collection — the four-feature
-    /// variant from vJoy's reference descriptor causes pid.dll to AV inside
-    /// PID_EffectOperation+0x52 the first time the consumer calls
-    /// CreateEffect (DirectX 8-era pid.dll FFB enumeration bug, not
-    /// OS-build-gated; verified empirically on Windows 11 26100 — issue #16).
-    /// Pool, Block Load, and PID State are served by the driver from a
-    /// separate shared-section path that doesn't touch pid.dll's preparsed-data
-    /// parser — that's what <see cref="PublishPidPool"/>, <see cref="PublishPidBlockLoad"/>,
-    /// and <see cref="PublishPidState"/> publish to.</para></summary>
-    /// <param name="ramPoolSize">Total RAM pool size in bytes.</param>
-    /// <param name="simultaneousEffectsMax">Max effects the device can play simultaneously.</param>
-    /// <param name="deviceManagedPool">True if the device manages effect block allocation.</param>
-    /// <param name="sharedParameterBlocks">True if effect parameter blocks can be shared.</param>
-    public void PublishPidPool(ushort ramPoolSize, byte simultaneousEffectsMax,
-                               bool deviceManagedPool, bool sharedParameterBlocks)
-    {
-        ThrowIfDisposed();
-        lock (_pidStateLock)
-        {
-            IntPtr view = EnsurePidStateViewLocked();
-            if (view == IntPtr.Zero) return;
-            SharedMemoryIO.WritePidPool(view, ref _pidStateSeqNo,
-                ramPoolSize, simultaneousEffectsMax,
-                deviceManagedPool, sharedParameterBlocks);
-        }
-    }
-
-    /// <summary>v1.1.37 — Read the Block Load Report state the driver
-    /// populated synchronously inside its SetFeature(0x11 Create New Effect)
-    /// IOCTL handler. The driver picks the EBI from a free-list bitmap and
-    /// updates BL fields atomically before completing the IOCTL, so by the
-    /// time this consumer's <c>OutputReceived</c> handler fires for the
-    /// SetFeature notification (8 ms-ish later via the SDK's poll loop),
-    /// the BL state is already canonical. Read it here and wire the EBI
-    /// to your effect-tracking dictionary.
-    ///
-    /// Returns a default-zero <see cref="HMPidBlockLoad"/> if the consumer
-    /// hasn't called <see cref="PublishPidPool"/> yet (FFB not enabled —
-    /// the shared section doesn't exist).</summary>
-    public HMPidBlockLoad GetCurrentPidBlockLoad()
-    {
-        ThrowIfDisposed();
-        lock (_pidStateLock)
-        {
-            IntPtr view = EnsurePidStateViewLocked();
-            if (view == IntPtr.Zero) return default;
-            var (ebi, stat, ram) = SharedMemoryIO.ReadPidBlockLoad(view);
-            return new HMPidBlockLoad(ebi, stat, ram);
-        }
-    }
-
-    /// <summary>Legacy / override — manually publish the Block Load
-    /// Report state. <b>v1.1.37 made this optional.</b> The driver now
-    /// allocates EBIs and writes BL fields synchronously inside its
-    /// SetFeature(0x11) IOCTL handler (mirroring vJoy's
-    /// <c>Ffb_GetNextFreeEffect</c>), so the canonical pattern is for the
-    /// consumer to <i>read</i> the assigned EBI via
-    /// <see cref="GetCurrentPidBlockLoad"/> rather than write its own.
-    ///
-    /// Calling this method overwrites the driver's allocation. Useful only
-    /// if the consumer has a reason to mint EBIs itself (specific
-    /// reservation policy, mapping back to physical-side handles). Single
-    /// slot — most recent publish overwrites.
-    ///
-    /// <para><b>Note on threading:</b> <c>OutputReceived</c> is delivered on
-    /// the SDK's poll thread (~8 ms latency). It is <i>not</i> synchronous
-    /// with the kernel SetFeature IOCTL. The pre-1.1.37 doc here was wrong
-    /// to suggest otherwise — calling Publish from the handler runs after
-    /// dinput8 has already issued its follow-up GetFeature(BlockLoad), so
-    /// the publish lands too late to influence that read. The driver-side
-    /// allocation in v1.1.37 is what makes the handshake work.</para></summary>
-    public void PublishPidBlockLoad(byte effectBlockIndex, PidLoadStatus loadStatus,
-                                    ushort ramPoolAvailable)
-    {
-        ThrowIfDisposed();
-        lock (_pidStateLock)
-        {
-            IntPtr view = EnsurePidStateViewLocked();
-            if (view == IntPtr.Zero) return;
-            SharedMemoryIO.WritePidBlockLoad(view, ref _pidStateSeqNo,
-                effectBlockIndex, (byte)loadStatus, ramPoolAvailable);
-        }
-    }
-
-    /// <summary>Publish the current PID State Report (HID PID 1.0 §5.8).
-    /// Reflects current device state for the most-recently-referenced
-    /// effect. Update whenever Effect Operation Start/Stop, Device Reset,
-    /// Device Pause, or Actuators Enable/Disable changes the state.</summary>
-    /// <param name="effectBlockIndex">Currently active EBI (0 if none).</param>
-    /// <param name="flags">Bitfield of <see cref="PidStateFlags"/> reflecting current state.</param>
-    public void PublishPidState(byte effectBlockIndex, PidStateFlags flags)
-    {
-        ThrowIfDisposed();
-        lock (_pidStateLock)
-        {
-            IntPtr view = EnsurePidStateViewLocked();
-            if (view == IntPtr.Zero) return;
-            SharedMemoryIO.WritePidState(view, ref _pidStateSeqNo,
-                effectBlockIndex, (byte)flags);
-        }
-    }
 
     // T26-2 — set once at ctor, read every frame in SubmitState. Only Xbox-
     // VID profiles have an XUSB companion (HMXInput.dll) that reads the
@@ -369,9 +222,6 @@ public sealed class HMController : IDisposable
         // profiles (SideWinder etc.) don't speak XInput at all. Skip the
         // 14-byte packing for both — gated on the same predicate that
         // controls XUSB companion creation in DeviceOrchestrator.
-        // GIP packing only matters for the UMDF2 XUSB companion, which the
-        // USB/IP backend does not use — its devices speak their native wire
-        // format (e.g. the Xbox 360 20-byte report) via SubmitRawReport.
         _packsGipBuffer = UsbipHandle == null && profile.Inner.RequiresXusbCompanion;
         _inputView = SharedMemoryIO.EnsureInputMapping(index);
         _inputEvent = SharedMemoryIO.GetInputEvent(index);
@@ -814,14 +664,14 @@ public sealed class HMController : IDisposable
     /// <summary>Background reader for the per-controller output shared
     /// section, raising <see cref="OutputReceived"/> for each new packet.
     ///
-    /// Event-driven since issue #34: the driver creates
+    /// Event-driven since issue #34: the backend creates
     /// <c>Global\HIDMaestroOutputEvent&lt;N&gt;</c> and signals it after every
     /// published packet, so this thread blocks on the event (500 ms safety
     /// timeout, ~2 wakes/s idle) instead of polling every 8 ms
     /// (125 wakes/s idle). Open success doubles as capability detection:
-    /// against an older driver that never created the event, the loop
+    /// against an older backend that never created the event, the loop
     /// keeps the historical 8 ms poll cadence and retries the open every
-    /// 64 cycles (~0.5 s) in case the driver device finishes starting
+    /// 64 cycles (~0.5 s) in case the backend device finishes starting
     /// after this thread does. Output latency with the event is dispatch
     /// cost instead of up-to-8-ms poll quantization; the drain-to-Head
     /// loop below is unchanged, so burst coalescing behaves identically
@@ -866,7 +716,7 @@ public sealed class HMController : IDisposable
             bool drainedAny = false;
             try
             {
-                // v1.1.40: drain the ring on every poll. pid.dll writes
+                // v1.1.40: drain the ring on every poll. FFB writes
                 // Set Effect → Set Constant Force → Effect Operation Start
                 // within 1-3 ms; the pre-1.1.40 single-slot channel was
                 // coalescing those bursts vs the 8 ms poll cadence and

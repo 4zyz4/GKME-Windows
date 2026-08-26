@@ -19,8 +19,7 @@ namespace HIDMaestro;
 ///
 /// <para><b>Backend:</b> every controller is presented through the bundled
 /// USB/IP transport (usbip-win2). No UMDF2 driver, INF, or PnP device node
-/// is involved — the transport installs itself on first use from the
-/// resource embedded in this assembly.</para>
+/// is involved.</para>
 ///
 /// <para><b>Admin requirement:</b> Windows requires SeLoadDriverPrivilege
 /// (admin) for the one-time USB/IP transport install and for attaching each
