@@ -73,6 +73,18 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     private byte[] _lastInputReport;
     private uint _lastSharedSeqNo;
 
+    // Sony test command state machine
+    private readonly SonyTestCommandHandler _testCmd = new();
+    private const int ResponseBufferMaxLength = 256;
+    private byte[] _testCmdResponse = new byte[ResponseBufferMaxLength];
+    private int _testCmdResponseLength;
+    private bool _testCmdReady;
+    private int _testCmdPagesRemaining;
+    private byte _testCmdTelemetryDeviceId;
+    private byte _testCmdTelemetryActionId;
+    private byte _testCmdStandardDeviceId;
+    private byte _testCmdStandardActionId;
+
     // Device state.
     private volatile byte _configurationValue;
 
@@ -572,11 +584,108 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                 }
                 if (reportType == 0x03)
                 {
+                    // Sony DualSense test command response (Report ID 0x81)
+                    if (_testCmdReady)
+                    {
+                        byte[] response;
+                        int responseLen;
+
+                        if (_testCmdPagesRemaining >= 0)
+                        {
+                            // Telemetry multi-page response (injects 0x81 header dynamically)
+                            if (_testCmdResponseLength < 0)
+                            {
+                                // _testCmdResponseLength = -(totalPages), _testCmdPagesRemaining = remaining pages including current
+                                int totalPages = -_testCmdResponseLength;
+                                int currentPage = totalPages - _testCmdPagesRemaining; // 0-based
+                                int offset = currentPage * 56;
+                                if (offset + 56 <= _testCmdResponse.Length)
+                                {
+                                    byte[] telemetryPage = new byte[60];
+                                    telemetryPage[0] = 0x81;
+                                    telemetryPage[1] = _testCmdTelemetryDeviceId;
+                                    telemetryPage[2] = _testCmdTelemetryActionId;
+                                    telemetryPage[3] = _testCmdPagesRemaining > 1 ? (byte)0x03 : (byte)0x02;
+                                    _testCmdResponse.AsSpan(offset, 56).CopyTo(telemetryPage.AsSpan(4));
+                                    response = telemetryPage;
+                                    responseLen = 60;
+                                    _testCmdPagesRemaining--;
+                                    if (_testCmdPagesRemaining == 0)
+                                    {
+                                        _testCmdReady = false;
+                                    }
+                                    int telemN = Math.Min(responseLen, wLength);
+                                    SendRetSubmit(cmd.Seqnum, 0, telemN, response.AsSpan(0, telemN).ToArray());
+                                    return;
+                                }
+                            }
+
+                            // Normal multi-page or single-page response
+                            if (_testCmdPagesRemaining == 0)
+                            {
+                                // Last page
+                                response = _testCmdResponse;
+                                responseLen = _testCmdResponseLength;
+                                _testCmdReady = false;
+                            }
+                            else
+                            {
+                                // Intermediate page
+                                response = _testCmdResponse;
+                                responseLen = 56;
+                                _testCmdPagesRemaining--;
+                            }
+                        }
+                        else
+                        {
+                            // Single-page response — check if it's a "standard" handler response
+                            // that needs [0x81, deviceId, actionId, status, data...] header injected.
+                            // Standard handlers (HandleBtMac, HandleBatteryVoltage, etc.) return
+                            // raw data without any header. HandleTestCommand already prepends 0x81.
+                            // We distinguish them by checking if _testCmdStandardDeviceId is set:
+                            // HandleTestCommand sets device_id=1 and stores actionResponses that
+                            // already start with [0x81, 0x01, ...]. Other handlers don't set the
+                            // _testCmdStandardDeviceId field in their SET_REPORT path.
+                            if (_testCmdStandardDeviceId != 0 && _testCmdResponseLength > 0)
+                            {
+                                // Standard handler response — needs full header injection
+                                int dataLen = _testCmdResponseLength;
+                                int maxResponseLen = Math.Min(4 + dataLen, 256);
+                                if (maxResponseLen > wLength)
+                                {
+                                    maxResponseLen = wLength;
+                                }
+                                byte[] headeredResponse = new byte[Math.Min(4 + dataLen, ResponseBufferMaxLength)];
+                                headeredResponse[0] = 0x81;
+                                headeredResponse[1] = _testCmdStandardDeviceId;
+                                headeredResponse[2] = _testCmdStandardActionId;
+                                headeredResponse[3] = 0x02; // COMPLETE
+                                _testCmdResponse.AsSpan(0, dataLen).CopyTo(headeredResponse.AsSpan(4));
+                                response = headeredResponse;
+                                responseLen = Math.Min(4 + dataLen, wLength);
+                                _testCmdStandardDeviceId = 0;
+                                _testCmdStandardActionId = 0;
+                                _testCmdReady = false;
+                            }
+                            else
+                            {
+                                // HandleTestCommand response — already has [0x81, deviceId, actionId, status, data...]
+                                response = _testCmdResponse;
+                                responseLen = _testCmdResponseLength;
+                                _testCmdReady = false;
+                            }
+                        }
+
+                        int n = Math.Min(responseLen, wLength);
+                        SendRetSubmit(cmd.Seqnum, 0, n, response.AsSpan(0, n).ToArray());
+                        return;
+                    }
+
                     var stub = BuildFeatureStub(reportId, wLength);
                     if (stub == null) { SendError(cmd.Seqnum, -UsbipProtocol.EPipe); return; }
                     PublishOutput(SourceHidFeatureRead, reportId, ReadOnlySpan<byte>.Empty);
-                    int n = Math.Min(stub.Length, wLength);
-                    SendRetSubmit(cmd.Seqnum, 0, n, stub.AsSpan(0, n).ToArray());
+                    int stubLen = Math.Min(stub.Length, wLength);
+                    SendRetSubmit(cmd.Seqnum, 0, stubLen, stub.AsSpan(0, stubLen).ToArray());
                     return;
                 }
                 break;
@@ -594,6 +703,106 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                 {
                     // DS4 authentication: [0x03, 0x03] = challenge, [0x03, 0x01] = serial
                     // state tracking is unused; the reports are already served correctly
+                }
+
+                // Sony DualSense test command: SET_FEATURE 0x80 with [device_id, action_id, ...]
+                if (reportType == 0x03 && rid == 0x80 && data.Length >= 2)
+                {
+                    byte deviceId = data[0];
+                    byte actionId = data[1];
+
+                    if (deviceId == 0x01 && actionId < _testCmd._actionResponses.Length)
+                    {
+                        // Standard test command (device_id=1)
+                        var respSpan = _testCmdResponse.AsSpan(0);
+                        int len = _testCmd.HandleTestCommand(data, respSpan);
+                        if (len > 0)
+                        {
+                            _testCmdResponseLength = len;
+                            _testCmdReady = true;
+                            _testCmdPagesRemaining = 0; // single-page response
+                        }
+                    }
+                    else if (deviceId == 0x01 && actionId == 0x70)
+                    {
+                        // Telemetry query (device_id=0x01, action_id=0x70)
+                        // Store telemetry params for GET_REPORT header injection
+                        _testCmdTelemetryDeviceId = 0x70; // DEVICE_TELEMETRY
+                        _testCmdTelemetryActionId = 0x01; // GET_INFO
+                        // Write 4 pages × 56 bytes into response buffer
+                        int pages = _testCmd.HandleTelemetry(_testCmdResponse, 4);
+                        if (pages < 0)
+                        {
+                            // Multi-page response: 4 pages, _testCmdResponseLength < 0 marks telemetry page count
+                            _testCmdResponseLength = -(4); // negative = -totalPages
+                            _testCmdReady = true;
+                            _testCmdPagesRemaining = 4; // 4 remaining pages including current
+                        }
+                        else if (pages > 0)
+                        {
+                            _testCmdResponseLength = pages;
+                            _testCmdReady = true;
+                            _testCmdPagesRemaining = 0;
+                        }
+                    }
+                    else if (deviceId == 0x07 && actionId == 0x25)
+                    {
+                        // Action 37: Type 2 tracability (adaptive trigger info)
+                        _testCmdStandardDeviceId = 0x07;
+                        _testCmdStandardActionId = 0x25;
+                        // data[2] = 1 for left, 2 for right
+                        byte param = data.Length > 2 ? data[2] : (byte)0;
+                        var respSpan = _testCmdResponse.AsSpan(0);
+                        int len = _testCmd.HandleType2Tracability(param, respSpan);
+                        if (len > 0)
+                        {
+                            _testCmdResponseLength = len;
+                            _testCmdReady = true;
+                            _testCmdPagesRemaining = 0;
+                        }
+                    }
+                    else if (deviceId == 0x09 && actionId == 0x02)
+                    {
+                        // BT MAC address
+                        _testCmdStandardDeviceId = 0x09;
+                        _testCmdStandardActionId = 0x02;
+                        var respSpan = _testCmdResponse.AsSpan(0);
+                        int len = _testCmd.HandleBtMac(respSpan);
+                        if (len > 0)
+                        {
+                            _testCmdResponseLength = len;
+                            _testCmdReady = true;
+                            _testCmdPagesRemaining = 0;
+                        }
+                    }
+                    else if (deviceId == 0x04 && actionId == 0x03)
+                    {
+                        // Battery voltage
+                        _testCmdStandardDeviceId = 0x04;
+                        _testCmdStandardActionId = 0x03;
+                        var respSpan = _testCmdResponse.AsSpan(0);
+                        int len = _testCmd.HandleBatteryVoltage(respSpan);
+                        if (len > 0)
+                        {
+                            _testCmdResponseLength = len;
+                            _testCmdReady = true;
+                            _testCmdPagesRemaining = 0;
+                        }
+                    }
+                    else if (deviceId == 0x09 && actionId == 0x0A)
+                    {
+                        // BT patch info
+                        _testCmdStandardDeviceId = 0x09;
+                        _testCmdStandardActionId = 0x0A;
+                        var respSpan = _testCmdResponse.AsSpan(0);
+                        int len = _testCmd.HandleBtPatchInfo(respSpan);
+                        if (len > 0)
+                        {
+                            _testCmdResponseLength = len;
+                            _testCmdReady = true;
+                            _testCmdPagesRemaining = 0;
+                        }
+                    }
                 }
 
                 PublishOutput(reportType == 0x03 ? SourceHidFeature : SourceHidOutput, rid, data);
@@ -731,14 +940,17 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     private static readonly byte[] Ds5FirmwareInfo =
     {
         0x20, 0x4A, 0x75, 0x6C, 0x20, 0x20, 0x34, 0x20,
-        0x32, 0x30, 0x32, 0x35, 0x31, 0x30, 0x3A, 0x31,
-        0x30, 0x3A, 0x33, 0x32, 0x03, 0x00, 0x04, 0x00,
-        0x10, 0x13, 0x00, 0x00, 0x2A, 0x00, 0x10, 0x01,
+        0x32, 0x30, 0x32, 0x35, 0x31, 0x30, 0x3A, 0x33,
+        0x38, 0x00, 0x00, 0x00, 0x02, 0x00, 0x0B, 0x00,
+        0x07, 0x11, 0x00, 0x00, 0x2A, 0x00, 0x10, 0x01,
         0x01, 0xC8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x30, 0x06, 0x00, 0x00,
         0x3C, 0x00, 0x01, 0x00, 0x0A, 0x00, 0x02, 0x00,
         0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     };
+
+    /// <summary>Get DS5 firmware info for external access (testing, etc.).</summary>
+    public static byte[] GetDs5FirmwareInfo() => (byte[])Ds5FirmwareInfo.Clone();
 
     /// <summary>DS4 firmware / hardware info, verbatim from WinUHid's
     /// WinUHidPS4.cpp. ASCII build date "Aug  3 2013" and time "07:01:12"
