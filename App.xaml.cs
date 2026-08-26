@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -91,8 +92,34 @@ public partial class App : WinApplication
         _mainWindow = window;
     }
 
+    private static bool IsPortInUse(int port)
+    {
+        try
+        {
+            using var tcp = new TcpListener(System.Net.IPAddress.Any, port);
+            tcp.Start();
+            tcp.Stop();
+            return false;
+        }
+        catch (SocketException)
+        {
+            return true;
+        }
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (IsPortInUse(NetworkService.Port))
+        {
+            MessageBox.Show(
+                "Gamepad Emu Host 已在运行中。\n不能同时启动多个实例。",
+                "Gamepad Emu Host",
+                MessageBoxButton.OK,
+                MessageBoxImage.Exclamation);
+            Shutdown(-1);
+            return;
+        }
+
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;

@@ -12,7 +12,7 @@ namespace GamepadEmuHost.Core;
 
 public class NetworkService : IDisposable
 {
-    private const int Port = 37284;
+    public const int Port = 37284;
     private const string BroadcastPrefix = "GAMEPAD_SERVER:";
 
     private const byte TypeClientToServer = 0x00;

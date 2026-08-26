@@ -3,20 +3,8 @@ using System.Buffers.Binary;
 
 namespace HIDMaestro.Internal.Usbip;
 
-/// <summary>Sony DualSense test command protocol handler.
-/// 
-/// <para>The DualSense uses a custom HID feature report (Report ID 0x80 SET,
-/// 0x81 GET) to query firmware, hardware info, and telemetry data. This
-/// class implements the server side of that protocol so the virtual pad
-/// responds to dualsense-cli commands just like a real controller.</para>
-///
-/// <para>Protocol overview:
-/// <list type="number">
-/// <item>Host sends SET_FEATURE 0x80 with [device_id, action_id, ...params]</item>
-/// <item>Device responds with GET_FEATURE 0x81: [0x81, device_id, action_id, status, data...]</item>
-/// <item>status = 2 (COMPLETE) or 3 (COMPLETE_2) for multi-page responses</item>
-/// <item>Data is 56 bytes per page; multi-page responses continue until status=COMPLETE</item>
-/// </list></para></summary>
+/// Sony DualSense test command protocol handler.
+
 public sealed class SonyTestCommandHandler
 {
     private static readonly byte[] _serialNumber = EncodeShiftJIS("ZC325ZC799ZC325ZC");
