@@ -10,6 +10,7 @@ message ClientToServer {
   oneof payload {
     Hello hello = 1;
     GamepadInput gamepad_input = 2;
+    KeyboardInput keyboard_input = 3;
   }
 }
 
@@ -49,6 +50,12 @@ message TouchPoint {
   uint32 x = 2;
   uint32 y = 3;
   bool active = 4;
+}
+
+message KeyboardInput {
+  repeated uint32 pressed_scan_codes = 1;
+  repeated uint32 released_scan_codes = 2;
+  uint32 modifiers = 3;
 }
 
 message ServerToClient {

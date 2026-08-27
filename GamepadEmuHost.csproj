@@ -9,14 +9,8 @@
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <StartupObject>GamepadEmuHost.App</StartupObject>
     <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>true</SelfContained>
+    <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <PublishReadyToRun>true</PublishReadyToRun>
-    <PublishTrimmed>false</PublishTrimmed>
-    <SingleFile>true</SingleFile>
-    <OptimizationSettings>1</OptimizationSettings>
-    <DebugType>none</DebugType>
-    <DebugType>None</DebugType>
     <AssemblyVersion>3.1.0</AssemblyVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
@@ -25,11 +19,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Remove="icon.ico" />
-    <EmbeddedResource Include="icon.ico" />
-    <EmbeddedResource Include="profiles\**\*.json">
-      <LogicalName>HIDMaestro.Profiles.%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
-    </EmbeddedResource>
+    <Content Include="icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="profiles\**\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>profiles\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>
@@ -45,8 +41,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="obj\**\GamepadState*.cs" />
-    <Compile Remove="obj\**\proto\GamepadState*.cs" />
+    <Protobuf Include="proto\gamepad_state.proto">
+      <ProtoRoot>proto</ProtoRoot>
+    </Protobuf>
   </ItemGroup>
 
   <!-- Driver source files are automatically included by SDK -->
