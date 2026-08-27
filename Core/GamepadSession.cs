@@ -8,6 +8,123 @@ using HIDMaestro;
 
 namespace GamepadEmuHost.Core;
 
+[Flags]
+internal enum KeyboardModifier : uint
+{
+    LShift = 0x01,
+    LCtrl  = 0x02,
+    LAlt   = 0x04,
+    LWin   = 0x08,
+}
+
+internal static class Win32Keyboard
+{
+    private const uint INPUT_KEYBOARD = 0x04;
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint KEYEVENTF_SCANCODE = 0x0008;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public UIntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public KEYBDINPUT ki;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll")]
+    private static extern ushort MapVirtualKeyExW(uint uCode, uint uMapType, IntPtr hKeyboardDll);
+
+    private static IntPtr _defaultLayout;
+
+    static Win32Keyboard()
+    {
+        try
+        {
+            _defaultLayout = GetSystemDefaultLayout();
+        }
+        catch { }
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetThreadLanguage();
+
+    [DllImport("kernel32.dll")]
+    private static extern ushort GetUserDefaultUILanguage();
+
+    private static IntPtr GetSystemDefaultLayout()
+    {
+        try
+        {
+            return (IntPtr)GetUserDefaultUILanguage();
+        }
+        catch { return IntPtr.Zero; }
+    }
+
+    public static void SendKeyDown(ushort scanCode)
+    {
+        var input = new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            ki = new KEYBDINPUT
+            {
+                wScan = scanCode,
+                dwFlags = KEYEVENTF_SCANCODE
+            }
+        };
+        SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void SendKeyUp(ushort scanCode)
+    {
+        var input = new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            ki = new KEYBDINPUT
+            {
+                wScan = scanCode,
+                dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP
+            }
+        };
+        SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void SendModifierKeyDown(KeyboardModifier modifier)
+    {
+        ushort scan = GetScanFromModifier(modifier);
+        SendKeyDown(scan);
+    }
+
+    public static void SendModifierKeyUp(KeyboardModifier modifier)
+    {
+        ushort scan = GetScanFromModifier(modifier);
+        SendKeyUp(scan);
+    }
+
+    private static ushort GetScanFromModifier(KeyboardModifier modifier)
+    {
+        return modifier switch
+        {
+            KeyboardModifier.LShift => 0x2A,
+            KeyboardModifier.LCtrl  => 0x1D,
+            KeyboardModifier.LAlt   => 0x38,
+            KeyboardModifier.LWin   => 0x5B,
+            _ => 0
+        };
+    }
+}
+
 /// <summary>
 /// Win32 API mouse controller using SendInput for cursor movement, clicks, and scroll.
 /// </summary>
@@ -194,6 +311,7 @@ public class GamepadSession : IDisposable
     private byte _ds5SequenceCounter;
     private Task? _cleanupTask;
     private uint _lastMouseButtons;
+    private uint _lastKeyboardModifiers;
 
     // 4-channel audio forwarding (DualSense): the phone needs the raw
     // speaker + voice-coil PCM, not just the rumble peaks folded above.
@@ -322,6 +440,13 @@ public class GamepadSession : IDisposable
                     }
                 }
                 catch { }
+
+                if (input.PressedScanCodes.Count > 0 ||
+                    input.ReleasedScanCodes.Count > 0 ||
+                    input.KeyboardModifiers != _lastKeyboardModifiers)
+                {
+                    try { SubmitKeyboardInput(input); } catch { }
+                }
             }
 
             // Send vibration echo back to phone at fixed 125 Hz regardless of input.
@@ -1175,6 +1300,34 @@ public class GamepadSession : IDisposable
             if ((pressed & 0x02) != 0) Win32Mouse.SetButton(1, true);
             if ((pressed & 0x04) != 0) Win32Mouse.SetButton(2, true);
             _lastMouseButtons = input.MouseButtons;
+        }
+    }
+
+    private void SubmitKeyboardInput(GamepadInput input)
+    {
+        foreach (var scancode in input.PressedScanCodes)
+        {
+            Win32Keyboard.SendKeyDown((ushort)scancode);
+        }
+        foreach (var scancode in input.ReleasedScanCodes)
+        {
+            Win32Keyboard.SendKeyUp((ushort)scancode);
+        }
+
+        uint modifiers = input.KeyboardModifiers;
+        if (modifiers != _lastKeyboardModifiers)
+        {
+            uint released = _lastKeyboardModifiers & ~modifiers;
+            uint pressed = modifiers & ~_lastKeyboardModifiers;
+            if ((released & 0x01) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LShift);
+            if ((released & 0x02) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LCtrl);
+            if ((released & 0x04) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LAlt);
+            if ((released & 0x08) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LWin);
+            if ((pressed & 0x01) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LShift);
+            if ((pressed & 0x02) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LCtrl);
+            if ((pressed & 0x04) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LAlt);
+            if ((pressed & 0x08) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LWin);
+            _lastKeyboardModifiers = modifiers;
         }
     }
 
