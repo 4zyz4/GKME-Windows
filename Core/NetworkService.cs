@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
@@ -39,10 +40,33 @@ public class NetworkService : IDisposable
         Environment.SetEnvironmentVariable("HIDMAESTRO_TIMEOUT_SCALE", "0.1");
     }
 
-    private CancellationTokenSource? _listenerCts;
-    private Task? _listenerTask;
-    private UdpClient? _listener;
+    private UdpClient? _udpClient;
+    private Thread? _recvThread;
+    private Thread? _sendThread;
+    private volatile bool _stopped;
+    private readonly ConcurrentQueue<SendItem> _sendQueue = new();
+    private readonly AutoResetEvent _sendEvent = new(false);
     private bool _disposed;
+    private volatile byte _sendPriority;
+    private readonly object _sendPriorityLock = new();
+
+    /// <summary>Send frequency for the dedicated send thread.</summary>
+    private enum SendPriority : byte
+    {
+        /// <summary>Idle — poll ~100ms (10 Hz). Used when only input is present.</summary>
+        Idle = 0,
+        /// <summary>Vibration echo is being sent — poll ~8ms (125 Hz).</summary>
+        Vibration,
+        /// <summary>Audio PCM is being drained — poll ~8ms (125 Hz).</summary>
+        Audio,
+    }
+
+    private sealed class SendItem
+    {
+        public required IPEndPoint Endpoint;
+        public required byte Type;
+        public required byte[] Payload;
+    }
 
     public bool InitializeHidMaestro()
     {
@@ -142,69 +166,167 @@ public class NetworkService : IDisposable
 
     public void StartDiscovery()
     {
-        if (_listenerCts != null) return;
-        _listenerCts = new CancellationTokenSource();
-        _listener = new UdpClient(new IPEndPoint(IPAddress.Any, Port));
-        _listenerTask = Task.Run(() => ListenLoop(_listenerCts.Token));
+        if (_recvThread != null) return;
+        _stopped = false;
+        _udpClient = new UdpClient(new IPEndPoint(IPAddress.Any, Port));
+        _udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, 200);
+        _udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout, 200);
+
+        // 收包线程：专用 Thread，高于正常优先级，直接上报 GamepadInput
+        _recvThread = new Thread(RecvLoop)
+        {
+            IsBackground = true,
+            Name = "HMNetRecv",
+            Priority = ThreadPriority.AboveNormal,
+        };
+        _recvThread.Start();
+
+        // 发包线程：专用 Thread，高于正常优先级，从队列取包发 UDP
+        _sendThread = new Thread(SendLoop)
+        {
+            IsBackground = true,
+            Name = "HMNetSend",
+            Priority = ThreadPriority.AboveNormal,
+        };
+        _sendThread.Start();
     }
 
     public void StopDiscovery()
     {
-        if (_listenerCts != null)
+        _stopped = true;
+        _sendEvent.Set();
+        try { _udpClient?.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, 1); } catch { }
+        try { _udpClient?.Close(); } catch { }
+        _udpClient = null;
+
+        if (_recvThread != null)
         {
-            _listenerCts.Cancel();
-            _listenerCts.Dispose();
-            _listenerCts = null;
+            _recvThread.Join();
+            _recvThread = null;
         }
-        try { _listenerTask?.GetAwaiter().GetResult(); } catch { }
-        _listenerTask = null;
-        try { _listener?.Close(); } catch { }
-        _listener = null;
+        if (_sendThread != null)
+        {
+            _sendThread.Join();
+            _sendThread = null;
+        }
     }
 
-    private async Task ListenLoop(CancellationToken ct)
+    /// <summary>收包线程：recv UDP → 解析 → 直接调用 session 上报，无队列。</summary>
+    private void RecvLoop()
     {
         var buf = new byte[65535];
-        while (!ct.IsCancellationRequested)
+        while (!_stopped)
         {
             try
             {
-                var result = await _listener!.ReceiveAsync(ct);
-                var data = result.Buffer;
+                IPEndPoint remoteEp = new(IPAddress.Any, 0);
+                var data = _udpClient!.Receive(ref remoteEp);
                 if (data.Length == 0) continue;
 
                 // Plain-text discovery broadcast from phone
                 var text = Encoding.UTF8.GetString(data);
                 if (text.StartsWith(BroadcastPrefix))
                 {
-                    HandleDiscovery(result.RemoteEndPoint, text);
+                    HandleDiscovery(new IPEndPoint(remoteEp.Address, Port), text);
                     continue;
                 }
 
                 var type = data[0];
-                var payload = data.AsSpan(1).ToArray();
+                var payload = data.Skip(1).ToArray();
 
                 switch (type)
                 {
                     case TypeClientToServer:
-                        RouteClientToServer(result.RemoteEndPoint, payload);
+                        RouteClientToServer(new IPEndPoint(remoteEp.Address, Port), payload);
                         break;
                     case TypeGamepadInput:
-                        RouteGamepadInput(result.RemoteEndPoint, payload);
+                        RouteGamepadInput(new IPEndPoint(remoteEp.Address, Port), payload);
                         break;
                 }
             }
-            catch (OperationCanceledException) { break; }
-            catch (SocketException ex)
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
             {
-                System.Diagnostics.Debug.WriteLine($"[UDP] SocketException: {ex.Message}");
-                await Task.Delay(1000, ct);
+                // ReceiveTimeout fired — loop back and check _stopped
+                continue;
             }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (OperationCanceledException) { break; }
             catch
             {
-                await Task.Delay(1000, ct);
+                Thread.Sleep(100);
             }
         }
+    }
+
+    /// <summary>发包线程：从队列取包发 UDP，根据优先级动态调整 poll 频率。</summary>
+    /// <para>Vibration/Audio 时 ~8ms (125Hz) poll；空闲时 ~100ms (10Hz) poll。</para>
+    private void SendLoop()
+    {
+        var sw = new System.Diagnostics.Stopwatch();
+        sw.Start();
+
+        while (!_stopped)
+        {
+            int intervalMs;
+            byte p;
+            lock (_sendPriorityLock) p = _sendPriority;
+            intervalMs = p > (byte)SendPriority.Idle ? 8 : 100;
+
+            if (!_sendEvent.WaitOne(intervalMs, !_stopped))
+            {
+                // Timeout — drain whatever is queued.
+                DrainQueue();
+                continue;
+            }
+
+            // Signal fired — drain all queued items.
+            DrainQueue();
+        }
+
+        // Final drain on shutdown.
+        DrainQueue();
+    }
+
+    /// <summary>Bump send priority.</summary>
+    private void SetSendPriority(SendPriority priority)
+    {
+        lock (_sendPriorityLock)
+        {
+            if (_sendPriority < (byte)priority) _sendPriority = (byte)priority;
+        }
+    }
+
+    private void DrainQueue()
+    {
+        while (_sendQueue.TryDequeue(out var item))
+        {
+            try
+            {
+                var data = new byte[1 + item.Payload.Length];
+                data[0] = item.Type;
+                Buffer.BlockCopy(item.Payload, 0, data, 1, item.Payload.Length);
+                try { _udpClient!.Send(data, data.Length, item.Endpoint); }
+                catch { }
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>Mark vibration send active — raises priority to Vibration.</summary>
+    private void OnVibrationSendStart()
+    {
+        SetSendPriority(SendPriority.Vibration);
+        _sendEvent.Set();
+    }
+
+    /// <summary>Mark audio drain active — raises priority to Audio.</summary>
+    private void OnAudioSendStart()
+    {
+        SetSendPriority(SendPriority.Audio);
+        _sendEvent.Set();
     }
 
     private void HandleDiscovery(IPEndPoint remoteEp, string msg)
@@ -227,7 +349,7 @@ public class NetworkService : IDisposable
         // resume the handshake even if it hasn't sent a Hello yet.
         if (_sessions.TryGetValue(key, out var session))
         {
-            _ = SendToPhoneAsync(phoneEp, TypeServerToClient, BuildServerHello());
+            EnqueueSend(phoneEp, TypeServerToClient, BuildServerHello());
         }
 
         OnDeviceDiscovered?.Invoke(device);
@@ -252,7 +374,7 @@ public class NetworkService : IDisposable
             {
                 session.HandleClientToServer(cts);
             }
-            // 无 session 时不自动创建虚拟手柄：PC 端只能通过用户手动点“连接”建立，
+            // 无 session 时不自动创建虚拟手柄：PC 端只能通过用户手动点"连接"建立，
             // 否则手机 app 一打开、广播 Hello，就会在用户未选择的情况下冒出虚拟手柄。
         }
         catch { }
@@ -310,10 +432,21 @@ public class NetworkService : IDisposable
 
             if (_sessions.TryGetValue(key, out var session))
             {
-                session.HandleUdpGamepadInput(input);
+                // 直接上报，无队列
+                session.ReportGamepadInput(input);
             }
         }
         catch { }
+    }
+
+    /// <summary>Queue a send to the dedicated send thread. Non-blocking.</summary>
+    private void EnqueueSend(IPEndPoint ep, byte type, IMessage msg)
+    {
+        if (_disposed) return;
+        var payload = msg.ToByteArray();
+        var item = new SendItem { Endpoint = ep, Type = type, Payload = payload };
+        _sendQueue.Enqueue(item);
+        _sendEvent.Set();
     }
 
     public async Task<GamepadSession?> ConnectAsync(DiscoveredDevice device, int connectTimeoutMs = 5000)
@@ -350,7 +483,14 @@ public class NetworkService : IDisposable
             var phoneEp = new IPEndPoint(device.IpAddress, Port);
 
             var initialMode = SavedModeResolver?.Invoke(device) ?? ControllerMode.Ds4;
-            var session = new GamepadSession(device, msg => SendToPhoneAsync(phoneEp, TypeServerToClient, msg), _hmContext, HidMaestroAvailable, initialMode);
+            var session = new GamepadSession(
+                device,
+                msg => { EnqueueSend(phoneEp, TypeServerToClient, msg); return Task.CompletedTask; },
+                OnVibrationSendStart,
+                OnAudioSendStart,
+                _hmContext,
+                HidMaestroAvailable,
+                initialMode);
             session.OnReady += s =>
             {
                 OnSessionStarted?.Invoke(s);
@@ -384,7 +524,7 @@ public class NetworkService : IDisposable
             session.Start();
 
             // 注册后再发送 ServerHello，让手机端可以完成握手。
-            await SendToPhoneAsync(phoneEp, TypeServerToClient, BuildServerHello());
+            EnqueueSend(phoneEp, TypeServerToClient, BuildServerHello());
 
             return session;
         }
@@ -400,16 +540,8 @@ public class NetworkService : IDisposable
 
     public async Task SendToPhoneAsync(IPEndPoint ep, byte type, IMessage msg)
     {
-        if (_listener == null || _disposed) return;
-        try
-        {
-            var payload = msg.ToByteArray();
-            var data = new byte[1 + payload.Length];
-            data[0] = type;
-            Buffer.BlockCopy(payload, 0, data, 1, payload.Length);
-            await _listener.SendAsync(data, data.Length, ep);
-        }
-        catch { }
+        if (_disposed) return;
+        EnqueueSend(ep, type, msg);
     }
 
     public async Task SendDisconnectAsync(DiscoveredDevice device)
@@ -421,7 +553,7 @@ public class NetworkService : IDisposable
         {
             Disconnect = new Disconnect { Reason = "User disconnected" }
         };
-        await SendToPhoneAsync(new IPEndPoint(device.IpAddress, Port), TypeServerToClient, packet);
+        EnqueueSend(new IPEndPoint(device.IpAddress, Port), TypeServerToClient, packet);
         session.Disconnect();
     }
 

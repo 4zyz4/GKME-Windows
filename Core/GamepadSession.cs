@@ -290,6 +290,8 @@ public class GamepadSession : IDisposable
     private const float Ds4AccelMaxOutput = 32760f;
 
     private readonly Func<IMessage, Task> _sendToPhone;
+    private readonly Action _onVibrationSendStart;
+    private readonly Action _onAudioSendStart;
     private readonly HMContext _hmContext;
     private readonly bool _hidMaestroAvailable;
     private readonly object _controllerLock = new();
@@ -299,7 +301,8 @@ public class GamepadSession : IDisposable
     private DateTime _lastReceiveTime = DateTime.UtcNow;
     private byte _lastLargeMotor;
     private byte _lastSmallMotor;
-    private readonly ConcurrentQueue<GamepadInput> _inputQueue = new();
+    private readonly ManualResetEventSlim _inputReceived = new(false, 1);
+    private volatile GamepadInput? _pendingInput;
 
     private volatile bool _switchingMode;
     private byte _previousTouchCounter;
@@ -360,10 +363,12 @@ public class GamepadSession : IDisposable
     public event Action<GamepadSession>? OnConnectionLost;
     public event Action<GamepadSession>? OnDisconnected;
 
-    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
+    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, Action onVibrationSendStart, Action onAudioSendStart, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
     {
         Device = device;
         _sendToPhone = sendToPhone;
+        _onVibrationSendStart = onVibrationSendStart;
+        _onAudioSendStart = onAudioSendStart;
         _hmContext = hmContext;
         _hidMaestroAvailable = hidMaestroAvailable;
         Mode = initialMode;
@@ -391,39 +396,48 @@ public class GamepadSession : IDisposable
         });
     }
 
-    /// <summary>Downstream loop — ~125 Hz.  Sends vibration echoes + RTT
-    /// telemetry to the phone at a steady rate regardless of how fast
-    /// the phone pushes input to us.  Also drains the input queue so no
-    /// phone report is left unsubmitted.</summary>
+    /// <summary>Event-driven input submission — each UDP packet triggers an
+    /// immediate report to the emulated controller with no rate limit.
+    /// Also drains test tone and sends vibration echo on each wake to keep
+    /// the phone's feedback loop running without a separate timer.</summary>
     private async Task ReportLoop(CancellationToken ct)
     {
-        var intervalTicks = (long)(TimeSpan.TicksPerSecond / 125.0);
         var sw = new System.Diagnostics.Stopwatch();
         sw.Start();
-        long nextTick = intervalTicks;
         long lastStatTicks = 0;
 
-        while (!ct.IsCancellationRequested)
+        while (!ct.IsCancellationRequested && !_disposed)
         {
-            if (_disposed) return;
-
-            // Periodic audio-flow diagnostics (~every 500 ms).
-            if (sw.Elapsed.Ticks - lastStatTicks > TimeSpan.TicksPerMillisecond * 500)
+            // Wait for an input packet or a periodic wake (vibration/telemetry).
+            // 500ms timeout keeps vibration echo + audio drain running at ~2 Hz
+            // when no input arrives, without fighting Windows timer throttling.
+            if (!_inputReceived.Wait(500, ct))
             {
-                lastStatTicks = sw.Elapsed.Ticks;
-                _audioReceivedBytes = 0;
-                _audioDrainedBytes = 0;
-                _audioWindowsSeen = 0;
+                // Periodic wake — send vibration echo + drain tone even when idle.
+                DrainPendingTone();
+                if (Controller != null)
+                {
+                    _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor, raiseSendPriority: false);
+                }
+
+                // Periodic audio-flow diagnostics (~every 500 ms).
+                if (sw.Elapsed.Ticks - lastStatTicks > TimeSpan.TicksPerMillisecond * 500)
+                {
+                    lastStatTicks = sw.Elapsed.Ticks;
+                    _audioReceivedBytes = 0;
+                    _audioDrainedBytes = 0;
+                    _audioWindowsSeen = 0;
+                }
+                continue;
             }
 
-            // Drain pending test tone — sends PCM to the phone on the same
-            // 125 Hz cadence the phone expects.
-            DrainPendingTone();
-
-            // Drain the input queue — submit every arrived report to the
-            // emulated controller so no phone input is silently dropped.
-            while (_inputQueue.TryDequeue(out var input) && Controller != null)
+            // Input arrived — drain ALL pending inputs immediately, no rate limit.
+            while (_pendingInput != null && Controller != null)
             {
+                var input = _pendingInput;
+                _pendingInput = null;
+                _inputReceived.Reset();
+
                 try
                 {
                     switch (Mode)
@@ -447,27 +461,26 @@ public class GamepadSession : IDisposable
                 {
                     try { SubmitKeyboardInput(input); } catch { }
                 }
+
+                // Check for more pending input without waiting.
+                if (_pendingInput == null && !_inputReceived.IsSet) break;
             }
 
-            // Send vibration echo back to phone at fixed 125 Hz regardless of input.
+            // Drain tone and send vibration echo on every input wake.
+            DrainPendingTone();
             if (Controller != null)
             {
-                _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor);
+                _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor, raiseSendPriority: false);
             }
 
-            // Precise timing: keep 125 Hz regardless of how much work we did.
-            var remainingTicks = nextTick - sw.Elapsed.Ticks;
-            if (remainingTicks > 0)
+            // Periodic audio-flow diagnostics.
+            if (sw.Elapsed.Ticks - lastStatTicks > TimeSpan.TicksPerMillisecond * 500)
             {
-                var waitMs = (int)(remainingTicks / TimeSpan.TicksPerMillisecond);
-                if (waitMs > 1)
-                {
-                    await Task.Delay(waitMs - 1, ct);
-                    while (sw.Elapsed.Ticks < nextTick && !ct.IsCancellationRequested)
-                        Thread.SpinWait(1);
-                }
+                lastStatTicks = sw.Elapsed.Ticks;
+                _audioReceivedBytes = 0;
+                _audioDrainedBytes = 0;
+                _audioWindowsSeen = 0;
             }
-            nextTick += intervalTicks;
         }
     }
 
@@ -507,7 +520,17 @@ public class GamepadSession : IDisposable
     {
         _lastReceiveTime = DateTime.UtcNow;
         if (!IsReady) return;
-        _inputQueue.Enqueue(input);
+        _pendingInput = input;
+        _inputReceived.Set();
+    }
+
+    /// <summary>收包线程直调入口（无队列，收到即上报）。</summary>
+    public void ReportGamepadInput(GamepadInput input)
+    {
+        _lastReceiveTime = DateTime.UtcNow;
+        if (!IsReady) return;
+        _pendingInput = input;
+        _inputReceived.Set();
     }
 
     public async Task SendAsync(IMessage message)
@@ -948,6 +971,8 @@ public class GamepadSession : IDisposable
         int completeBytes = (pcm.Length / bytesPerFrame) * bytesPerFrame;
         if (completeBytes == 0) return;
 
+        _onAudioSendStart?.Invoke();
+
         const int MaxPacketBytes = 4096;
         int chunkBytes = (MaxPacketBytes / bytesPerFrame) * bytesPerFrame;
 
@@ -992,12 +1017,6 @@ public class GamepadSession : IDisposable
         _toneFrameIdx = 0;
         _toneFrames.Clear();
         _audioFormatReady = false;
-    }
-
-    private void HandleGamepadInput(GamepadInput input)
-    {
-        if (Controller == null) return;
-        _inputQueue.Enqueue(input);
     }
 
     private void SubmitXbox360Report(GamepadInput input)
@@ -1362,8 +1381,9 @@ public class GamepadSession : IDisposable
         buf[offset + 3] = (byte)((cy >> 4) & 0xFF);
     }
 
-    private async Task SendVibrationAsync(byte large, byte small)
+    private async Task SendVibrationAsync(byte large, byte small, bool raiseSendPriority = false)
     {
+        if (raiseSendPriority) _onVibrationSendStart?.Invoke();
         await SendAsync(new ServerToClient
         {
             Vibration = new Vibration
