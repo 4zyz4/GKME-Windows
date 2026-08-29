@@ -1,0 +1,7 @@
+LIBRARY KeyboardDll
+EXPORTS
+    SendKeyDown @1
+    SendKeyUp @2
+    SendModifierKeyDown @3
+    SendModifierKeyUp @4
+    SendMediaKey @5

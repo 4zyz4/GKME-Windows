@@ -11,118 +11,53 @@ namespace GamepadEmuHost.Core;
 [Flags]
 internal enum KeyboardModifier : uint
 {
-    LShift = 0x01,
-    LCtrl  = 0x02,
+    LCtrl  = 0x01,
+    LShift = 0x02,
     LAlt   = 0x04,
     LWin   = 0x08,
+    RCtrl  = 0x10,
+    RShift = 0x20,
+    RAlt   = 0x40,
+    RWin   = 0x80,
 }
 
 internal static class Win32Keyboard
 {
-    private const uint INPUT_KEYBOARD = 0x04;
-    private const uint KEYEVENTF_KEYUP = 0x0002;
-    private const uint KEYEVENTF_SCANCODE = 0x0008;
+    [DllImport("KeyboardDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void SendKeyDownHid(byte hidUsage);
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct KEYBDINPUT
-    {
-        public ushort wVk;
-        public ushort wScan;
-        public uint dwFlags;
-        public uint time;
-        public UIntPtr dwExtraInfo;
-    }
+    [DllImport("KeyboardDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void SendKeyUpHid(byte hidUsage);
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct INPUT
-    {
-        public uint type;
-        public KEYBDINPUT ki;
-    }
+    [DllImport("KeyboardDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void SendModifierKeyDown(byte modifierBit);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+    [DllImport("KeyboardDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void SendModifierKeyUp(byte modifierBit);
 
-    [DllImport("user32.dll")]
-    private static extern ushort MapVirtualKeyExW(uint uCode, uint uMapType, IntPtr hKeyboardDll);
-
-    private static IntPtr _defaultLayout;
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr LoadLibrary(string lpFileName);
 
     static Win32Keyboard()
     {
         try
         {
-            _defaultLayout = GetSystemDefaultLayout();
+            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            string dllPath = Path.Combine(exeDir, "KeyboardDll.dll");
+            if (!File.Exists(dllPath)) dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Keyboard).Assembly.Location) ?? ".", "KeyboardDll.dll");
+            if (File.Exists(dllPath)) { LoadLibrary(dllPath); }
         }
         catch { }
     }
 
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr GetThreadLanguage();
-
-    [DllImport("kernel32.dll")]
-    private static extern ushort GetUserDefaultUILanguage();
-
-    private static IntPtr GetSystemDefaultLayout()
-    {
-        try
-        {
-            return (IntPtr)GetUserDefaultUILanguage();
-        }
-        catch { return IntPtr.Zero; }
-    }
-
-    public static void SendKeyDown(ushort scanCode)
-    {
-        var input = new INPUT
-        {
-            type = INPUT_KEYBOARD,
-            ki = new KEYBDINPUT
-            {
-                wScan = scanCode,
-                dwFlags = KEYEVENTF_SCANCODE
-            }
-        };
-        SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
-    }
-
-    public static void SendKeyUp(ushort scanCode)
-    {
-        var input = new INPUT
-        {
-            type = INPUT_KEYBOARD,
-            ki = new KEYBDINPUT
-            {
-                wScan = scanCode,
-                dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP
-            }
-        };
-        SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
-    }
+    public static void SendKeyDown(byte hidUsage) { SendKeyDownHid(hidUsage); }
+    public static void SendKeyUp(byte hidUsage) { SendKeyUpHid(hidUsage); }
 
     public static void SendModifierKeyDown(KeyboardModifier modifier)
-    {
-        ushort scan = GetScanFromModifier(modifier);
-        SendKeyDown(scan);
-    }
+    { SendModifierKeyDown((byte)((ushort)modifier)); }
 
     public static void SendModifierKeyUp(KeyboardModifier modifier)
-    {
-        ushort scan = GetScanFromModifier(modifier);
-        SendKeyUp(scan);
-    }
-
-    private static ushort GetScanFromModifier(KeyboardModifier modifier)
-    {
-        return modifier switch
-        {
-            KeyboardModifier.LShift => 0x2A,
-            KeyboardModifier.LCtrl  => 0x1D,
-            KeyboardModifier.LAlt   => 0x38,
-            KeyboardModifier.LWin   => 0x5B,
-            _ => 0
-        };
-    }
+    { SendModifierKeyUp((byte)((ushort)modifier)); }
 }
 
 /// <summary>
@@ -1326,11 +1261,11 @@ public class GamepadSession : IDisposable
     {
         foreach (var scancode in input.PressedScanCodes)
         {
-            Win32Keyboard.SendKeyDown((ushort)scancode);
+            Win32Keyboard.SendKeyDown((byte)scancode);
         }
         foreach (var scancode in input.ReleasedScanCodes)
         {
-            Win32Keyboard.SendKeyUp((ushort)scancode);
+            Win32Keyboard.SendKeyUp((byte)scancode);
         }
 
         uint modifiers = input.KeyboardModifiers;
@@ -1338,14 +1273,22 @@ public class GamepadSession : IDisposable
         {
             uint released = _lastKeyboardModifiers & ~modifiers;
             uint pressed = modifiers & ~_lastKeyboardModifiers;
-            if ((released & 0x01) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LShift);
-            if ((released & 0x02) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LCtrl);
+            if ((released & 0x01) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LCtrl);
+            if ((released & 0x02) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LShift);
             if ((released & 0x04) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LAlt);
             if ((released & 0x08) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LWin);
-            if ((pressed & 0x01) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LShift);
-            if ((pressed & 0x02) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LCtrl);
+            if ((released & 0x10) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RCtrl);
+            if ((released & 0x20) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RShift);
+            if ((released & 0x40) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RAlt);
+            if ((released & 0x80) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RWin);
+            if ((pressed & 0x01) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LCtrl);
+            if ((pressed & 0x02) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LShift);
             if ((pressed & 0x04) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LAlt);
             if ((pressed & 0x08) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LWin);
+            if ((pressed & 0x10) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RCtrl);
+            if ((pressed & 0x20) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RShift);
+            if ((pressed & 0x40) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RAlt);
+            if ((pressed & 0x80) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RWin);
             _lastKeyboardModifiers = modifiers;
         }
     }
