@@ -11,6 +11,10 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <IncludeNativeBuildOutputsInDotNetSelfContained>true</IncludeNativeBuildOutputsInDotNetSelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
     <AssemblyVersion>3.1.0</AssemblyVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
@@ -58,6 +62,7 @@
   <ItemGroup Condition="Exists('Driver\KeyboardDll\bin\$(Configuration)\KeyboardDll.dll')">
     <Content Include="Driver\KeyboardDll\bin\$(Configuration)\KeyboardDll.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <Link>KeyboardDll.dll</Link>
     </Content>
   </ItemGroup>

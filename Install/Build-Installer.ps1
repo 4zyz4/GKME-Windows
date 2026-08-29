@@ -14,9 +14,7 @@ Write-Host "=== Publishing self-contained app ==="
 dotnet publish "$RepoRoot\GamepadEmuHost.csproj" `
     -c $Configuration `
     -r win-x64 `
-    --self-contained true `
-    -p:PublishSingleFile=true `
-    -p:IncludeNativeLibrariesForSelfExtract=true `
+    --self-contained false `
     -o "$PublishDir"
 
 if (-not $?) { throw "dotnet publish failed" }
