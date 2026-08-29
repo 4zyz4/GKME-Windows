@@ -79,10 +79,9 @@
 
   <!-- Profile catalog as embedded resources -->
   <ItemGroup>
-    <EmbeddedResource Include="..\profiles\**\*.json"
-                      Exclude="..\profiles\schema.json;..\profiles\scraped_descriptors.json;..\profiles\linux-kernel-fixed-descriptors.json">
+    <EmbeddedResource Include="profiles\**\*.json"
+                      Exclude="profiles\schema.json;profiles\scraped_descriptors.json;profiles\linux-kernel-fixed-descriptors.json">
       <LogicalName>HIDMaestro.Profiles.%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
-      <Link>Profiles\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </EmbeddedResource>
   </ItemGroup>
 
