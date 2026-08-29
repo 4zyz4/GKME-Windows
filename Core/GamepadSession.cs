@@ -250,6 +250,7 @@ public class GamepadSession : IDisposable
     private Task? _cleanupTask;
     private uint _lastMouseButtons;
     private uint _lastKeyboardModifiers;
+    private readonly HashSet<uint> _lastPressedScanCodes = new();
 
     // 4-channel audio forwarding (DualSense): the phone needs the raw
     // speaker + voice-coil PCM, not just the rumble peaks folded above.
@@ -390,12 +391,7 @@ public class GamepadSession : IDisposable
                 }
                 catch { }
 
-                if (input.PressedScanCodes.Count > 0 ||
-                    input.ReleasedScanCodes.Count > 0 ||
-                    input.KeyboardModifiers != _lastKeyboardModifiers)
-                {
-                    try { SubmitKeyboardInput(input); } catch { }
-                }
+                try { SubmitKeyboardInput(input); } catch { }
 
                 // Check for more pending input without waiting.
                 if (_pendingInput == null && !_inputReceived.IsSet) break;
@@ -1259,36 +1255,45 @@ public class GamepadSession : IDisposable
 
     private void SubmitKeyboardInput(GamepadInput input)
     {
-        foreach (var scancode in input.PressedScanCodes)
-        {
-            Win32Keyboard.SendKeyDown((byte)scancode);
-        }
-        foreach (var scancode in input.ReleasedScanCodes)
+        HashSet<uint> currentPressed = new(input.PressedScanCodes);
+        
+        HashSet<uint> released = new(_lastPressedScanCodes);
+        released.ExceptWith(currentPressed);
+        foreach (var scancode in released)
         {
             Win32Keyboard.SendKeyUp((byte)scancode);
         }
 
+        HashSet<uint> pressed = new(currentPressed);
+        pressed.ExceptWith(_lastPressedScanCodes);
+        foreach (var scancode in pressed)
+        {
+            Win32Keyboard.SendKeyDown((byte)scancode);
+        }
+        _lastPressedScanCodes.Clear();
+        _lastPressedScanCodes.UnionWith(currentPressed);
+
         uint modifiers = input.KeyboardModifiers;
         if (modifiers != _lastKeyboardModifiers)
         {
-            uint released = _lastKeyboardModifiers & ~modifiers;
-            uint pressed = modifiers & ~_lastKeyboardModifiers;
-            if ((released & 0x01) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LCtrl);
-            if ((released & 0x02) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LShift);
-            if ((released & 0x04) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LAlt);
-            if ((released & 0x08) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LWin);
-            if ((released & 0x10) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RCtrl);
-            if ((released & 0x20) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RShift);
-            if ((released & 0x40) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RAlt);
-            if ((released & 0x80) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RWin);
-            if ((pressed & 0x01) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LCtrl);
-            if ((pressed & 0x02) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LShift);
-            if ((pressed & 0x04) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LAlt);
-            if ((pressed & 0x08) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LWin);
-            if ((pressed & 0x10) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RCtrl);
-            if ((pressed & 0x20) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RShift);
-            if ((pressed & 0x40) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RAlt);
-            if ((pressed & 0x80) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RWin);
+            uint releasedMods = _lastKeyboardModifiers & ~modifiers;
+            uint pressedMods = modifiers & ~_lastKeyboardModifiers;
+            if ((releasedMods & 0x01) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LCtrl);
+            if ((releasedMods & 0x02) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LShift);
+            if ((releasedMods & 0x04) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LAlt);
+            if ((releasedMods & 0x08) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LWin);
+            if ((releasedMods & 0x10) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RCtrl);
+            if ((releasedMods & 0x20) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RShift);
+            if ((releasedMods & 0x40) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RAlt);
+            if ((releasedMods & 0x80) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RWin);
+            if ((pressedMods & 0x01) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LCtrl);
+            if ((pressedMods & 0x02) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LShift);
+            if ((pressedMods & 0x04) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LAlt);
+            if ((pressedMods & 0x08) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LWin);
+            if ((pressedMods & 0x10) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RCtrl);
+            if ((pressedMods & 0x20) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RShift);
+            if ((pressedMods & 0x40) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RAlt);
+            if ((pressedMods & 0x80) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RWin);
             _lastKeyboardModifiers = modifiers;
         }
     }

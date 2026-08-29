@@ -48,7 +48,21 @@
 
   <!-- Driver source files are automatically included by SDK -->
 
-  <!-- Embedded resources: USBIP installer + license notices -->
+  <!-- Build KeyboardDll C++ project before C# compile -->
+  <Target Name="BuildKeyboardDll" BeforeTargets="BeforeBuild">
+    <Message Text="Building KeyboardDll..." Importance="high" />
+    <Exec Command="&quot;C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe&quot; &quot;$(ProjectDir)Driver\KeyboardDll\KeyboardDll.vcxproj&quot; /p:Configuration=$(Configuration) /p:Platform=x64 /t:Build /nologo /v:normal" />
+  </Target>
+
+  <!-- Copy KeyboardDll.dll to output directory -->
+  <ItemGroup Condition="Exists('Driver\KeyboardDll\bin\$(Configuration)\KeyboardDll.dll')">
+    <Content Include="Driver\KeyboardDll\bin\$(Configuration)\KeyboardDll.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>KeyboardDll.dll</Link>
+    </Content>
+  </ItemGroup>
+
+  <!-- Embedded resources: USBip installer + license notices -->
   <ItemGroup>
     <EmbeddedResource Include="Driver\Resources\USBip-0.9.7.7-x64.exe">
       <LogicalName>HIDMaestro.Resources.USBip-0.9.7.7-x64.exe</LogicalName>
