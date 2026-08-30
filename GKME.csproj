@@ -14,6 +14,9 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <IncludeNativeBuildOutputsInDotNetSelfContained>true</IncludeNativeBuildOutputsInDotNetSelfContained>
     <PublishTrimmed>true</PublishTrimmed>
+    <TrimmerRootDescriptor>linker.xml</TrimmerRootDescriptor>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
     <IlcOptimize>true</IlcOptimize>
     <IlcFoldIdenticalBehavior>true</IlcFoldIdenticalBehavior>
     <StripSymbols>true</StripSymbols>
@@ -35,6 +38,7 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>profiles\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Content>
+    <TrimmerRootDescriptor Include="linker.xml" />
   </ItemGroup>
 
   <ItemGroup>
