@@ -13,10 +13,13 @@ static unsigned char GetVkFromHid(unsigned char hid) {
         case 0x18: return 0x55; case 0x19: return 0x56; case 0x1A: return 0x57; case 0x1B: return 0x58;
         case 0x1C: return 0x59; case 0x1D: return 0x5A;
         // 1-0
-        case 0x1E: return 0x31; case 0x1F: return 0x32; case 0x20: return 0x33; case 0x21: return 0x34;
+        case 0x1E: return 0x31; case 0x1F: return 0xBD; case 0x20: return 0xBB; case 0x21: return 0x34;
         case 0x22: return 0x35; case 0x23: return 0x36; case 0x24: return 0x37; case 0x25: return 0x38;
         case 0x26: return 0x39; case 0x27: return 0x30;
-        // Standard Control & Punctuation
+        // Standard Control & Punctuation (Backspace, Enter, Escape)
+        case 0x28: return 0x0D; case 0x29: return 0x1B; case 0x2A: return 0x08; case 0x2B: return 0x09;
+        case 0x2C: return 0x20;
+        case 0x2D: return 0xBD; case 0x2E: return 0xBB;
         case 0x2F: return 0xDB; case 0x30: return 0xDD; case 0x31: return 0xDC; case 0x32: return 0xBF;
         case 0x33: return 0xBA; case 0x34: return 0xDE; case 0x35: return 0xC0; case 0x36: return 0xBC;
         case 0x37: return 0xBE; case 0x38: return 0xBF; case 0x39: return 0x14;
@@ -26,14 +29,13 @@ static unsigned char GetVkFromHid(unsigned char hid) {
         case 0x42: return 0x78; case 0x43: return 0x79; case 0x44: return 0x7A; case 0x45: return 0x7B;
         // Numpad
         case 0x46: return 0x2C; case 0x47: return 0x46; case 0x48: return 0x13; case 0x49: return 0x2D;
-        case 0x4A: return 0x24; case 0x4B: return 0x21; case 0x4C: return 0x2E; case 0x4D: return 0x23;
-        case 0x4E: return 0x22; case 0x4F: return 0x4D; case 0x50: return 0x4B; case 0x51: return 0x48;
-        case 0x52: return 0x4A;
-        case 0x53: return 0x90; case 0x54: return 0x91; case 0x55: return 0x6F; case 0x56: return 0x6A;
-        case 0x57: return 0x6D; case 0x58: return 0x0D; case 0x59: return 0x6B; case 0x5A: return 0x6C;
-        case 0x5B: return 0x61; case 0x5C: return 0x62; case 0x5D: return 0x63; case 0x5E: return 0x64;
-        case 0x5F: return 0x65; case 0x60: return 0x66; case 0x61: return 0x67; case 0x62: return 0x68;
-        case 0x63: return 0x69;
+        case 0x4A: return 0x21; case 0x4B: return 0x24; case 0x4C: return 0x2E; case 0x4D: return 0x23;
+        case 0x4E: return 0x22; case 0x4F: return 0x27; case 0x50: return 0x25; case 0x51: return 0x28;
+        case 0x52: return 0x26; case 0x53: return 0x90; case 0x54: return 0x91; case 0x55: return 0x6F;
+        case 0x56: return 0x6A; case 0x57: return 0x6D; case 0x58: return 0x0D; case 0x59: return 0x6B;
+        case 0x5A: return 0x6C; case 0x5B: return 0x61; case 0x5C: return 0x62; case 0x5D: return 0x63;
+        case 0x5E: return 0x64; case 0x5F: return 0x65; case 0x60: return 0x66; case 0x61: return 0x67;
+        case 0x62: return 0x68; case 0x63: return 0x69;
         // Non-US keys and special keys
         case 0x64: return 0xC0; case 0x65: return 0xDC; case 0x66: return 0xDC; case 0x67: return 0x5D;
         case 0x68: return 0xFF; case 0x69: return 0xFF; case 0x6A: return 0xFF; case 0x6B: return 0xFF;
@@ -62,26 +64,24 @@ static unsigned char GetVkFromModifier(unsigned char modBit) {
     }
 }
 
+static BYTE keyDownStates[256] = {0};
+
 void SendKeyDown(unsigned char vkCode) {
-    INPUT inputs[2] = {0};
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = vkCode;
-    inputs[0].ki.wScan = 0;
-    inputs[0].ki.dwFlags = 0;
-    inputs[0].ki.time = 0;
-    inputs[0].ki.dwExtraInfo = 0;
-
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = vkCode;
-    inputs[1].ki.wScan = 0;
-    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    inputs[1].ki.time = 0;
-    inputs[1].ki.dwExtraInfo = 0;
-
-    SendInput(2, inputs, sizeof(INPUT));
+    if (keyDownStates[vkCode]) return;
+    keyDownStates[vkCode] = 1;
+    INPUT input = {0};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = vkCode;
+    input.ki.wScan = 0;
+    input.ki.dwFlags = 0;
+    input.ki.time = 0;
+    input.ki.dwExtraInfo = 0;
+    SendInput(1, &input, sizeof(INPUT));
 }
 
 void SendKeyUp(unsigned char vkCode) {
+    if (!keyDownStates[vkCode]) return;
+    keyDownStates[vkCode] = 0;
     INPUT input = {0};
     input.type = INPUT_KEYBOARD;
     input.ki.wVk = vkCode;
