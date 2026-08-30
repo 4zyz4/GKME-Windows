@@ -165,6 +165,7 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="IP 地址" VerticalAlignment="Center" FontSize="13" Margin="0,0,8,0" />
                 <TextBox Grid.Column="1" Text="{Binding ManualIp, UpdateSourceTrigger=PropertyChanged}"
@@ -177,6 +178,9 @@
                 <Button Grid.Column="3" Content="刷新" Width="60" Height="30" Margin="8,0,0,0"
                         Style="{StaticResource ActionButton}"
                         Click="OnRefreshClick" />
+                <Button Grid.Column="4" Content="关于" Width="50" Height="30" Margin="8,0,0,0"
+                        Style="{StaticResource ActionButton}"
+                        Click="OnAboutClick" />
             </Grid>
         </Border>
 
@@ -255,16 +259,7 @@
             </ItemsControl>
         </ScrollViewer>
 
-        <!-- Footer info -->
-        <Border Grid.Row="2" Background="#252525" Padding="10,8" CornerRadius="6" Margin="0,6,0,0">
-            <TextBlock FontSize="11" Foreground="#888888" TextWrapping="Wrap" TextAlignment="Center"
-                       LineHeight="16">
-                <Run Text="作者：4zyz4  软件Q群：639317971" />
-                <LineBreak />
-                <Run Text="开源地址：https://github.com/4zyz4/gamepad-emu-android" />
-                <LineBreak />
-                <Run Text="注意：本软件不是Emotion，请进入Q群1045923515以下载正版Emotion" />
-            </TextBlock>
-        </Border>
+        <!-- Spacer for footer space -->
+        <Border Grid.Row="2" />
     </Grid>
 </Window>

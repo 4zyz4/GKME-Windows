@@ -83,4 +83,11 @@ public partial class MainWindow : Window
         if (card == null || card.IsRestoringMode) return;
         await _vm.SetModeAsync(card, mode);
     }
+
+    private void OnAboutClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new AboutDialog();
+        dialog.Owner = this;
+        dialog.ShowDialog();
+    }
 }

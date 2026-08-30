@@ -1,0 +1,35 @@
+<Window x:Class="GamepadEmuHost.Ui.AboutDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="关于"
+        Width="420" Height="300"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#1E1E1E"
+        Foreground="#E0E0E0">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Icon + Title -->
+        <StackPanel Grid.Row="0" HorizontalAlignment="Center" Orientation="Horizontal" Margin="0,0,0,20">
+            <Image Source="/icon.ico" Width="48" Height="48" Margin="0,0,16,0" />
+            <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#E0E0E0"
+                       VerticalAlignment="Center" Text="Gamepad Emu Host" />
+        </StackPanel>
+
+        <!-- Info text -->
+        <TextBlock Grid.Row="1" FontSize="12" Foreground="#888888" TextWrapping="Wrap"
+                   TextAlignment="Center" Margin="0,0,0,24">
+            <Run Text="作者：4zyz4" /><LineBreak />
+            <Run Text="软件Q群：639317971" /><LineBreak /><LineBreak />
+            <Run Text="开源地址：" /><LineBreak />
+            <Run Text="https://github.com/4zyz4/gamepad-emu-android" TextDecorations="Underline" /><LineBreak /><LineBreak />
+            <Run Text="注意：本软件不是Emotion，请进入Q群1045923515以下载正版Emotion" />
+        </TextBlock>
+
+        
+    </Grid>
+</Window>
