@@ -3,15 +3,13 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>icon.ico</ApplicationIcon>
-    <StartupObject>GKME.App</StartupObject>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <SelfContained>false</SelfContained>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <IncludeNativeBuildOutputsInDotNetSelfContained>true</IncludeNativeBuildOutputsInDotNetSelfContained>
     <PublishTrimmed>false</PublishTrimmed>
@@ -23,9 +21,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="icon.ico">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
+    <AvaloniaResource Include="icon.ico" />
     <Content Include="profiles\**\*.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>profiles\%(RecursiveDir)%(Filename)%(Extension)</Link>
@@ -33,15 +29,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.6" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.6" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.6" />
     <PackageReference Include="Google.Protobuf" Version="3.28.3" />
     <PackageReference Include="Grpc.Tools" Version="2.67.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-  </ItemGroup>
-
-  <ItemGroup>
-    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
   </ItemGroup>
 
   <ItemGroup>
@@ -79,8 +74,7 @@
 
   <!-- Profile catalog as embedded resources -->
   <ItemGroup>
-    <EmbeddedResource Include="profiles\**\*.json"
-                      Exclude="profiles\schema.json;profiles\scraped_descriptors.json;profiles\linux-kernel-fixed-descriptors.json">
+    <EmbeddedResource Include="profiles\**\*.json" Exclude="profiles\schema.json;profiles\scraped_descriptors.json;profiles\linux-kernel-fixed-descriptors.json">
       <LogicalName>HIDMaestro.Profiles.%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
   </ItemGroup>

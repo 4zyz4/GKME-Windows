@@ -1,6 +1,9 @@
 using System.ComponentModel;
-using System.Windows;
-using System.Windows.Controls;
+using System.Threading.Tasks;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Interactivity;
 using GKME.Core;
 
 namespace GKME.Ui;
@@ -15,7 +18,7 @@ public partial class MainWindow : Window
         _vm = vm;
         InitializeComponent();
         this.Closing += OnClosing;
-        Loaded += async (_, _) => await _vm.InitializeAsync();
+        this.Loaded += async (_, _) => await _vm.InitializeAsync();
     }
 
     private void OnClosing(object? sender, CancelEventArgs e)
@@ -31,52 +34,52 @@ public partial class MainWindow : Window
             await _vm.ShutdownAsync();
         }
         catch { }
-        // 先移除 OnClosing（它的 e.Cancel=true 会把窗口"关到托盘"），
-        // 否则 Application.Shutdown() 关闭窗口时被取消，进程永不退出。
         try
         {
             Closing -= OnClosing;
         }
         catch { }
-        Application.Current.Shutdown();
+        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
+        {
+            lifetime.Shutdown();
+        }
     }
 
-    private async void OnManualConnectClick(object sender, RoutedEventArgs e)
+    private async void OnManualConnectClick(object? sender, RoutedEventArgs e)
     {
         await _vm.ConnectByIpAsync();
     }
 
-    private async void OnCardConnectClick(object sender, RoutedEventArgs e)
+    private async void OnCardConnectClick(object? sender, RoutedEventArgs e)
     {
-        var card = (sender as FrameworkElement)?.DataContext as DeviceCardViewModel;
+        var card = (sender as Control)?.DataContext as DeviceCardViewModel;
         if (card != null)
             await _vm.ConnectAsync(card);
     }
 
-    private async void OnCardDisconnectClick(object sender, RoutedEventArgs e)
+    private async void OnCardDisconnectClick(object? sender, RoutedEventArgs e)
     {
-        var card = (sender as FrameworkElement)?.DataContext as DeviceCardViewModel;
+        var card = (sender as Control)?.DataContext as DeviceCardViewModel;
         if (card != null)
             await _vm.DisconnectAsync(card);
     }
 
-    private void OnRefreshClick(object sender, RoutedEventArgs e)
+    private void OnRefreshClick(object? sender, RoutedEventArgs e)
     {
         _vm.Refresh();
     }
 
-    private async void OnModeChanged(object sender, SelectionChangedEventArgs e)
+    private async void OnModeChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (e.AddedItems.Count == 0 || e.AddedItems[0] is not ControllerMode mode) return;
-        var card = (sender as FrameworkElement)?.DataContext as DeviceCardViewModel;
+        var card = (sender as Control)?.DataContext as DeviceCardViewModel;
         if (card == null || card.IsRestoringMode) return;
         await _vm.SetModeAsync(card, mode);
     }
 
-    private void OnAboutClick(object sender, RoutedEventArgs e)
+    private async void OnAboutClick(object? sender, RoutedEventArgs e)
     {
         var dialog = new AboutDialog();
-        dialog.Owner = this;
-        dialog.ShowDialog();
+        await dialog.ShowDialog(this);
     }
 }

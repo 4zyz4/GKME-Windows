@@ -1,9 +1,8 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Net;
-using System.Net.Sockets;
+using System.Globalization;
 using System.Runtime.CompilerServices;
-using System.Windows;
+using Avalonia.Threading;
 using GamepadEmu.Protocol;
 using GKME.Core;
 
@@ -101,7 +100,6 @@ public class MainViewModel : INotifyPropertyChanged
         _initialConnecting.Remove(ip);
         if (_sessionMap.TryGetValue(ip, out var session))
         {
-            // Send disconnect packet to phone
             if (_network != null)
             {
                 await _network.SendDisconnectAsync(session.Device);
@@ -177,7 +175,7 @@ public class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        if (!IPAddress.TryParse(ip, out var addr))
+        if (!System.Net.IPAddress.TryParse(ip, out var addr))
         {
             StatusText = "IP 地址格式无效";
             return;
@@ -264,8 +262,6 @@ public class MainViewModel : INotifyPropertyChanged
                 card.IsConnected = true;
                 card.IsConnecting = false;
                 card.IsReconnecting = false;
-                // The session already created its controller with the persisted
-                // mode (GamepadSession ctor + SavedModeResolver); sync the card.
                 card.SetModeRestored(session.Mode);
             }
         });
@@ -308,10 +304,10 @@ public class MainViewModel : INotifyPropertyChanged
 
     private static void UiInvoke(Action action)
     {
-        if (Application.Current?.Dispatcher.CheckAccess() == true)
+        if (Dispatcher.UIThread.CheckAccess())
             action();
         else
-            Application.Current?.Dispatcher.Invoke(action);
+            Dispatcher.UIThread.Invoke(action);
     }
 
     public async Task ShutdownAsync()

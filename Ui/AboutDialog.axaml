@@ -1,12 +1,20 @@
-<Window x:Class="GKME.Ui.AboutDialog"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<Window x:Class="GKME.Ui.AboutDialog" xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="关于"
         Width="420" Height="300"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize"
+        CanResize="False"
         Background="#1E1E1E"
         Foreground="#E0E0E0">
+    <Window.Styles>
+        <Style Selector="TextBlock.link">
+            <Setter Property="TextDecorations" Value="Underline" />
+            <Setter Property="Foreground" Value="#0E639C" />
+        </Style>
+        <Style Selector="TextBlock.link:pointerover">
+            <Setter Property="Foreground" Value="#1177BB" />
+        </Style>
+    </Window.Styles>
     <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -22,14 +30,12 @@
 
         <!-- Info text -->
         <TextBlock Grid.Row="1" FontSize="12" Foreground="#888888" TextWrapping="Wrap"
-                   TextAlignment="Center" Margin="0,0,0,24">
+                   TextAlignment="Center" Margin="0,0,0,24" HorizontalAlignment="Center">
             <Run Text="作者：4zyz4" /><LineBreak />
             <Run Text="软件Q群：639317971" /><LineBreak /><LineBreak />
             <Run Text="开源地址：" /><LineBreak />
-            <Run Text="https://github.com/4zyz4/gamepad-emu-android" TextDecorations="Underline" /><LineBreak /><LineBreak />
+            <TextBlock Classes="link" Text="https://github.com/4zyz4/gamepad-emu-android" HorizontalAlignment="Center" /><LineBreak /><LineBreak />
             <Run Text="注意：本软件不是Emotion，请进入Q群1045923515以下载正版Emotion" />
         </TextBlock>
-
-        
     </Grid>
 </Window>

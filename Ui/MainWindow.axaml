@@ -1,0 +1,177 @@
+<Window x:Class="GKME.Ui.MainWindow" xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="clr-namespace:GKME.Ui"
+        Title="GKME"
+        Width="580" Height="500"
+        WindowStartupLocation="CenterScreen"
+        Background="#1E1E1E"
+        Foreground="#E0E0E0">
+    <Window.Styles>
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="#2D2D2D" />
+            <Setter Property="BorderBrush" Value="#3E3E3E" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="14" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+
+        <Style Selector="Button.mode">
+            <Setter Property="Background" Value="#0E639C" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="8,4" />
+        </Style>
+
+        <Style Selector="Button.action">
+            <Setter Property="Background" Value="#0E639C" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style Selector="Button.action:pointerover">
+            <Setter Property="Background" Value="#1177BB" />
+        </Style>
+
+        <Style Selector="Button.danger">
+            <Setter Property="Background" Value="#C23B22" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style Selector="Button.danger:pointerover">
+            <Setter Property="Background" Value="#E0553A" />
+        </Style>
+
+        <Style Selector="TextBox.input">
+            <Setter Property="Background" Value="#3C3C3C" />
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="BorderBrush" Value="#555555" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
+        <Style Selector="ComboBox.dark">
+            <Setter Property="Background" Value="#3C3C3C" />
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="BorderBrush" Value="#555555" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
+        <Style Selector="ComboBox.dark /template/ ComboBoxItem">
+            <Setter Property="Background" Value="#3C3C3C" />
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+
+        <Style Selector="ComboBox.dark /template/ ComboBoxItem:pointerover:item">
+            <Setter Property="Background" Value="#0E639C" />
+            <Setter Property="Foreground" Value="White" />
+        </Style>
+    </Window.Styles>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Manual IP input -->
+        <Border Grid.Row="0" Classes="card" Padding="12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="IP 地址" VerticalAlignment="Center" FontSize="13" Margin="0,0,8,0" />
+                <TextBox Grid.Column="1" Text="{Binding ManualIp, UpdateSourceTrigger=PropertyChanged}"
+                         VerticalContentAlignment="Center" Height="30" FontSize="13"
+                         Classes="input" />
+                <Button Grid.Column="2" Content="手动连接" Width="80" Height="30" Margin="8,0,0,0"
+                        Classes="action"
+                        Click="OnManualConnectClick" />
+                <Button Grid.Column="3" Content="刷新" Width="60" Height="30" Margin="8,0,0,0"
+                        Classes="action"
+                        Click="OnRefreshClick" />
+                <Button Grid.Column="4" Content="关于" Width="50" Height="30" Margin="8,0,0,0"
+                        Classes="action"
+                        Click="OnAboutClick" />
+            </Grid>
+        </Border>
+
+        <!-- Device card list -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding DeviceCards}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Classes="card">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Device info -->
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding DeviceName}" FontSize="14" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding IpAddress}" FontSize="11" Foreground="#9D9D9D" Margin="0,2,0,0" />
+                                    <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#9D9D9D" Margin="0,2,0,0" />
+                                </StackPanel>
+
+                                <!-- Connect button -->
+                                <Button Grid.Column="1" Content="连接" Width="70" Height="30"
+                                        Classes="action"
+                                        IsVisible="{Binding ShowConnect}"
+                                        Click="OnCardConnectClick" />
+
+                                <!-- Reconnecting indicator -->
+                                <Button Grid.Column="1" Content="断开" Width="50" Height="30"
+                                        Classes="danger"
+                                        IsVisible="{Binding ShowReconnecting}"
+                                        Click="OnCardDisconnectClick" />
+
+                                <!-- Session controls -->
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
+                                            IsVisible="{Binding ShowControls}">
+                                    <ComboBox Width="140" Height="28" FontSize="12" VerticalContentAlignment="Center"
+                                              ItemsSource="{x:Static ui:DeviceCardViewModel.AllModes}"
+                                              SelectedItem="{Binding Mode}"
+                                              SelectionChanged="OnModeChanged"
+                                              Classes="dark">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Converter={x:Static ui:ControllerModeConverter.Instance}}"
+                                                           Foreground="#E0E0E0" />
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                    <Button Content="断开" Width="50" Height="28" Margin="6,0,0,0"
+                                            Classes="danger"
+                                            Click="OnCardDisconnectClick" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <!-- Spacer for footer space -->
+        <Border Grid.Row="2" />
+    </Grid>
+</Window>
