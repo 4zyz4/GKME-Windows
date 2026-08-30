@@ -1,3 +1,4 @@
+using System;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -20,6 +21,20 @@ public partial class ExceptionDialog : Window
         {
             ErrorText.Text = _crashText;
         }
+
+        Closed += OnDialogClosed;
+    }
+
+    private void OnDialogClosed(object? sender, EventArgs e)
+    {
+        try
+        {
+            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
+            {
+                lifetime.Shutdown();
+            }
+        }
+        catch { }
     }
 
     private async void OnCopyAll(object? sender, RoutedEventArgs e)

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using Avalonia;
@@ -10,8 +11,11 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using GKME.Core;
 using GKME.Ui;
+
+#pragma warning disable AVL1006
 
 namespace GKME;
 
@@ -20,6 +24,8 @@ public partial class App : Application
     private NetworkService? _service;
     private Window? _mainWindow;
     private bool _showingWindow;
+    private static volatile Exception? _pendingCrash;
+    private static IDispatcher? _uiDispatcher;
 
     public ICommand ShowWindowCommand { get; }
     public ICommand QuitCommand { get; }
@@ -52,25 +58,39 @@ public partial class App : Application
 
     public override void OnFrameworkInitializationCompleted()
     {
+        _uiDispatcher = Dispatcher.UIThread;
+
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            if (IsPortInUse(NetworkService.Port))
+            TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+
+            try
             {
-                ShowDuplicateWarning();
+                if (IsPortInUse(NetworkService.Port))
+                {
+                    ShowDuplicateWarning();
+                    desktop.Shutdown(-1);
+                    return;
+                }
+
+                TryInitializeService();
+
+                var vm = new MainViewModel(_service);
+                var window = new MainWindow(vm);
+                _mainWindow = window;
+                
+                window.Show();
+                window.Closed += OnMainWindowClosed;
+
+                SetupTrayIcon();
+            }
+            catch
+            {
+                ShowCrashDialog();
                 desktop.Shutdown(-1);
                 return;
             }
-
-            TryInitializeService();
-
-            var vm = new MainViewModel(_service);
-            var window = new MainWindow(vm);
-            _mainWindow = window;
-            
-            window.Show();
-            window.Closed += OnMainWindowClosed;
-
-            SetupTrayIcon();
         }
 
         base.OnFrameworkInitializationCompleted();
@@ -188,6 +208,66 @@ public partial class App : Application
     private void OnMainWindowClosed(object? sender, EventArgs e)
     {
         _mainWindow = null;
+    }
+
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        ExceptionLogger.Record(e.Exception, "UnobservedTaskException");
+        ShowCrashDialog();
+        e.SetObserved();
+    }
+
+    private static void OnUnhandledException(object? sender, UnhandledExceptionEventArgs e)
+    {
+        var ex = e.ExceptionObject as Exception;
+        if (ex != null)
+        {
+            ExceptionLogger.Record(ex, "AppDomain.CurrentDomain.UnhandledException");
+        }
+
+        if (e.IsTerminating)
+        {
+            Interlocked.Exchange(ref _pendingCrash, ex);
+
+            _uiDispatcher?.Post(() =>
+            {
+                try
+                {
+                    var crashText = ex?.ToString() ?? ExceptionLogger.FormatForClipboard();
+                    var dialog = new ExceptionDialog(crashText);
+                    dialog.Show();
+                }
+                catch { }
+            }, DispatcherPriority.ApplicationIdle);
+        }
+    }
+
+    private static void CrashHandlerLoop()
+    {
+        while (Interlocked.CompareExchange(ref _pendingCrash, null, null) == null)
+        {
+            Thread.Sleep(50);
+        }
+
+        Thread.Sleep(Timeout.Infinite);
+    }
+
+    private void ShowCrashDialog()
+    {
+        try
+        {
+            var dialog = new ExceptionDialog();
+            var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
+            if (lifetime?.MainWindow != null)
+            {
+                dialog.ShowDialog(lifetime.MainWindow);
+            }
+            else
+            {
+                dialog.Show();
+            }
+        }
+        catch { }
     }
 }
 
