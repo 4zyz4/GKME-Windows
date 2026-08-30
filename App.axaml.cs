@@ -3,10 +3,13 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
+using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
+using Avalonia.Markup.Xaml;
+using Avalonia.Media.Imaging;
 using GKME.Core;
 using GKME.Ui;
 
@@ -16,6 +19,17 @@ public partial class App : Application
 {
     private NetworkService? _service;
     private Window? _mainWindow;
+    private bool _showingWindow;
+
+    public ICommand ShowWindowCommand { get; }
+    public ICommand QuitCommand { get; }
+
+    public App()
+    {
+        AvaloniaXamlLoader.Load(this);
+        ShowWindowCommand = new RelayCommand(() => ShowWindow());
+        QuitCommand = new RelayCommand(() => _ = SafeExitAsync());
+    }
 
     private static bool IsPortInUse(int port)
     {
@@ -55,9 +69,53 @@ public partial class App : Application
             
             window.Show();
             window.Closed += OnMainWindowClosed;
+
+            SetupTrayIcon();
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private void SetupTrayIcon()
+    {
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "icon.ico");
+        var bitmap = new Bitmap(iconPath);
+        
+        var trayIcon = new TrayIcon
+        {
+            Icon = new WindowIcon(bitmap),
+            ToolTipText = "GKME - Gamepad Keyboard Mapper Engine",
+            Menu = new NativeMenu
+            {
+                Items =
+                {
+                    new NativeMenuItem { Header = "显示窗口", Command = ShowWindowCommand },
+                    new NativeMenuItemSeparator(),
+                    new NativeMenuItem { Header = "退出", Command = QuitCommand }
+                }
+            },
+            Command = ShowWindowCommand
+        };
+
+        trayIcon.Clicked += (_, _) => ShowWindow();
+
+        var trayIcons = new TrayIcons { trayIcon };
+        TrayIcon.SetIcons(this, trayIcons);
+    }
+
+    private void ShowWindow()
+    {
+        if (_showingWindow) return;
+        _showingWindow = true;
+        
+        if (_mainWindow != null)
+        {
+            _mainWindow.Show();
+            _mainWindow.WindowState = WindowState.Normal;
+            _mainWindow.Activate();
+        }
+        
+        _showingWindow = false;
     }
 
     private void TryInitializeService()
@@ -106,7 +164,7 @@ public partial class App : Application
             }
             else
             {
-                dlg.ShowDialog(null);
+                dlg.ShowDialog((Window?)null);
             }
         }
         catch { }
@@ -131,4 +189,20 @@ public partial class App : Application
     {
         _mainWindow = null;
     }
+}
+
+public class RelayCommand : ICommand
+{
+    private readonly Action _execute;
+
+    public RelayCommand(Action execute)
+    {
+        _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+    }
+
+    public event EventHandler? CanExecuteChanged;
+
+    public bool CanExecute(object? parameter) => true;
+
+    public void Execute(object? parameter) => _execute();
 }

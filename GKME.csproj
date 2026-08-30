@@ -22,6 +22,9 @@
 
   <ItemGroup>
     <AvaloniaResource Include="icon.ico" />
+    <Content Include="icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="profiles\**\*.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>profiles\%(RecursiveDir)%(Filename)%(Extension)</Link>
