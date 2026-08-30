@@ -24,16 +24,16 @@ internal enum KeyboardModifier : uint
 
 internal static class Win32Keyboard
 {
-    [DllImport("KeyboardDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
     private static extern void SendKeyDownHid(byte hidUsage);
 
-    [DllImport("KeyboardDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
     private static extern void SendKeyUpHid(byte hidUsage);
 
-    [DllImport("KeyboardDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
     private static extern void SendModifierKeyDown(byte modifierBit);
 
-    [DllImport("KeyboardDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
     private static extern void SendModifierKeyUp(byte modifierBit);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -44,8 +44,8 @@ internal static class Win32Keyboard
         try
         {
             string exeDir = AppDomain.CurrentDomain.BaseDirectory;
-            string dllPath = Path.Combine(exeDir, "KeyboardDll.dll");
-            if (!File.Exists(dllPath)) dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Keyboard).Assembly.Location) ?? ".", "KeyboardDll.dll");
+            string dllPath = Path.Combine(exeDir, "InputDll.dll");
+            if (!File.Exists(dllPath)) dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Keyboard).Assembly.Location) ?? ".", "InputDll.dll");
             if (File.Exists(dllPath)) { LoadLibrary(dllPath); }
         }
         catch { }
@@ -66,44 +66,35 @@ internal static class Win32Keyboard
 /// </summary>
 internal static class Win32Mouse
 {
-    private const uint INPUT_MOUSE = 0;
-    private const uint MOUSEEVENTF_MOVE = 0x0001;
-    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
-    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
-    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
-    private const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
-    private const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
-    private const uint MOUSEEVENTF_WHEEL = 0x0800;
-    private const uint MOUSEEVENTF_HWHEEL = 0x1000;
-    private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void MouseMoveRelative(int dx, int dy);
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MOUSEINPUT
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void MouseButtonDown(byte button);
+
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void MouseButtonDownUp(byte button);
+
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void MouseScrollVertical(int delta);
+
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void MouseScrollHorizontal(int delta);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr LoadLibrary(string lpFileName);
+
+    static Win32Mouse()
     {
-        public int dx;
-        public int dy;
-        public uint mouseData;
-        public uint dwFlags;
-        public uint time;
-        public UIntPtr dwExtraInfo;
+        try
+        {
+            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            string dllPath = Path.Combine(exeDir, "InputDll.dll");
+            if (!File.Exists(dllPath)) dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Mouse).Assembly.Location) ?? ".", "InputDll.dll");
+            if (File.Exists(dllPath)) { LoadLibrary(dllPath); }
+        }
+        catch { }
     }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct INPUT
-    {
-        public uint type;
-        public MOUSEINPUT mi;
-    }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetCursorPos(out POINT lpPoint);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X; public int Y; }
 
     private static int _lastTouchX = 0;
     private static int _lastTouchY = 0;
@@ -112,58 +103,28 @@ internal static class Win32Mouse
     /// <summary>Move mouse by relative delta (dx, dy).</summary>
     public static void MoveRelative(int dx, int dy)
     {
-        var input = new INPUT
-        {
-            type = INPUT_MOUSE,
-            mi = new MOUSEINPUT { dx = dx, dy = dy, dwFlags = MOUSEEVENTF_MOVE }
-        };
-        SendInput(1, new[] { input }, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
+        MouseMoveRelative(dx, dy);
     }
 
     /// <summary>Set mouse button state (left/right/middle).</summary>
     public static void SetButton(int button, bool down)
     {
-        uint flag = button switch
-        {
-            0 => down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP,
-            1 => down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP,
-            2 => down ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP,
-            _ => 0
-        };
-        if (flag == 0) return;
-        var input = new INPUT { type = INPUT_MOUSE, mi = new MOUSEINPUT { dwFlags = flag } };
-        SendOpaqueInput(input);
-    }
-
-    private static void SendOpaqueInput(INPUT input)
-    {
-        try
-        {
-            uint result = SendInput(1, new[] { input }, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
-        }
-        catch { }
+        if (down)
+            MouseButtonDown((byte)button);
+        else
+            MouseButtonDownUp((byte)button);
     }
 
     /// <summary>Scroll vertical wheel (positive = up).</summary>
     public static void ScrollVertical(int delta)
     {
-        var input = new INPUT
-        {
-            type = INPUT_MOUSE,
-            mi = new MOUSEINPUT { mouseData = (uint)delta, dwFlags = MOUSEEVENTF_WHEEL }
-        };
-        SendInput(1, new[] { input }, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
+        MouseScrollVertical(delta);
     }
 
     /// <summary>Scroll horizontal wheel (positive = right).</summary>
     public static void ScrollHorizontal(int delta)
     {
-        var input = new INPUT
-        {
-            type = INPUT_MOUSE,
-            mi = new MOUSEINPUT { mouseData = (uint)delta, dwFlags = MOUSEEVENTF_HWHEEL }
-        };
-        SendInput(1, new[] { input }, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
+        MouseScrollHorizontal(delta);
     }
 
     /// <summary>

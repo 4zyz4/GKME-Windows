@@ -52,18 +52,18 @@
 
   <!-- Driver source files are automatically included by SDK -->
 
-  <!-- Build KeyboardDll C++ project before C# compile -->
-  <Target Name="BuildKeyboardDll" BeforeTargets="BeforeBuild">
-    <Message Text="Building KeyboardDll..." Importance="high" />
-    <Exec Command="&quot;C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe&quot; &quot;$(ProjectDir)Driver\KeyboardDll\KeyboardDll.vcxproj&quot; /p:Configuration=$(Configuration) /p:Platform=x64 /t:Build /nologo /v:normal" />
+  <!-- Build InputDll C++ project before C# compile -->
+  <Target Name="BuildInputDll" BeforeTargets="BeforeBuild">
+    <Message Text="Building InputDll..." Importance="high" />
+    <Exec Command="&quot;C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe&quot; &quot;$(ProjectDir)Driver\InputDll\InputDll.vcxproj&quot; /p:Configuration=$(Configuration) /p:Platform=x64 /t:Build /nologo /v:normal" />
   </Target>
 
-  <!-- Copy KeyboardDll.dll to output directory -->
-  <ItemGroup Condition="Exists('Driver\KeyboardDll\bin\$(Configuration)\KeyboardDll.dll')">
-    <Content Include="Driver\KeyboardDll\bin\$(Configuration)\KeyboardDll.dll">
+  <!-- Copy InputDll.dll to output directory -->
+  <ItemGroup Condition="Exists('bin\$(Configuration)\InputDll.dll')">
+    <Content Include="bin\$(Configuration)\InputDll.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-      <Link>KeyboardDll.dll</Link>
+      <Link>InputDll.dll</Link>
     </Content>
   </ItemGroup>
 

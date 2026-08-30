@@ -1,5 +1,5 @@
 #include <windows.h>
-#include "KeyboardDll.h"
+#include "InputDll.h"
 
 static unsigned char GetVkFromHid(unsigned char hid) {
     switch (hid) {
@@ -17,35 +17,24 @@ static unsigned char GetVkFromHid(unsigned char hid) {
         case 0x22: return 0x35; case 0x23: return 0x36; case 0x24: return 0x37; case 0x25: return 0x38;
         case 0x26: return 0x39; case 0x27: return 0x30;
         // Standard Control & Punctuation
-        // 0x2F=[, 0x30=], 0x31=\, 0x32=#~(Non-US), 0x33=;, 0x34=', 0x35=`
-        // 0x36=,, 0x37=. (Numpad), 0x38=/, 0x39=CapsLock
-        case 0x28: return 0x0D; case 0x29: return 0x1B; case 0x2A: return 0x08; case 0x2B: return 0x09;
-        case 0x2C: return 0x20; case 0x2D: return 0xBD; case 0x2E: return 0xBB; case 0x2F: return 0xDB;
-        case 0x30: return 0xDD; case 0x31: return 0xDC; case 0x32: return 0xBF; case 0x33: return 0xBA;
-        case 0x34: return 0xDE; case 0x35: return 0xC0; case 0x36: return 0xBC; case 0x37: return 0xBE;
-        case 0x38: return 0xBF; case 0x39: return 0x14;
+        case 0x2F: return 0xDB; case 0x30: return 0xDD; case 0x31: return 0xDC; case 0x32: return 0xBF;
+        case 0x33: return 0xBA; case 0x34: return 0xDE; case 0x35: return 0xC0; case 0x36: return 0xBC;
+        case 0x37: return 0xBE; case 0x38: return 0xBF; case 0x39: return 0x14;
         // F1-F12
         case 0x3A: return 0x70; case 0x3B: return 0x71; case 0x3C: return 0x72; case 0x3D: return 0x73;
         case 0x3E: return 0x74; case 0x3F: return 0x75; case 0x40: return 0x76; case 0x41: return 0x77;
         case 0x42: return 0x78; case 0x43: return 0x79; case 0x44: return 0x7A; case 0x45: return 0x7B;
-        // Numpad 5, Numpad 3, PgDn, Numpad -, Numpad 6, NumLock, Scroll,
-        // Numpad 9, PgUp, Home, Numpad 0, Ins, Numpad ., End, Down, Numpad +,
-        // Numpad 1, Left, Del, Right, Up
+        // Numpad
         case 0x46: return 0x2C; case 0x47: return 0x46; case 0x48: return 0x13; case 0x49: return 0x2D;
         case 0x4A: return 0x24; case 0x4B: return 0x21; case 0x4C: return 0x2E; case 0x4D: return 0x23;
         case 0x4E: return 0x22; case 0x4F: return 0x4D; case 0x50: return 0x4B; case 0x51: return 0x48;
         case 0x52: return 0x4A;
-        // NumLock, Scroll Lock, Numpad /, Numpad *, Numpad -, Numpad Enter, Numpad +,
-        // Numpad *, Numpad , (decimal), Numpad =
         case 0x53: return 0x90; case 0x54: return 0x91; case 0x55: return 0x6F; case 0x56: return 0x6A;
         case 0x57: return 0x6D; case 0x58: return 0x0D; case 0x59: return 0x6B; case 0x5A: return 0x6C;
         case 0x5B: return 0x61; case 0x5C: return 0x62; case 0x5D: return 0x63; case 0x5E: return 0x64;
         case 0x5F: return 0x65; case 0x60: return 0x66; case 0x61: return 0x67; case 0x62: return 0x68;
         case 0x63: return 0x69;
-        // Non-US Hash (#), Grave Accent, Non-US Backslash, Application,
-        // Kana, Kanji, Onyomi, Kouhen, Azaji, Hiragana/Katakana, Yen,
-        // Ro, Paused, Copy, Rotate/3D, Cut, Open/Paste, Conv,
-        // Non-Cony | Mode Change
+        // Non-US keys and special keys
         case 0x64: return 0xC0; case 0x65: return 0xDC; case 0x66: return 0xDC; case 0x67: return 0x5D;
         case 0x68: return 0xFF; case 0x69: return 0xFF; case 0x6A: return 0xFF; case 0x6B: return 0xFF;
         case 0x6C: return 0xFF; case 0x6D: return 0xFF; case 0x6E: return 0xFF; case 0x6F: return 0xFF;
@@ -138,6 +127,58 @@ __declspec(dllexport) void SendMediaKey(unsigned char action) {
         case 0x80: vk = 0xAF; break;
     }
     if (vk) { SendKeyDown(vk); SendKeyUp(vk); }
+}
+
+// Mouse helper functions
+static void SendMouseInput(DWORD flags, int dx, int dy, DWORD wheelData) {
+    INPUT input = {0};
+    input.type = INPUT_MOUSE;
+    input.mi.dx = dx;
+    input.mi.dy = dy;
+    input.mi.mouseData = wheelData;
+    input.mi.dwFlags = flags;
+    input.mi.time = 0;
+    input.mi.dwExtraInfo = 0;
+    SendInput(1, &input, sizeof(INPUT));
+}
+
+__declspec(dllexport) void MouseMoveRelative(int dx, int dy) {
+    SendMouseInput(0x0001, dx, dy, 0);
+}
+
+__declspec(dllexport) void MouseButtonDown(unsigned char button) {
+    DWORD flags = 0;
+    switch (button) {
+        case 0: flags = 0x0002; break;  // LEFTDOWN
+        case 1: flags = 0x0008; break;  // RIGHTDOWN
+        case 2: flags = 0x0020; break;  // MIDDLEDOWN
+    }
+    if (flags) SendMouseInput(flags, 0, 0, 0);
+}
+
+__declspec(dllexport) void MouseButtonDownUp(unsigned char button) {
+    DWORD downFlags = 0, upFlags = 0;
+    switch (button) {
+        case 0: downFlags = 0x0002; upFlags = 0x0004; break;
+        case 1: downFlags = 0x0008; upFlags = 0x0010; break;
+        case 2: downFlags = 0x0020; upFlags = 0x0040; break;
+    }
+    if (downFlags) {
+        INPUT input = {0};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = downFlags;
+        SendInput(1, &input, sizeof(INPUT));
+        input.mi.dwFlags = upFlags;
+        SendInput(1, &input, sizeof(INPUT));
+    }
+}
+
+__declspec(dllexport) void MouseScrollVertical(int delta) {
+    SendMouseInput(0x0800, 0, 0, (DWORD)delta);
+}
+
+__declspec(dllexport) void MouseScrollHorizontal(int delta) {
+    SendMouseInput(0x1000, 0, 0, (DWORD)delta);
 }
 
 }
