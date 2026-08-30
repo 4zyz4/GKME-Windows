@@ -15,18 +15,7 @@ public partial class MainWindow : Window
         _vm = vm;
         InitializeComponent();
         this.Closing += OnClosing;
-        this.StateChanged += OnStateChanged;
         Loaded += async (_, _) => await _vm.InitializeAsync();
-    }
-
-    private void OnStateChanged(object? sender, EventArgs e)
-    {
-        if (WindowState == WindowState.Minimized)
-        {
-            Hide();
-            if (Application.Current is App app)
-                app.SetMainWindow(this);
-        }
     }
 
     private void OnClosing(object? sender, CancelEventArgs e)

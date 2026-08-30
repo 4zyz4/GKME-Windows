@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using System.Windows;
@@ -9,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using WinApplication = System.Windows.Application;
 using WinFormsApplication = System.Windows.Forms.Application;
+
 using WinFormsNotifyIcon = System.Windows.Forms.NotifyIcon;
 using WinFormsContextMenuStrip = System.Windows.Forms.ContextMenuStrip;
 using WinFormsToolStripMenuItem = System.Windows.Forms.ToolStripMenuItem;
@@ -84,6 +86,7 @@ public partial class App : WinApplication
 
     public NetworkService? Service { get; private set; }
 
+    public WinFormsNotifyIcon? NotifyIcon => _notifyIcon;
     private WinFormsNotifyIcon? _notifyIcon;
     private Window? _mainWindow;
 
@@ -92,11 +95,13 @@ public partial class App : WinApplication
         _mainWindow = window;
     }
 
+    
+
     private static bool IsPortInUse(int port)
     {
         try
         {
-            using var tcp = new TcpListener(System.Net.IPAddress.Any, port);
+            using var tcp = new TcpListener(IPAddress.Any, port);
             tcp.Start();
             tcp.Stop();
             return false;
@@ -111,11 +116,16 @@ public partial class App : WinApplication
     {
         if (IsPortInUse(NetworkService.Port))
         {
-            MessageBox.Show(
-                "GKME 已在运行中。\n不能同时启动多个实例。",
-                "GKME",
-                MessageBoxButton.OK,
-                MessageBoxImage.Exclamation);
+            try
+            {
+                MessageBox.Show(
+                    "GKME 已在运行中。\n不能同时启动多个实例。",
+                    "GKME",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Exclamation);
+            }
+            catch { }
+
             Shutdown(-1);
             return;
         }
