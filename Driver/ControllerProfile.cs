@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GKME;
 
 namespace HIDMaestro.Internal;
 
@@ -545,7 +546,9 @@ public sealed class ProfileDatabase
             }
         });
 
+#pragma warning disable IL2026
         db._profiles.AddRange(parsed);
+#pragma warning restore IL2026
         db._profiles.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.Ordinal));
         return db;
     }
@@ -610,7 +613,9 @@ public sealed class ProfileDatabase
             }
         });
 
+#pragma warning disable IL2026
         db._profiles.AddRange(parsed);
+#pragma warning restore IL2026
         db._profiles.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.Ordinal));
         return db;
     }

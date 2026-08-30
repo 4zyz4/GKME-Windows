@@ -13,6 +13,8 @@ public partial class ExceptionDialog : Window
 {
     private readonly string _crashText;
 
+    public ExceptionDialog() => _crashText = string.Empty;
+
     public ExceptionDialog(string? crashText = null)
     {
         _crashText = crashText ?? ExceptionLogger.FormatForClipboard();
@@ -39,30 +41,37 @@ public partial class ExceptionDialog : Window
 
     private async void OnCopyAll(object? sender, RoutedEventArgs e)
     {
+        Window? GetOwner()
+        {
+            if (MainWindow.Instance is Window mw) return mw;
+            var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
+            if (lifetime?.MainWindow is Window w) return w;
+            return null;
+        }
+
         try
         {
-            var topLevel = TopLevel.GetTopLevel(this);
-            if (topLevel?.Clipboard is not null)
-            {
-                await topLevel.Clipboard.SetTextAsync(_crashText);
-            }
-            
+            var owner = GetOwner();
             var textBlock = new TextBlock { Text = "已复制到剪贴板", Margin = new Thickness(20) };
             var dlg = new Window
             {
                 Content = textBlock,
                 WindowStartupLocation = WindowStartupLocation.CenterScreen,
                 Width = 250,
-                Height = 100
+                Height = 100,
+                Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#1E1E1E")),
+                CanResize = false
             };
-            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime && lifetime.MainWindow != null)
+            #pragma warning disable CS8604
+            try
             {
-                await dlg.ShowDialog(lifetime.MainWindow);
+                await dlg.ShowDialog(owner);
             }
-            else
+            catch
             {
-                await dlg.ShowDialog(null);
+                dlg.Show();
             }
+#pragma warning restore CS8604
         }
         catch
         {
@@ -72,16 +81,10 @@ public partial class ExceptionDialog : Window
                 Content = textBlock,
                 WindowStartupLocation = WindowStartupLocation.CenterScreen,
                 Width = 250,
-                Height = 100
+                Height = 100,
+                Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#1E1E1E"))
             };
-            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime && lifetime.MainWindow != null)
-            {
-                await dlg.ShowDialog(lifetime.MainWindow);
-            }
-            else
-            {
-                await dlg.ShowDialog(null);
-            }
+            dlg.Show();
         }
     }
 }

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
@@ -10,6 +11,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using GKME.Core;
@@ -24,8 +26,9 @@ public partial class App : Application
     private NetworkService? _service;
     private Window? _mainWindow;
     private bool _showingWindow;
-    private static volatile Exception? _pendingCrash;
-    private static IDispatcher? _uiDispatcher;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int MessageBoxW(IntPtr hWnd, string lpText, string lpCaption, uint uType);
 
     public ICommand ShowWindowCommand { get; }
     public ICommand QuitCommand { get; }
@@ -58,39 +61,26 @@ public partial class App : Application
 
     public override void OnFrameworkInitializationCompleted()
     {
-        _uiDispatcher = Dispatcher.UIThread;
-
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
-            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
 
-            try
-            {
-                if (IsPortInUse(NetworkService.Port))
+            if (IsPortInUse(NetworkService.Port))
                 {
                     ShowDuplicateWarning();
                     desktop.Shutdown(-1);
                     return;
                 }
 
-                TryInitializeService();
+            TryInitializeService();
 
-                var vm = new MainViewModel(_service);
-                var window = new MainWindow(vm);
-                _mainWindow = window;
+            var vm = new MainViewModel(_service);
+            var window = new MainWindow(vm);
+            _mainWindow = window;
                 
-                window.Show();
-                window.Closed += OnMainWindowClosed;
+            window.Show();
+            window.Closed += OnMainWindowClosed;
 
-                SetupTrayIcon();
-            }
-            catch
-            {
-                ShowCrashDialog();
-                desktop.Shutdown(-1);
-                return;
-            }
+            SetupTrayIcon();
         }
 
         base.OnFrameworkInitializationCompleted();
@@ -184,7 +174,11 @@ public partial class App : Application
             }
             else
             {
-                dlg.ShowDialog((Window?)null);
+#pragma warning disable CS8604
+#pragma warning disable CS8625
+                dlg.ShowDialog(null);
+#pragma warning restore CS8625
+#pragma warning restore CS8604
             }
         }
         catch { }
@@ -209,66 +203,6 @@ public partial class App : Application
     {
         _mainWindow = null;
     }
-
-    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
-    {
-        ExceptionLogger.Record(e.Exception, "UnobservedTaskException");
-        ShowCrashDialog();
-        e.SetObserved();
-    }
-
-    private static void OnUnhandledException(object? sender, UnhandledExceptionEventArgs e)
-    {
-        var ex = e.ExceptionObject as Exception;
-        if (ex != null)
-        {
-            ExceptionLogger.Record(ex, "AppDomain.CurrentDomain.UnhandledException");
-        }
-
-        if (e.IsTerminating)
-        {
-            Interlocked.Exchange(ref _pendingCrash, ex);
-
-            _uiDispatcher?.Post(() =>
-            {
-                try
-                {
-                    var crashText = ex?.ToString() ?? ExceptionLogger.FormatForClipboard();
-                    var dialog = new ExceptionDialog(crashText);
-                    dialog.Show();
-                }
-                catch { }
-            }, DispatcherPriority.ApplicationIdle);
-        }
-    }
-
-    private static void CrashHandlerLoop()
-    {
-        while (Interlocked.CompareExchange(ref _pendingCrash, null, null) == null)
-        {
-            Thread.Sleep(50);
-        }
-
-        Thread.Sleep(Timeout.Infinite);
-    }
-
-    private void ShowCrashDialog()
-    {
-        try
-        {
-            var dialog = new ExceptionDialog();
-            var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
-            if (lifetime?.MainWindow != null)
-            {
-                dialog.ShowDialog(lifetime.MainWindow);
-            }
-            else
-            {
-                dialog.Show();
-            }
-        }
-        catch { }
-    }
 }
 
 public class RelayCommand : ICommand
@@ -280,7 +214,11 @@ public class RelayCommand : ICommand
         _execute = execute ?? throw new ArgumentNullException(nameof(execute));
     }
 
-    public event EventHandler? CanExecuteChanged;
+    public event EventHandler? CanExecuteChanged
+    {
+        add { }
+        remove { }
+    }
 
     public bool CanExecute(object? parameter) => true;
 

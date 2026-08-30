@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -43,9 +44,12 @@ internal static class Win32Keyboard
     {
         try
         {
-            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            string exeDir = AppContext.BaseDirectory;
             string dllPath = Path.Combine(exeDir, "InputDll.dll");
-            if (!File.Exists(dllPath)) dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Keyboard).Assembly.Location) ?? ".", "InputDll.dll");
+#pragma warning disable IL3000
+            if (!File.Exists(dllPath))
+                dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Keyboard).Assembly.Location) ?? ".", "InputDll.dll");
+#pragma warning restore IL3000
             if (File.Exists(dllPath)) { LoadLibrary(dllPath); }
         }
         catch { }
@@ -88,9 +92,12 @@ internal static class Win32Mouse
     {
         try
         {
-            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            string exeDir = AppContext.BaseDirectory;
             string dllPath = Path.Combine(exeDir, "InputDll.dll");
-            if (!File.Exists(dllPath)) dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Mouse).Assembly.Location) ?? ".", "InputDll.dll");
+#pragma warning disable IL3000
+            if (!File.Exists(dllPath))
+                dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Mouse).Assembly.Location) ?? ".", "InputDll.dll");
+#pragma warning restore IL3000
             if (File.Exists(dllPath)) { LoadLibrary(dllPath); }
         }
         catch { }
@@ -1480,8 +1487,10 @@ public class GamepadSession : IDisposable
         lock (_preRemoveLock)
         {
             if (_instanceIdField != null) return;
+#pragma warning disable IL2072
             _instanceIdField = ctrl.GetType().GetField("<InstanceId>k__BackingField",
                 BindingFlags.Instance | BindingFlags.NonPublic);
+#pragma warning restore IL2072
         }
     }
 

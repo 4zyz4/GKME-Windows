@@ -10,13 +10,19 @@ namespace GKME.Ui;
 
 public partial class MainWindow : Window
 {
+    private static Window? _instance;
     private readonly MainViewModel _vm;
+
+    public static Window? Instance => _instance;
+
+    public MainWindow() => _vm = null!;
 
     public MainWindow(MainViewModel vm)
     {
         DataContext = vm;
         _vm = vm;
         InitializeComponent();
+        _instance = this;
         this.Closing += OnClosing;
         this.Loaded += async (_, _) => await _vm.InitializeAsync();
     }

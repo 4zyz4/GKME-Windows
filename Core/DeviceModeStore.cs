@@ -1,4 +1,5 @@
 using System.IO;
+using GKME;
 using System.Text.Json;
 
 namespace GKME.Core;
@@ -33,7 +34,11 @@ public sealed class DeviceModeStore
         {
             if (!File.Exists(_filePath)) return;
             var json = File.ReadAllText(_filePath);
+#pragma warning disable IL2026
+#pragma warning disable IL3050
             var data = JsonSerializer.Deserialize<Dictionary<string, int>>(json);
+#pragma warning restore IL3050
+#pragma warning restore IL2026
             if (data == null) return;
             foreach (var (k, v) in data)
             {
@@ -51,8 +56,7 @@ public sealed class DeviceModeStore
             var dir = Path.GetDirectoryName(_filePath);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
-            var json = JsonSerializer.Serialize(
-                _modes.ToDictionary(kv => kv.Key, kv => (int)kv.Value));
+            var json = JsonSerializer.Serialize(_modes.ToDictionary(kv => kv.Key, kv => (int)kv.Value));
             File.WriteAllText(_filePath, json);
         }
         catch { }

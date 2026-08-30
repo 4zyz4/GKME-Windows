@@ -5,6 +5,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <AvaloniaEnableDependInfo>true</AvaloniaEnableDependInfo>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>
@@ -12,12 +13,17 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <IncludeNativeBuildOutputsInDotNetSelfContained>true</IncludeNativeBuildOutputsInDotNetSelfContained>
-    <PublishTrimmed>false</PublishTrimmed>
+    <PublishTrimmed>true</PublishTrimmed>
+    <IlcOptimize>true</IlcOptimize>
+    <IlcFoldIdenticalBehavior>true</IlcFoldIdenticalBehavior>
+    <StripSymbols>true</StripSymbols>
     <AssemblyVersion>3.1.0</AssemblyVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IlcInvariantGlobalization>true</IlcInvariantGlobalization>
+    <NoWarn>$(NoWarn);IL2026;IL3050;IL2070;IL2075;IL3000</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

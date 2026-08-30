@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -119,8 +120,11 @@ public class NetworkService : IDisposable
     private static void PatchTimeoutScaleRecursive(object obj, BindingFlags flags, HashSet<object> seen)
     {
         if (obj == null || !seen.Add(obj)) return;
+#pragma warning disable IL2075
         var t = obj.GetType();
+#pragma warning restore IL2075
 
+#pragma warning disable IL2072
         SetFieldInt(t, obj, "perAttemptTimeoutMs", 500, flags);
         SetFieldInt(t, obj, "timeoutMs", 500, flags);
         SetFieldInt(t, obj, "callbackTimeoutMs", 500, flags);
@@ -131,11 +135,14 @@ public class NetworkService : IDisposable
             if (val != null && f.FieldType.IsClass && f.FieldType.Namespace?.StartsWith("HIDMaestro") == true)
                 PatchTimeoutScaleRecursive(val, flags, seen);
         }
+#pragma warning restore IL2072
     }
 
     private static void SetFieldInt(Type t, object obj, string name, int value, BindingFlags flags)
     {
+#pragma warning disable IL2072
         var f = t.GetField(name, flags);
+#pragma warning restore IL2072
         if (f != null && f.FieldType == typeof(int))
             f.SetValue(obj, value);
     }

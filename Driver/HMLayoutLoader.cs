@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -30,6 +31,7 @@ internal sealed class HMLayoutJsonConverter : JsonConverter<HMLayout>
 
         var json = root.GetRawText();
         var sub = options;  // reuse options (already configured with snake_case enum support)
+#pragma warning disable IL3050
         return kind switch
         {
             HMLayoutKind.Unspecified         => JsonSerializer.Deserialize<HMUnspecifiedLayout>(json, sub),
@@ -50,10 +52,15 @@ internal sealed class HMLayoutJsonConverter : JsonConverter<HMLayout>
             HMLayoutKind.ControllerAdapter   => JsonSerializer.Deserialize<HMControllerAdapterLayout>(json, sub),
             _                                => throw new JsonException($"HMLayout: unhandled kind {kind}")
         };
+#pragma warning restore IL3050
     }
 
     public override void Write(Utf8JsonWriter writer, HMLayout value, JsonSerializerOptions options)
-        => JsonSerializer.Serialize(writer, value, value.GetType(), options);
+    {
+#pragma warning disable IL2026
+        JsonSerializer.Serialize(writer, value, value.GetType(), options);
+#pragma warning restore IL2026
+    }
 
     /// <summary>Convert a snake_case JSON string ("left_stick_x") to its
     /// matching PascalCase enum value (HMAxisRole.LeftStickX). Returns null
@@ -90,7 +97,9 @@ public static class HMLayoutJsonOptions
         // axis names ("X", "Y", "LeftStickX") that the descriptor parser
         // emits.
         opts.Converters.Add(new HMAxisJsonConverter());
+#pragma warning disable IL3050
         opts.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower));
+#pragma warning restore IL3050
         opts.Converters.Add(new HMLayoutJsonConverter());
         return opts;
     }

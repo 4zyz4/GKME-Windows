@@ -1,7 +1,11 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
 using GamepadEmu.Protocol;
 using GKME.Core;
@@ -68,8 +72,66 @@ public class MainViewModel : INotifyPropertyChanged
     public void StartAutoScan()
     {
         if (!_driverOk || _network == null) return;
-        StatusText = "正在扫描...";
-        _network.StartDiscovery();
+        try
+        {
+            StatusText = "正在扫描...";
+            _network.StartDiscovery();
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse || ex.NativeErrorCode == 10048)
+        {
+            StatusText = "GKME 已在运行中";
+            Dispatcher.UIThread.Post(() => ShowAlreadyRunningDialog(), DispatcherPriority.Background);
+        }
+    }
+
+    private void ShowAlreadyRunningDialog()
+    {
+        var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
+        var owner = MainWindow.Instance ?? (lifetime?.MainWindow as Window) ?? throw new InvalidOperationException("No main window found");
+
+        var bgColor = Avalonia.Media.Color.Parse("#1E1E1E");
+        var fgColor = Avalonia.Media.Color.Parse("#E0E0E0");
+        var btnColor = Avalonia.Media.Color.Parse("#0E639C");
+
+        var textBlock = new TextBlock
+        {
+            Text = "GKME 已在运行中。\n不能同时启动多个实例。",
+            Margin = new Thickness(20),
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            Foreground = new Avalonia.Media.SolidColorBrush(fgColor),
+            FontSize = 14
+        };
+        var btn = new Button
+        {
+            Content = "确定",
+            Margin = new Thickness(10),
+            Background = new Avalonia.Media.SolidColorBrush(btnColor),
+            Foreground = Avalonia.Media.Brushes.White,
+            BorderThickness = new Avalonia.Thickness(0),
+            CornerRadius = new Avalonia.CornerRadius(4),
+            Padding = new Avalonia.Thickness(12, 6),
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
+        };
+        var panel = new StackPanel
+        {
+            Children = { textBlock, btn }
+        };
+        var dlg = new Window
+        {
+            Content = panel,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            Width = 320,
+            Height = 160,
+            CanResize = false,
+            Background = new Avalonia.Media.SolidColorBrush(bgColor)
+        };
+        btn.Click += (_, _) =>
+        {
+            dlg.Close();
+            lifetime?.Shutdown();
+        };
+        dlg.ShowDialog(owner);
     }
 
     public async Task ConnectAsync(DeviceCardViewModel card)
