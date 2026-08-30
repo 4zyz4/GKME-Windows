@@ -1,9 +1,9 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
-using GamepadEmuHost.Core;
+using GKME.Core;
 
-namespace GamepadEmuHost.Ui;
+namespace GKME.Ui;
 
 public partial class MainWindow : Window
 {

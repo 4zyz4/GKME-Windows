@@ -1,9 +1,9 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using GamepadEmu.Protocol;
-using GamepadEmuHost.Core;
+using GKME.Core;
 
-namespace GamepadEmuHost.Ui;
+namespace GKME.Ui;
 
 public class DeviceCardViewModel : INotifyPropertyChanged
 {

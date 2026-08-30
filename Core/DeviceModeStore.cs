@@ -1,7 +1,7 @@
 using System.IO;
 using System.Text.Json;
 
-namespace GamepadEmuHost.Core;
+namespace GKME.Core;
 
 public sealed class DeviceModeStore
 {
@@ -12,7 +12,7 @@ public sealed class DeviceModeStore
     {
         _filePath = filePath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "GamepadEmuHost", "device-modes.json");
+            "GKME", "device-modes.json");
         Load();
     }
 

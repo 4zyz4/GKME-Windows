@@ -1,9 +1,9 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
-using GamepadEmuHost.Core;
+using GKME.Core;
 
-namespace GamepadEmuHost.Ui;
+namespace GKME.Ui;
 
 public class InvertBoolConverter : IValueConverter
 {

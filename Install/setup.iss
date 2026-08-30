@@ -1,22 +1,22 @@
-; GamepadEmuHost Installer
+; GKME Installer
 ; Requires InnoSetup 6+  https://jrsoftware.org/isdl.php
 
-#define MyAppName "GamepadEmuHost"
+#define MyAppName "GKME"
 #define MyAppVersion "3.1.0"
 #define MyAppPublisher "4zyz4"
 #define MyAppURL ""
-#define MyAppExeName "GamepadEmuHost.exe"
+#define MyAppExeName "GKME.exe"
 
 #define BuildDir "..\bin\Release\net10.0-windows\win-x64"
 
 [Setup]
-AppName=GamepadEmuHost
+AppName=GKME
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\GamepadEmuHost
-DefaultGroupName=GamepadEmuHost
-UninstallDisplayName=GamepadEmuHost
-OutputBaseFilename=GamepadEmuHost_Setup_{#MyAppVersion}
+DefaultDirName={autopf}\GKME
+DefaultGroupName=GKME
+UninstallDisplayName=GKME
+OutputBaseFilename=GKME_Setup_{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -39,13 +39,13 @@ Source: "{#BuildDir}\*.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourc
 Source: "{#BuildDir}\*.pdb"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\GamepadEmuHost"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\GamepadEmuHost"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Uninstall GamepadEmuHost"; Filename: "{uninstallexe}"
+Name: "{group}\GKME"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\GKME"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\Uninstall GKME"; Filename: "{uninstallexe}"
 
 [Code]
 const
-  MyAppName = 'GamepadEmuHost';
+  MyAppName = 'GKME';
   MyAppVersion = '3.1.0';
 
 var

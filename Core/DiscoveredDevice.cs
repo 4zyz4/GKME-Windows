@@ -1,6 +1,6 @@
 using System.Net;
 
-namespace GamepadEmuHost.Core;
+namespace GKME.Core;
 
 public class DiscoveredDevice
 {

@@ -7,7 +7,7 @@ using GamepadEmu.Protocol;
 using Google.Protobuf;
 using HIDMaestro;
 
-namespace GamepadEmuHost.Core;
+namespace GKME.Core;
 
 [Flags]
 internal enum KeyboardModifier : uint

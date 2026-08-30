@@ -1,6 +1,6 @@
 using System.Windows;
 
-namespace GamepadEmuHost.Ui;
+namespace GKME.Ui;
 
 public partial class AboutDialog : Window
 {

@@ -1,4 +1,4 @@
-namespace GamepadEmuHost.Core;
+namespace GKME.Core;
 
 public enum ControllerMode
 {

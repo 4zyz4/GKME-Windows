@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace GamepadEmuHost.Core;
+namespace GKME.Core;
 
 public static class ExceptionLogger
 {
@@ -36,7 +36,7 @@ public static class ExceptionLogger
     public static string FormatForClipboard()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Gamepad Emu Host - 异常日志");
+        sb.AppendLine("GKME - 异常日志");
         sb.AppendLine($"收集于 {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss UTC}");
         sb.AppendLine($"共 {_logs.Count} 条记录");
         sb.AppendLine(new string('-', 80));

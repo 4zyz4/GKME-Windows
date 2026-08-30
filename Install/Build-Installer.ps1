@@ -11,7 +11,7 @@ $PublishDir = "$RepoRoot\bin\$Configuration\net10.0-windows\win-x64\publish"
 
 # ---------- step 1: publish self-contained ----------
 Write-Host "=== Publishing self-contained app ==="
-dotnet publish "$RepoRoot\GamepadEmuHost.csproj" `
+dotnet publish "$RepoRoot\GKME.csproj" `
     -c $Configuration `
     -r win-x64 `
     --self-contained true `

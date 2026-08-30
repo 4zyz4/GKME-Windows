@@ -1,7 +1,7 @@
 using System.Windows;
-using GamepadEmuHost.Core;
+using GKME.Core;
 
-namespace GamepadEmuHost.Ui;
+namespace GKME.Ui;
 
 public partial class ExceptionDialog : Window
 {

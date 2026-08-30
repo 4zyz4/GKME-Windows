@@ -15,12 +15,12 @@ using WinFormsToolStripMenuItem = System.Windows.Forms.ToolStripMenuItem;
 using WinFormsMouseEventArgs = System.Windows.Forms.MouseEventArgs;
 using WinFormsMouseButtons = System.Windows.Forms.MouseButtons;
 using WinFormsIcon = System.Drawing.Icon;
-using GamepadEmuHost.Core;
-using GamepadEmuHost.Ui;
+using GKME.Core;
+using GKME.Ui;
 
 [assembly: System.Runtime.Versioning.SupportedOSPlatform("windows6.1")]
 
-namespace GamepadEmuHost;
+namespace GKME;
 
 public partial class App : WinApplication
 {
@@ -112,8 +112,8 @@ public partial class App : WinApplication
         if (IsPortInUse(NetworkService.Port))
         {
             MessageBox.Show(
-                "Gamepad Emu Host 已在运行中。\n不能同时启动多个实例。",
-                "Gamepad Emu Host",
+                "GKME 已在运行中。\n不能同时启动多个实例。",
+                "GKME",
                 MessageBoxButton.OK,
                 MessageBoxImage.Exclamation);
             Shutdown(-1);
@@ -146,12 +146,12 @@ public partial class App : WinApplication
         var iconPath = Path.Combine(appDir, "icon.ico");
         var resolvedIcon = iconPath != null && System.IO.File.Exists(iconPath)
             ? new WinFormsIcon(iconPath)
-            : WinFormsIcon.ExtractAssociatedIcon(Path.Combine(appDir, "GamepadEmuHost.exe"));
+            : WinFormsIcon.ExtractAssociatedIcon(Path.Combine(appDir, "GKME.exe"));
 
         _notifyIcon = new WinFormsNotifyIcon
         {
             Icon = resolvedIcon ?? WinFormsIcon.ExtractAssociatedIcon(Environment.SystemDirectory + @"\shell32.dll"),
-            Text = "Gamepad Emu Host",
+            Text = "GKME",
             Visible = true
         };
 

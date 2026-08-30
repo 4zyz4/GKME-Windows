@@ -1,10 +1,10 @@
 using System.Reflection;
 
-[assembly: AssemblyTitle("GamepadEmuHost")]
+[assembly: AssemblyTitle("GKME")]
 [assembly: AssemblyDescription("USB/IP Virtual Gamepad Host")]
 [assembly: AssemblyConfiguration("Release")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyProduct("GamepadEmuHost")]
+[assembly: AssemblyProduct("GKME")]
 [assembly: AssemblyCopyright("")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
