@@ -38,7 +38,7 @@
             <Run Text="作者：4zyz4" /><LineBreak />
             <Run Text="软件Q群：639317971" /><LineBreak /><LineBreak />
             <Run Text="开源地址：" /><LineBreak />
-            <TextBlock Classes="link" Text="https://github.com/4zyz4/gamepad-emu-android" HorizontalAlignment="Center" /><LineBreak /><LineBreak />
+            <TextBlock Classes="link" Text="https://github.com/4zyz4/GKME" HorizontalAlignment="Center" /><LineBreak /><LineBreak />
             <Run Text="注意：本软件不是Emotion，请进入Q群1045923515以下载正版Emotion" />
         </TextBlock>
     </Grid>
