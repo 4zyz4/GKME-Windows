@@ -73,6 +73,9 @@ public class NetworkService : IDisposable
     {
         try
         {
+            var log = Path.Combine(AppContext.BaseDirectory, "gkme_error.log");
+            System.IO.File.AppendAllText(log, $"[InitHidMaestro] starting, BaseDir={AppContext.BaseDirectory}\n");
+            
             // External profile override: profiles/ next to the app wins over
             // the embedded catalog for the same profile ID (external loads
             // register first, and LoadDefaultProfiles skips existing IDs).
@@ -82,12 +85,15 @@ public class NetworkService : IDisposable
             if (Directory.Exists(overrideDir))
             {
                 try { _hmContext.LoadProfilesFromDirectory(overrideDir); }
-                catch { }
+                catch (Exception ex) { System.IO.File.AppendAllText(log, $"[InitHidMaestro] LoadProfilesFromDirectory failed: {ex}\n"); }
             }
 
             int loaded = _hmContext.LoadDefaultProfiles();
             if (loaded == 0)
+            {
+                System.IO.File.AppendAllText(log, "[InitHidMaestro] LoadDefaultProfiles returned 0\n");
                 return false;
+            }
 
             PatchTimeoutScale(_hmContext);
 
@@ -99,8 +105,9 @@ public class NetworkService : IDisposable
             HidMaestroAvailable = true;
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            try { System.IO.File.AppendAllText("gkme_error.log", $"[InitHidMaestro] EXCEPTION: {ex}\n"); } catch { }
             HidMaestroAvailable = false;
             return false;
         }

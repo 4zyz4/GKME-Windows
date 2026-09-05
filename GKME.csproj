@@ -13,6 +13,8 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <IncludeNativeBuildOutputsInDotNetSelfContained>true</IncludeNativeBuildOutputsInDotNetSelfContained>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <PublishAot>true</PublishAot>
     <PublishTrimmed>true</PublishTrimmed>
     <TrimmerRootDescriptor>linker.xml</TrimmerRootDescriptor>
     <TrimmerSingleWarn>false</TrimmerSingleWarn>

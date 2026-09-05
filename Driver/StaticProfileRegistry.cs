@@ -1,0 +1,524 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using HIDMaestro.Internal;
+
+namespace HIDMaestro;
+
+internal static class StaticProfileRegistry
+{
+    private static readonly Dictionary<string, ControllerProfile> s_profiles = new(StringComparer.Ordinal);
+
+    static StaticProfileRegistry()
+    {
+        s_profiles["xbox360-composite"] = BuildXbox360();
+        s_profiles["dualsense-composite"] = BuildDualSense();
+        s_profiles["dualshock-4-v2-composite"] = BuildDualShock4();
+    }
+
+    public static Dictionary<string, ControllerProfile> AllProfiles => s_profiles;
+
+    internal static ControllerProfile? GetProfile(string id) => s_profiles.TryGetValue(id, out var p) ? p : null;
+
+    private static ControllerProfile BuildXbox360()
+    {
+        var uc = new UsbConfigurationSpec
+        {
+            ConfigurationValue = 1,
+            Attributes = 0xC0,
+            MaxPowerMilliamps = 500,
+            BusSpeed = "full",
+            DeviceDescriptorHex = "12010002FFFFFF085E048E02140101020301",
+            ConfigurationDescriptorHex = "09029900040100C0FA0904000002FF5D0100112100010125811400000000130108000007058103200004070501032000080904010004FF5D03001B2100010101824001022016830000000000001603000000000000070582032000020705020320000407058303200040070503032000100904020001FF5D0200092100010122840700070584032000100904030000FFFD1304064100010103",
+            InputReportSize = 20,
+            VendorRequests = new List<VendorControlRequest>
+            {
+                new VendorControlRequest { RequestType = 193, Request = 1, Value = 256, Index = 0, Response = "0014FFFFFFFFFF7FFF7FFF7FFF7FFFFFFFFF0000" }
+            },
+            Interfaces = new List<UsbInterfaceSpec>
+            {
+                new UsbInterfaceSpec
+                {
+                    InterfaceNumber = 0, Function = "",
+                    AltSettings = new List<UsbAltSettingSpec>
+                    {
+                        new UsbAltSettingSpec
+                        {
+                            AltSetting = 0, InterfaceClass = 2, InterfaceSubClass = 0xFF, InterfaceProtocol = 0x5D,
+                            ClassDescriptors = "0011210001012581140000000013010800000705810320000407050103200008",
+                            Endpoints = new List<UsbEndpointSpec>
+                            {
+                                new UsbEndpointSpec { Address = 0x81, TransferType = "interrupt", MaxPacketSize = 32, Interval = 4 },
+                                new UsbEndpointSpec { Address = 0x01, TransferType = "interrupt", MaxPacketSize = 32, Interval = 8 }
+                            }
+                        }
+                    }
+                },
+                new UsbInterfaceSpec
+                {
+                    InterfaceNumber = 1, Function = "",
+                    AltSettings = new List<UsbAltSettingSpec>
+                    {
+                        new UsbAltSettingSpec
+                        {
+                            AltSetting = 0, InterfaceClass = 4, InterfaceSubClass = 0xFF, InterfaceProtocol = 0x5D,
+                            ClassDescriptors = "001B2100010101824001022016",
+                            Endpoints = new List<UsbEndpointSpec>
+                            {
+                                new UsbEndpointSpec { Address = 0x82, TransferType = "interrupt", MaxPacketSize = 32, Interval = 2 },
+                                new UsbEndpointSpec { Address = 0x02, TransferType = "interrupt", MaxPacketSize = 32, Interval = 4 }
+                            }
+                        }
+                    }
+                },
+                new UsbInterfaceSpec
+                {
+                    InterfaceNumber = 2, Function = "",
+                    AltSettings = new List<UsbAltSettingSpec>
+                    {
+                        new UsbAltSettingSpec
+                        {
+                            AltSetting = 0, InterfaceClass = 1, InterfaceSubClass = 0xFF, InterfaceProtocol = 0x5D,
+                            ClassDescriptors = "001603000000000000001603000000000000",
+                            Endpoints = new List<UsbEndpointSpec>
+                            {
+                                new UsbEndpointSpec { Address = 0x83, TransferType = "interrupt", MaxPacketSize = 32, Interval = 64 },
+                                new UsbEndpointSpec { Address = 0x03, TransferType = "interrupt", MaxPacketSize = 32, Interval = 16 }
+                            }
+                        }
+                    }
+                },
+                new UsbInterfaceSpec
+                {
+                    InterfaceNumber = 3, Function = "",
+                    AltSettings = new List<UsbAltSettingSpec>
+                    {
+                        new UsbAltSettingSpec
+                        {
+                            AltSetting = 0, InterfaceClass = 0, InterfaceSubClass = 0xFF, InterfaceProtocol = 0xFD,
+                            ClassDescriptors = "0009210001012284070007058403200010",
+                            Endpoints = new List<UsbEndpointSpec>
+                            {
+                                new UsbEndpointSpec { Address = 0x84, TransferType = "interrupt", MaxPacketSize = 32, Interval = 16 }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        return new ControllerProfile
+        {
+            Id = "xbox360-composite",
+            Name = "Xbox 360 Controller (Wired) — Full",
+            Vendor = "Microsoft",
+            Vid = "0x045E",
+            Pid = "0x028E",
+            ProductString = "Xbox 360 Controller for Windows",
+            ManufacturerString = "Microsoft",
+            Type = "gamepad",
+            Connection = "usb",
+            InputReportSize = 20,
+            Notes = "Wired Xbox 360 controller as synthesized by usbip-win. Ported from VIIPER's device/xbox360 device.go: a full-speed, vendor-class (bDeviceClass 0xFF) composite with four 0xFF interfaces, 0x21/0x41 class descriptors and a 20-byte opaque input report. No HID report descriptor; input is delivered verbatim from shared memory as 20 raw bytes (RID-less). The only control request is the 0xC1/0x01/0x0100 capability report (handled via the vendorRequests table). Rum/LED output arrives on EP0x01 OUT and is surfaced through the shared-memory output ring.",
+            Backend = "usbip",
+            UsbConfiguration = uc
+        };
+    }
+
+    private static ControllerProfile BuildDualSense()
+    {
+        var ds = new ControllerProfile
+        {
+            Id = "dualsense-composite",
+            Name = "DualSense (PS5) — Full",
+            Vendor = "Sony",
+            Vid = "0x054C",
+            Pid = "0x0CE6",
+            ProductString = "DualSense Wireless Controller",
+            ManufacturerString = "Sony Interactive Entertainment",
+            Type = "gamepad",
+            Connection = "usb",
+            Descriptor = "05010905a1018501093009310932093509330934150026ff007508950681020600ff09209501810205010939150025073500463b016514750495018142650005091901290f150025017501950f81020600ff0921950d81020600ff0922150026ff0075089534810285020923952f9102850509339528b10285080934952fb102850909249513b102850a0925951ab10285200926953fb102852109279504b10285220940953fb10285800928953fb10285810929953fb1028582092a9509b1028583092b953fb1028584092c953fb1028585092d9502b10285a0092e9501b10285e0092f953fb10285f00930953fb10285f10931953fb10285f20932950fb10285f40935953fb10285f509369503b102c0",
+            InputReportSize = 64,
+            ButtonMap = new[] { 1, 2, 0, 3, 4, 5, 8, 9, 10, 11, 12, 13, -1, -1, -1, 14 },
+            TriggerButtons = new[] { 6, 7 },
+            AxisMap = new Dictionary<string, string>
+            {
+                { "0x32", "rightStickX" },
+                { "0x35", "rightStickY" },
+                { "0x33", "leftTrigger" },
+                { "0x34", "rightTrigger" }
+            },
+            Notes = "Issue #39: the four-interface USB composite a real DualSense presents, authored from DJm00n/ControllersInfo DescriptorDump_Wireless_Controller (DualSense Model CFI-ZCT1W): configuration wTotalLength 227, bNumInterfaces 4, self-powered, 500 mA. Interface 3 is the HID function and is byte-identical to the 'dualsense' profile, so the report descriptor, codec, buttonMap, axisMap and extendedReport blocks below are unchanged and every input that works there works here. Interfaces 0-2 are USB Audio Class: the OUT stream carries 4 channels at 48 kHz (channels 1/2 speaker, 3/4 voice-coil haptics, wChannelConfig 0x0033) and the IN stream carries the 2-channel headset microphone. Uses the USB/IP create path (backend: usbip). The transport ships inside HIDMaestro.Core.dll and deploys itself on first use, so this profile needs nothing installed by hand. 'dualsense' remains the UMDF2 single-interface profile and is unaffected.",
+            Backend = "usbip",
+            ExtendedReport = new ExtendedReportSpec
+            {
+                ReportId = "0x01",
+                Size = 64,
+                AlwaysArmed = true,
+                Fields = new List<FieldSpec>
+                {
+                    new FieldSpec { Byte = 1, Type = "uint8-axis", Semantic = "leftStickX", Center = 128 },
+                    new FieldSpec { Byte = 2, Type = "uint8-axis", Semantic = "leftStickY", Center = 128 },
+                    new FieldSpec { Byte = 3, Type = "uint8-axis", Semantic = "rightStickX", Center = 128 },
+                    new FieldSpec { Byte = 4, Type = "uint8-axis", Semantic = "rightStickY", Center = 128 },
+                    new FieldSpec { Byte = 5, Type = "uint8-trigger", Semantic = "leftTrigger" },
+                    new FieldSpec { Byte = 6, Type = "uint8-trigger", Semantic = "rightTrigger" },
+                    new FieldSpec { Byte = 7, Type = "uint8-rolling", Semantic = "sequenceNum", Initial = 0 },
+                    new FieldSpec { Byte = 8, Bits = "0-3", Type = "hat-octant", Semantic = "hat", NeutralValue = 8 },
+                    new FieldSpec { Byte = 8, Bits = "4-7", Type = "button-mask", Buttons = new List<string> { "X", "A", "B", "Y" } },
+                    new FieldSpec { Byte = 9, Type = "button-mask", Buttons = new List<string> { "LeftBumper", "RightBumper", "LT_DIGITAL", "RT_DIGITAL", "Back", "Start", "LeftStick", "RightStick" } },
+                    new FieldSpec { Byte = 10, Type = "button-mask", Buttons = new List<string> { "Guide", "Touchpad", "Misc1" } },
+                    new FieldSpec { Byte = 16, Type = "int16-le", Semantic = "gyroPitch" },
+                    new FieldSpec { Byte = 18, Type = "int16-le", Semantic = "gyroYaw" },
+                    new FieldSpec { Byte = 20, Type = "int16-le", Semantic = "gyroRoll" },
+                    new FieldSpec { Byte = 22, Type = "int16-le", Semantic = "accelX" },
+                    new FieldSpec { Byte = 24, Type = "int16-le", Semantic = "accelY" },
+                    new FieldSpec { Byte = 26, Type = "int16-le", Semantic = "accelZ" },
+                    new FieldSpec { Byte = 28, Type = "uint32-le", Semantic = "sensorTimestamp" },
+                    new FieldSpec { Byte = 33, Type = "touchpad-finger", Semantic = "touchpadFinger0" },
+                    new FieldSpec { Byte = 37, Type = "touchpad-finger", Semantic = "touchpadFinger1" },
+                    new FieldSpec { Byte = 53, Bits = "0-3", Type = "uint8-battery", Semantic = "batteryLevel" },
+                    new FieldSpec { Byte = 53, Bits = "4-7", Type = "bitfield", Buttons = new List<string> { "batteryCharging", "batteryFull" } }
+                }
+            },
+            ExtendedOutputReport = new ExtendedReportSpec
+            {
+                ReportId = "0x02",
+                Size = 48,
+                Fields = new List<FieldSpec>
+                {
+                    new FieldSpec { Byte = 1, Type = "uint8", Semantic = "validFlag0" },
+                    new FieldSpec { Byte = 2, Type = "uint8", Semantic = "validFlag1" },
+                    new FieldSpec { Byte = 3, Type = "uint8", Semantic = "rightMotor" },
+                    new FieldSpec { Byte = 4, Type = "uint8", Semantic = "leftMotor" },
+                    new FieldSpec { Byte = 5, Type = "uint8", Semantic = "headphoneVolume" },
+                    new FieldSpec { Byte = 6, Type = "uint8", Semantic = "speakerVolume" },
+                    new FieldSpec { Byte = 7, Type = "uint8", Semantic = "micVolume" },
+                    new FieldSpec { Byte = 8, Type = "uint8", Semantic = "audioControlFlags" },
+                    new FieldSpec { Byte = 9, Type = "uint8", Semantic = "muteLed" },
+                    new FieldSpec { Bytes = "11-21", Type = "bytes-passthrough", Semantic = "rightTriggerEffect" },
+                    new FieldSpec { Bytes = "22-32", Type = "bytes-passthrough", Semantic = "leftTriggerEffect" },
+                    new FieldSpec { Byte = 39, Type = "uint8", Semantic = "validFlag2" },
+                    new FieldSpec { Byte = 42, Type = "uint8", Semantic = "lightbarSetup" },
+                    new FieldSpec { Byte = 43, Type = "uint8", Semantic = "ledBrightness" },
+                    new FieldSpec { Byte = 44, Type = "uint8", Semantic = "playerIndicator" },
+                    new FieldSpec { Bytes = "45-47", Type = "rgb24", Semantic = "lightbar" },
+                    new FieldSpec { Bytes = "1-47", Type = "bytes-passthrough", Semantic = "effectPayload" }
+                }
+            },
+            Layout = new HMGamepadLayout
+            {
+                Source = "https://en.wikipedia.org/wiki/DualShock",
+                Sticks = new List<HMStick>
+                {
+                    new HMStick { Side = HMStickSide.Left, XAxis = HMAxis.X, YAxis = HMAxis.Y, ClickButton = 12 },
+                    new HMStick { Side = HMStickSide.Right, XAxis = HMAxis.Z, YAxis = HMAxis.Rz, ClickButton = 13 }
+                },
+                Triggers = new List<HMTrigger>
+                {
+                    new HMTrigger { Axis = HMAxis.Rx, Side = HMTriggerSide.Left, Kind = HMTriggerKind.Analog },
+                    new HMTrigger { Axis = HMAxis.Ry, Side = HMTriggerSide.Right, Kind = HMTriggerKind.Analog }
+                },
+                Dpad = new HMDpad { Encoding = HMDpadEncoding.Hat, HatAxis = HMAxis.Hat, HatPositions = 8 },
+                FaceButtons = new List<HMButtonBinding>
+                {
+                    new HMButtonBinding { Role = HMButtonRole.FaceCross, ButtonIndex = 0 },
+                    new HMButtonBinding { Role = HMButtonRole.FaceCircle, ButtonIndex = 1 },
+                    new HMButtonBinding { Role = HMButtonRole.FaceSquare, ButtonIndex = 2 },
+                    new HMButtonBinding { Role = HMButtonRole.FaceTriangle, ButtonIndex = 3 }
+                },
+                ShoulderButtons = new List<HMButtonBinding>
+                {
+                    new HMButtonBinding { Role = HMButtonRole.LeftBumper, ButtonIndex = 4 },
+                    new HMButtonBinding { Role = HMButtonRole.RightBumper, ButtonIndex = 5 },
+                    new HMButtonBinding { Role = HMButtonRole.LeftTriggerClick, ButtonIndex = 6 },
+                    new HMButtonBinding { Role = HMButtonRole.RightTriggerClick, ButtonIndex = 7 }
+                },
+                SystemButtons = new List<HMButtonBinding>
+                {
+                    new HMButtonBinding { Role = HMButtonRole.Share, ButtonIndex = 8 },
+                    new HMButtonBinding { Role = HMButtonRole.Options, ButtonIndex = 9 },
+                    new HMButtonBinding { Role = HMButtonRole.Ps, ButtonIndex = 10 },
+                    new HMButtonBinding { Role = HMButtonRole.Guide, ButtonIndex = 11 }
+                },
+                ExtraButtons = new List<HMButtonBinding>
+                {
+                    new HMButtonBinding { Role = HMButtonRole.Mute, ButtonIndex = 14 }
+                },
+                Haptics = new HMHaptics { Rumble = HMRumbleKind.VoiceCoilHaptic, TriggerHaptics = true },
+                Imu = new HMImu { Accelerometer = true, Gyroscope = true, Magnetometer = false }
+            },
+            UsbConfiguration = new UsbConfigurationSpec
+            {
+                ConfigurationValue = 1,
+                Attributes = 192,
+                MaxPowerMilliamps = 500,
+                BusSpeed = "high",
+                DeviceDescriptorHex = "12010002000000404c05e60c000101020001",
+                ConfigurationDescriptorHex = "0902e300040100c0fa0904000000010100000a2401000149000201020c24020101010604330000000c24060201010300000000000924030301030402000c2402040204030203000000092406050401030000092403060101010500090401000001020000090401010101020000072401010101000b2402010402100180bb0009050109880104000007250100000000090402000001020000090402010101020000072401060101000b2402010202100180bb0009058205c400040000072501000000000904030002030000000921110100012211010705840340000607050303400006",
+                OtherSpeedConfigurationDescriptorHex = "0902e300040100c0fa0904000000010100000a2401000149000201020c24020101010604330000000c24060201010300000000000924030301030402000c2402040204030203000000092406050401030000092403060101010500090401000001020000090401010101020000072401010101000b2402010402100180bb0009050109880104000007250100000000090402000001020000090402010101020000072401060101000b2402010202100180bb0009058205c400040000072501000000000904030002030000000921110100012211010705840340000607050303400006",
+                AudioControls = new List<UsbAudioControlSpec>
+                {
+                    new UsbAudioControlSpec { UnitId = 2, ControlInterface = 0, Function = "speaker", MuteCur = 0, VolumeMinRaw = -25600, VolumeMaxRaw = 0, VolumeResRaw = 256, VolumeCurRaw = -25600 },
+                    new UsbAudioControlSpec { UnitId = 5, ControlInterface = 0, Function = "microphone", MuteCur = 0, VolumeMinRaw = 0, VolumeMaxRaw = 12288, VolumeResRaw = 122, VolumeCurRaw = 3809 }
+                },
+                Interfaces = new List<UsbInterfaceSpec>
+                {
+                    new UsbInterfaceSpec
+                    {
+                        InterfaceNumber = 0, Function = "audioControl",
+                        AltSettings = new List<UsbAltSettingSpec>
+                        {
+                            new UsbAltSettingSpec { AltSetting = 0, InterfaceClass = 1, InterfaceSubClass = 1, InterfaceProtocol = 0 }
+                        }
+                    },
+                    new UsbInterfaceSpec
+                    {
+                        InterfaceNumber = 1, Function = "audioStreamingOut",
+                        AltSettings = new List<UsbAltSettingSpec>
+                        {
+                            new UsbAltSettingSpec { AltSetting = 0, InterfaceClass = 1, InterfaceSubClass = 2, InterfaceProtocol = 0 },
+                            new UsbAltSettingSpec
+                            {
+                                AltSetting = 1, InterfaceClass = 1, InterfaceSubClass = 2, InterfaceProtocol = 0,
+                                Endpoints = new List<UsbEndpointSpec>
+                                {
+                                    new UsbEndpointSpec { Address = 1, TransferType = "isochronous", SyncType = "adaptive", MaxPacketSize = 392, Interval = 4 }
+                                },
+                                AudioStream = new UsbAudioStreamSpec { Channels = 4, BitsPerSample = 16, SampleRateHz = 48000, ChannelConfig = 51, ChannelRoles = new List<string> { "speakerLeft", "speakerRight", "hapticLeft", "hapticRight" } }
+                            }
+                        }
+                    },
+                    new UsbInterfaceSpec
+                    {
+                        InterfaceNumber = 2, Function = "audioStreamingIn",
+                        AltSettings = new List<UsbAltSettingSpec>
+                        {
+                            new UsbAltSettingSpec { AltSetting = 0, InterfaceClass = 1, InterfaceSubClass = 2, InterfaceProtocol = 0 },
+                            new UsbAltSettingSpec
+                            {
+                                AltSetting = 1, InterfaceClass = 1, InterfaceSubClass = 2, InterfaceProtocol = 0,
+                                Endpoints = new List<UsbEndpointSpec>
+                                {
+                                    new UsbEndpointSpec { Address = 130, TransferType = "isochronous", SyncType = "asynchronous", MaxPacketSize = 196, Interval = 4 }
+                                },
+                                AudioStream = new UsbAudioStreamSpec { Channels = 2, BitsPerSample = 16, SampleRateHz = 48000, ChannelConfig = 3, ChannelRoles = new List<string> { "microphone", "microphone" } }
+                            }
+                        }
+                    },
+                    new UsbInterfaceSpec
+                    {
+                        InterfaceNumber = 3, Function = "hid",
+                        AltSettings = new List<UsbAltSettingSpec>
+                        {
+                            new UsbAltSettingSpec
+                            {
+                                AltSetting = 0, InterfaceClass = 3, InterfaceSubClass = 0, InterfaceProtocol = 0,
+                                Endpoints = new List<UsbEndpointSpec>
+                                {
+                                    new UsbEndpointSpec { Address = 132, TransferType = "interrupt", MaxPacketSize = 64, Interval = 6 },
+                                    new UsbEndpointSpec { Address = 3, TransferType = "interrupt", MaxPacketSize = 64, Interval = 6 }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        return ds;
+    }
+
+    private static ControllerProfile BuildDualShock4()
+    {
+        return new ControllerProfile
+        {
+            Id = "dualshock-4-v2-composite",
+            Name = "DualShock 4 v2 (CUH-ZCT2) — Full",
+            Vendor = "Sony",
+            Vid = "0x054C",
+            Pid = "0x09CC",
+            ProductString = "Wireless Controller",
+            ManufacturerString = "Sony Interactive Entertainment",
+            SerialNumberString = "JDM-050",
+            Type = "gamepad",
+            Connection = "usb",
+            Descriptor = "05010905a10185010930093109320935150026ff007508950481020939150025073500463b016514750495018142650005091901290e150025017501950e81020600ff0920750695011500257f8102050109330934150026ff007508950281020600ff09219536810285050922951f9102850409239524b102850209249524b102850809259503b102851009269504b102851109279502b10285120602ff0921950fb102851309229516b10285140605ff09209510b10285150921952cb1020680ff858009209506b102858109219506b102858209229505b102858309239501b102858409249504b102858509259506b102858609269506b102858709279523b10285880928953fb102858909299502b102859009309505b102859109319503b102859209329503b10285930933950cb10285940934953fb10285a009409506b10285a109419501b10285a209429501b10285a309439530b10285a40944950db10285f00947953fb10285f10948953fb10285f20949950fb10285a7094a9501b10285a8094b9501b10285a9094c9508b10285aa094e9501b10285ab094f9539b10285ac09509539b10285ad0951950bb10285ae09529501b10285af09539502b10285b00954953fb10285e009579502b10285b30955953fb10285b40955953fb10285b50956953fb10285d00958953fb10285d40959953fb102c0",
+            InputReportSize = 64,
+            ButtonMap = new[] { 1, 2, 0, 3, 4, 5, 8, 9, 10, 11, 12, 13, -1, -1, -1, -1 },
+            TriggerButtons = new[] { 6, 7 },
+            AxisMap = new Dictionary<string, string>
+            {
+                { "0x32", "rightStickX" },
+                { "0x35", "rightStickY" },
+                { "0x33", "leftTrigger" },
+                { "0x34", "rightTrigger" }
+            },
+            Notes = "Issue #39: the four-interface USB composite a real DualShock 4 v2 presents, authored from DJm00n/ControllersInfo DescriptorDump_Wireless_Controller (DualShock4 Model CUH-ZCT2E) and the dualshock4.pcap wire capture: configuration wTotalLength 225, bNumInterfaces 4, self-powered, 500 mA, FULL-speed device. Interface 3 is the HID function and is byte-identical to the 'dualshock-4-v2' profile (507-byte report descriptor verified against the capture), so the codec and every input carry over unchanged. Interfaces 0-2 are USB Audio Class: both terminals are Headset (no speaker terminal, no 4-channel stream, so no haptics lane; this variant exists for fidelity and the microphone). OUT stream 2 ch / 16-bit / 32 kHz (wMaxPacketSize 132), IN stream 1 ch / 16-bit / 16 kHz (wMaxPacketSize 34). UAC control ranges are the real pad's wire values from the capture. Uses the USB/IP create path (backend: usbip). The transport ships inside HIDMaestro.Core.dll and deploys itself on first use, so this profile needs nothing installed by hand. 'dualshock-4-v2' remains the UMDF2 single-interface profile and is unaffected.",
+            Backend = "usbip",
+            ExtendedReport = new ExtendedReportSpec
+            {
+                ReportId = "0x01",
+                Size = 64,
+                Fields = new List<FieldSpec>
+                {
+                    new FieldSpec { Byte = 1, Type = "uint8-axis", Semantic = "leftStickX", Center = 128 },
+                    new FieldSpec { Byte = 2, Type = "uint8-axis", Semantic = "leftStickY", Center = 128 },
+                    new FieldSpec { Byte = 3, Type = "uint8-axis", Semantic = "rightStickX", Center = 128 },
+                    new FieldSpec { Byte = 4, Type = "uint8-axis", Semantic = "rightStickY", Center = 128 },
+                    new FieldSpec { Byte = 5, Bits = "0-3", Type = "hat-octant", Semantic = "hat", NeutralValue = 8 },
+                    new FieldSpec { Byte = 5, Bits = "4-7", Type = "button-mask", Buttons = new List<string> { "X", "A", "B", "Y" } },
+                    new FieldSpec { Byte = 6, Type = "button-mask", Buttons = new List<string> { "LeftBumper", "RightBumper", "LT_DIGITAL", "RT_DIGITAL", "Back", "Start", "LeftStick", "RightStick" } },
+                    new FieldSpec { Byte = 7, Type = "button-mask", Buttons = new List<string> { "Guide", "Touchpad" } },
+                    new FieldSpec { Byte = 8, Type = "uint8-trigger", Semantic = "leftTrigger" },
+                    new FieldSpec { Byte = 9, Type = "uint8-trigger", Semantic = "rightTrigger" },
+                    new FieldSpec { Byte = 14, Type = "uint8-battery", Semantic = "batteryLevel" },
+                    new FieldSpec { Byte = 15, Type = "int16-le", Semantic = "gyroPitch" },
+                    new FieldSpec { Byte = 17, Type = "int16-le", Semantic = "gyroYaw" },
+                    new FieldSpec { Byte = 19, Type = "int16-le", Semantic = "gyroRoll" },
+                    new FieldSpec { Byte = 21, Type = "int16-le", Semantic = "accelX" },
+                    new FieldSpec { Byte = 23, Type = "int16-le", Semantic = "accelY" },
+                    new FieldSpec { Byte = 25, Type = "int16-le", Semantic = "accelZ" },
+                    new FieldSpec { Byte = 33, Bits = "0-1", Type = "bitfield", Buttons = new List<string> { "headphonesConnected", "micMuted" } },
+                    new FieldSpec { Byte = 38, Type = "touchpad-finger", Semantic = "touchpadFinger0" },
+                    new FieldSpec { Byte = 42, Type = "touchpad-finger", Semantic = "touchpadFinger1" }
+                }
+            },
+            ExtendedOutputReport = new ExtendedReportSpec
+            {
+                ReportId = "0x05",
+                Size = 32,
+                Fields = new List<FieldSpec>
+                {
+                    new FieldSpec { Byte = 1, Type = "uint8", Semantic = "validFlag0" },
+                    new FieldSpec { Byte = 2, Type = "uint8", Semantic = "validFlag1" },
+                    new FieldSpec { Byte = 4, Type = "uint8", Semantic = "rightMotor" },
+                    new FieldSpec { Byte = 5, Type = "uint8", Semantic = "leftMotor" },
+                    new FieldSpec { Bytes = "6-8", Type = "rgb24", Semantic = "lightbar" },
+                    new FieldSpec { Byte = 9, Type = "uint8", Semantic = "flashOn" },
+                    new FieldSpec { Byte = 10, Type = "uint8", Semantic = "flashOff" },
+                    new FieldSpec { Bytes = "1-31", Type = "bytes-passthrough", Semantic = "effectPayload" },
+                    new FieldSpec { Byte = 19, Type = "uint8", Semantic = "headphoneVolumeLeft" },
+                    new FieldSpec { Byte = 20, Type = "uint8", Semantic = "headphoneVolumeRight" },
+                    new FieldSpec { Byte = 21, Type = "uint8", Semantic = "micVolume" },
+                    new FieldSpec { Byte = 22, Type = "uint8", Semantic = "speakerVolume" }
+                }
+            },
+            Layout = new HMGamepadLayout
+            {
+                Source = "https://en.wikipedia.org/wiki/DualShock#DualShock_4",
+                Sticks = new List<HMStick>
+                {
+                    new HMStick { Side = HMStickSide.Left, XAxis = HMAxis.X, YAxis = HMAxis.Y, ClickButton = 12 },
+                    new HMStick { Side = HMStickSide.Right, XAxis = HMAxis.Z, YAxis = HMAxis.Rz, ClickButton = 13 }
+                },
+                Triggers = new List<HMTrigger>
+                {
+                    new HMTrigger { Axis = HMAxis.Rx, Side = HMTriggerSide.Left, Kind = HMTriggerKind.Analog },
+                    new HMTrigger { Axis = HMAxis.Ry, Side = HMTriggerSide.Right, Kind = HMTriggerKind.Analog }
+                },
+                Dpad = new HMDpad { Encoding = HMDpadEncoding.Hat, HatAxis = HMAxis.Hat, HatPositions = 8 },
+                FaceButtons = new List<HMButtonBinding>
+                {
+                    new HMButtonBinding { Role = HMButtonRole.FaceCross, ButtonIndex = 0 },
+                    new HMButtonBinding { Role = HMButtonRole.FaceCircle, ButtonIndex = 1 },
+                    new HMButtonBinding { Role = HMButtonRole.FaceSquare, ButtonIndex = 2 },
+                    new HMButtonBinding { Role = HMButtonRole.FaceTriangle, ButtonIndex = 3 }
+                },
+                ShoulderButtons = new List<HMButtonBinding>
+                {
+                    new HMButtonBinding { Role = HMButtonRole.LeftBumper, ButtonIndex = 4 },
+                    new HMButtonBinding { Role = HMButtonRole.RightBumper, ButtonIndex = 5 },
+                    new HMButtonBinding { Role = HMButtonRole.LeftTriggerClick, ButtonIndex = 6 },
+                    new HMButtonBinding { Role = HMButtonRole.RightTriggerClick, ButtonIndex = 7 }
+                },
+                SystemButtons = new List<HMButtonBinding>
+                {
+                    new HMButtonBinding { Role = HMButtonRole.Share, ButtonIndex = 8 },
+                    new HMButtonBinding { Role = HMButtonRole.Options, ButtonIndex = 9 },
+                    new HMButtonBinding { Role = HMButtonRole.Ps, ButtonIndex = 10 },
+                    new HMButtonBinding { Role = HMButtonRole.Guide, ButtonIndex = 11 }
+                },
+                ExtraButtons = new List<HMButtonBinding>(),
+                Haptics = new HMHaptics { Rumble = HMRumbleKind.DualErm, TriggerHaptics = false },
+                Imu = new HMImu { Accelerometer = true, Gyroscope = true, Magnetometer = false }
+            },
+            UsbConfiguration = new UsbConfigurationSpec
+            {
+                ConfigurationValue = 1,
+                Attributes = 192,
+                MaxPowerMilliamps = 500,
+                BusSpeed = "full",
+                DeviceDescriptorHex = "12010002000000404c05cc09000101020301",
+                ConfigurationDescriptorHex = "0902e100040100c0fa0904000000010100000a2401000147000201020c24020101010602030000000a2406020101030000000924030302040402000c2402040204030100000000092406050401030000092403060101010500090401000001020000090401010101020000072401010101000b24020102021001007d0009050109840001000007250100000000090402000001020000090402010101020000072401060101000b24020101021001803e000905820522000100000725010000000009040300020300000009211101000122fb010705840340000507050303400005",
+                AudioControls = new List<UsbAudioControlSpec>
+                {
+                    new UsbAudioControlSpec { UnitId = 2, ControlInterface = 0, Function = "headset", MuteCur = 0, VolumeMinRaw = -18688, VolumeMaxRaw = -256, VolumeResRaw = 256, VolumeCurRaw = 1792 },
+                    new UsbAudioControlSpec { UnitId = 5, ControlInterface = 0, Function = "microphone", MuteCur = 0, VolumeMinRaw = -5952, VolumeMaxRaw = 6144, VolumeResRaw = 192, VolumeCurRaw = -768 }
+                },
+                Interfaces = new List<UsbInterfaceSpec>
+                {
+                    new UsbInterfaceSpec
+                    {
+                        InterfaceNumber = 0, Function = "audioControl",
+                        AltSettings = new List<UsbAltSettingSpec>
+                        {
+                            new UsbAltSettingSpec { AltSetting = 0, InterfaceClass = 1, InterfaceSubClass = 1, InterfaceProtocol = 0 }
+                        }
+                    },
+                    new UsbInterfaceSpec
+                    {
+                        InterfaceNumber = 1, Function = "audioStreamingOut",
+                        AltSettings = new List<UsbAltSettingSpec>
+                        {
+                            new UsbAltSettingSpec { AltSetting = 0, InterfaceClass = 1, InterfaceSubClass = 2, InterfaceProtocol = 0 },
+                            new UsbAltSettingSpec
+                            {
+                                AltSetting = 1, InterfaceClass = 1, InterfaceSubClass = 2, InterfaceProtocol = 0,
+                                Endpoints = new List<UsbEndpointSpec>
+                                {
+                                    new UsbEndpointSpec { Address = 1, TransferType = "isochronous", SyncType = "adaptive", MaxPacketSize = 132, Interval = 1 }
+                                },
+                                AudioStream = new UsbAudioStreamSpec { Channels = 2, BitsPerSample = 16, SampleRateHz = 32000, ChannelConfig = 3, ChannelRoles = new List<string> { "headsetLeft", "headsetRight" } }
+                            }
+                        }
+                    },
+                    new UsbInterfaceSpec
+                    {
+                        InterfaceNumber = 2, Function = "audioStreamingIn",
+                        AltSettings = new List<UsbAltSettingSpec>
+                        {
+                            new UsbAltSettingSpec { AltSetting = 0, InterfaceClass = 1, InterfaceSubClass = 2, InterfaceProtocol = 0 },
+                            new UsbAltSettingSpec
+                            {
+                                AltSetting = 1, InterfaceClass = 1, InterfaceSubClass = 2, InterfaceProtocol = 0,
+                                Endpoints = new List<UsbEndpointSpec>
+                                {
+                                    new UsbEndpointSpec { Address = 130, TransferType = "isochronous", SyncType = "asynchronous", MaxPacketSize = 34, Interval = 1 }
+                                },
+                                AudioStream = new UsbAudioStreamSpec { Channels = 1, BitsPerSample = 16, SampleRateHz = 16000, ChannelConfig = 0, ChannelRoles = new List<string> { "microphone" } }
+                            }
+                        }
+                    },
+                    new UsbInterfaceSpec
+                    {
+                        InterfaceNumber = 3, Function = "hid",
+                        AltSettings = new List<UsbAltSettingSpec>
+                        {
+                            new UsbAltSettingSpec
+                            {
+                                AltSetting = 0, InterfaceClass = 3, InterfaceSubClass = 0, InterfaceProtocol = 0,
+                                Endpoints = new List<UsbEndpointSpec>
+                                {
+                                    new UsbEndpointSpec { Address = 132, TransferType = "interrupt", MaxPacketSize = 64, Interval = 5 },
+                                    new UsbEndpointSpec { Address = 3, TransferType = "interrupt", MaxPacketSize = 64, Interval = 5 }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+    }
+}

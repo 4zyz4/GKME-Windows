@@ -186,16 +186,15 @@ public sealed class HMContext : IDisposable
     public int LoadDefaultProfiles()
     {
         ThrowIfDisposed();
-        var db = ProfileDatabase.LoadEmbedded();
         int added = 0;
         lock (_lock)
         {
-            foreach (var inner in db.All)
+            foreach (var entry in StaticProfileRegistry.AllProfiles)
             {
-                if (_profilesById.ContainsKey(inner.Id)) continue;
-                var pub = new HMProfile(inner);
+                if (_profilesById.ContainsKey(entry.Key)) continue;
+                var pub = new HMProfile(entry.Value);
                 _profiles.Add(pub);
-                _profilesById[inner.Id] = pub;
+                _profilesById[entry.Key] = pub;
                 added++;
             }
             _profiles.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.Ordinal));

@@ -466,6 +466,9 @@ public class GamepadSession : IDisposable
                     {
                         System.Diagnostics.Debug.WriteLine(
                             $"[GamepadSession] create controller {Mode} failed: {ex.Message}");
+                        System.IO.File.AppendAllText(
+                            Path.Combine(AppContext.BaseDirectory, "gkme_error.log"),
+                            $"{DateTime.UtcNow:O} CREATE_CONTROLLER FAIL {Mode}: {ex}\n");
                     }
                 }
             }
