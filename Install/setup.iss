@@ -2,7 +2,7 @@
 ; Requires InnoSetup 6+  https://jrsoftware.org/isdl.php
 
 #define MyAppName "GKME"
-#define MyAppVersion "3.1.0"
+#define MyAppVersion "4.0.0"
 #define MyAppPublisher "4zyz4"
 #define MyAppURL ""
 #define MyAppExeName "GKME.exe"
@@ -31,8 +31,20 @@ CloseApplications=yes
 [Languages]
 Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
 
+[CustomMessages]
+UpgradingTitle=正在升级
+UpgradingDesc=检测到已安装版本 v%1%n将升级到 v%2%点击"下一步"开始升级。
+InstalledTitle=已安装相同或更新版本版本
+InstalledDesc=%1 v%2 已安装。%点击"下一步"进行修复。
+InstallTitle=准备安装
+InstallDesc=将在您的计算机上安装 %1 v%2%点击"下一步"开始安装。
+NoteOverwrite=提示：安装程序将覆盖现有文件。
+NoteRestart=提示：安装完成后，建议重启计算机以确保驱动正常工作。
+FinishedUpgrade=%1 v%2 升级完成！
+FinishedRepair=%1 v%2 修复完成！
+FinishedInstall=%1 v%2 安装完成！
+
 [Files]
-; App files - 直接覆盖安装，不需要手动卸载
 Source: "{#BuildDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
@@ -46,7 +58,7 @@ Name: "{group}\Uninstall GKME"; Filename: "{uninstallexe}"
 [Code]
 const
   MyAppName = 'GKME';
-  MyAppVersion = '3.1.0';
+  MyAppVersion = '4.0.0';
 
 var
   InfoPage: TWizardPage;
@@ -84,7 +96,6 @@ begin
   end;
 end;
 
-// 修复后的版本比较函数
 function CompareVersion(const V1, V2: String): Integer;
 var
   N1, N2: Integer;
@@ -96,7 +107,6 @@ begin
   
   while (S1 <> '') or (S2 <> '') do
   begin
-    // 获取第一个数字
     C1 := Pos('.', S1);
     C2 := Pos('.', S2);
     
@@ -141,12 +151,7 @@ var
 begin
   if PageCreated then exit;
   
-  // 检测已安装版本
   InstalledVersion := GetInstalledVersion;
-  
-  // 显示检测到的版本用于调试
-  if InstalledVersion <> '' then
-    Log('检测到已安装版本: ' + InstalledVersion);
   
   IsUpgradeMode := (InstalledVersion <> '') and 
                    (CompareVersion(InstalledVersion, MyAppVersion) < 0);
@@ -155,21 +160,17 @@ begin
   begin
     if IsUpgradeMode then
     begin
-      Title := '正在升级';
-      Desc := '检测到已安装版本 v' + InstalledVersion +
-        '，将升级到 v' + MyAppVersion + #13#10#13#10 +
-        '点击"下一步"开始升级。';
+      Title := ExpandConstant('{cm:UpgradingTitle}');
+      Desc := Format(ExpandConstant('{cm:UpgradingDesc}'), [InstalledVersion, MyAppVersion]);
     end else
     begin
-      Title := '已安装相同或更新版本版本';
-      Desc := MyAppName + ' v' + InstalledVersion + ' 已安装。' + #13#10#13#10 +
-        '点击"下一步"进行修复。';
+      Title := ExpandConstant('{cm:InstalledTitle}');
+      Desc := Format(ExpandConstant('{cm:InstalledDesc}'), [MyAppName, InstalledVersion]);
     end;
   end else
   begin
-    Title := '准备安装';
-    Desc := '将在您的计算机上安装 ' + MyAppName + ' v' + MyAppVersion + #13#10#13#10 +
-      '点击"下一步"开始安装。';
+    Title := ExpandConstant('{cm:InstallTitle}');
+    Desc := Format(ExpandConstant('{cm:InstallDesc}'), [MyAppName, MyAppVersion]);
   end;
 
   InfoPage := CreateCustomPage(wpWelcome, Title, Desc);
@@ -183,9 +184,9 @@ begin
   InfoLabel.WordWrap := True;
   
   if IsAppInstalled then
-    InfoLabel.Caption := '提示：安装程序将覆盖现有文件。'
+    InfoLabel.Caption := ExpandConstant('{cm:NoteOverwrite}')
   else
-    InfoLabel.Caption := '提示：安装完成后，建议重启计算机以确保驱动正常工作。';
+    InfoLabel.Caption := ExpandConstant('{cm:NoteRestart}');
   
   PageCreated := True;
 end;
@@ -198,21 +199,19 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-  // 如果没有安装任何版本，跳过信息页面（直接显示欢迎页和安装页）
   if PageID = InfoPage.ID then
     Result := not IsAppInstalled;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  // 当到达完成页面时，显示相应的消息
   if CurPageID = wpFinished then
   begin
     if IsUpgradeMode then
-      WizardForm.FinishedLabel.Caption := MyAppName + ' v' + MyAppVersion + ' 升级完成！'
+      WizardForm.FinishedLabel.Caption := Format(ExpandConstant('{cm:FinishedUpgrade}'), [MyAppName, MyAppVersion])
     else if IsAppInstalled then
-      WizardForm.FinishedLabel.Caption := MyAppName + ' v' + MyAppVersion + ' 修复完成！'
+      WizardForm.FinishedLabel.Caption := Format(ExpandConstant('{cm:FinishedRepair}'), [MyAppName, MyAppVersion])
     else
-      WizardForm.FinishedLabel.Caption := MyAppName + ' v' + MyAppVersion + ' 安装完成！';
+      WizardForm.FinishedLabel.Caption := Format(ExpandConstant('{cm:FinishedInstall}'), [MyAppName, MyAppVersion]);
   end;
 end;

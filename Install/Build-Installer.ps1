@@ -19,7 +19,7 @@ dotnet publish "$RepoRoot\GKME.csproj" `
 
 if (-not $?) { throw "dotnet publish failed" }
 
-# ---------- step 1.5: read version from project and inject into setup.iss ----------
+# ---------- step 1.5: read version from project ----------
 Write-Host "=== Reading version from GKME.csproj ==="
 $csprojContent = Get-Content "$RepoRoot\GKME.csproj" -Raw
 $versionMatch = [regex]::Match($csprojContent, '<VersionString>([^<]+)</VersionString>')
@@ -29,11 +29,11 @@ if (-not $versionMatch.Success) {
 $version = $versionMatch.Groups[1].Value
 Write-Host "Version: $version"
 
+# ---------- step 1.6: replace version placeholders in setup.iss ----------
+Write-Host "=== Generating setup.iss ==="
 $issContent = [System.IO.File]::ReadAllText("$PSScriptRoot\setup.iss", [System.Text.Encoding]::UTF8)
-$issContent = $issContent -replace '"\{#MyAppVersion\}"', ('"' + $version + '"')
-$issContent = $issContent -replace "MyAppVersion = '[^']+'", "MyAppVersion = '$version'"
-$utf8BOM = New-Object System.Text.UTF8Encoding $true
-[System.IO.File]::WriteAllText("$PSScriptRoot\setup_temp.iss", $issContent, $utf8BOM)
+$issContent = $issContent -replace 'VERSION_PLACEHOLDER', $version
+[System.IO.File]::WriteAllText("$PSScriptRoot\setup.iss", $issContent, [System.Text.UTF8Encoding]::new($false))
 
 # ---------- step 2: compile InnoSetup installer ----------
 Write-Host "=== Compiling InnoSetup installer ==="
@@ -45,8 +45,7 @@ if (-not (Test-Path $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
 
-& $InnoSetupPath /Q /O"$OutputDir" "$PSScriptRoot\setup_temp.iss"
-Remove-Item "$PSScriptRoot\setup_temp.iss" -ErrorAction SilentlyContinue
+& $InnoSetupPath /Q /O"$OutputDir" "$PSScriptRoot\setup.iss"
 if (-not $?) { throw "InnoSetup compilation failed" }
 
 Write-Host "=== Done ==="

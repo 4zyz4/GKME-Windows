@@ -22,13 +22,14 @@
     <IlcOptimize>true</IlcOptimize>
     <IlcFoldIdenticalBehavior>true</IlcFoldIdenticalBehavior>
     <StripSymbols>true</StripSymbols>
-    <AssemblyVersion>3.1.0</AssemblyVersion>
-    <VersionString>3.1.0</VersionString>
+    <Version>4.0.0.0</Version>
+    <VersionString>$(Version)</VersionString>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IlcInvariantGlobalization>true</IlcInvariantGlobalization>
+    <DebugType>full</DebugType>
     <NoWarn>$(NoWarn);IL2026;IL3050;IL2070;IL2075;IL3000</NoWarn>
   </PropertyGroup>
 
@@ -36,6 +37,14 @@
   <Target Name="GenerateVersionFile" BeforeTargets="BeforeBuild" Outputs="Build\version.txt">
     <MakeDir Directories="Build" Condition="!Exists('Build')" />
     <WriteLinesToFile File="Build\version.txt" Lines="$(VersionString)" Overwrite="true" />
+  </Target>
+
+  <!-- 用 $(Version) 动态生成 app.manifest -->
+  <Target Name="GenerateAppManifest" BeforeTargets="BeforeBuild">
+    <PropertyGroup>
+      <_ManifestContent>&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;&#10;&lt;assembly manifestVersion=&quot;1.0&quot; xmlns=&quot;urn:schemas-microsoft-com:asm.v1&quot;&gt;&#10;  &lt;assemblyIdentity version=&quot;$(Version)&quot; name=&quot;GKME&quot;/&gt;&#10;  &lt;trustInfo xmlns=&quot;urn:schemas-microsoft-com:asm.v2&quot;&gt;&#10;    &lt;security&gt;&#10;      &lt;requestedPrivileges&gt;&#10;        &lt;requestedExecutionLevel level=&quot;requireAdministrator&quot; uiAccess=&quot;false&quot;/&gt;&#10;      &lt;/requestedPrivileges&gt;&#10;    &lt;/security&gt;&#10;  &lt;/trustInfo&gt;&#10;&lt;/assembly&gt;</_ManifestContent>
+    </PropertyGroup>
+    <WriteLinesToFile File="app.manifest" Lines="$(_ManifestContent)" Overwrite="true" Encoding="UTF-8" />
   </Target>
 
   <ItemGroup>
