@@ -1,0 +1,5 @@
+<linker>
+  <assembly fullname="GKME">
+    <type fullname="GKME.*" preserve="all" />
+  </assembly>
+</linker>
