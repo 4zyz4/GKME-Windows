@@ -7,7 +7,7 @@
 #define MyAppURL ""
 #define MyAppExeName "GKME.exe"
 
-#define BuildDir "..\bin\Release\net10.0-windows\win-x64"
+#define BuildDir "..\bin\Release\net10.0-windows\win-x64\publish"
 
 [Setup]
 AppName=GKME
@@ -34,9 +34,9 @@ Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
 [Files]
 ; App files - 直接覆盖安装，不需要手动卸载
 Source: "{#BuildDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#BuildDir}\*.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#BuildDir}\*.pdb"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\GKME"; Filename: "{app}\{#MyAppExeName}"
