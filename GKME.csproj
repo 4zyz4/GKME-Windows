@@ -23,6 +23,7 @@
     <IlcFoldIdenticalBehavior>true</IlcFoldIdenticalBehavior>
     <StripSymbols>true</StripSymbols>
     <AssemblyVersion>3.1.0</AssemblyVersion>
+    <VersionString>3.1.0</VersionString>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
@@ -30,6 +31,12 @@
     <IlcInvariantGlobalization>true</IlcInvariantGlobalization>
     <NoWarn>$(NoWarn);IL2026;IL3050;IL2070;IL2075;IL3000</NoWarn>
   </PropertyGroup>
+
+  <!-- 生成版本文件供 InnoSetup 读取 -->
+  <Target Name="GenerateVersionFile" BeforeTargets="BeforeBuild" Outputs="Build\version.txt">
+    <MakeDir Directories="Build" Condition="!Exists('Build')" />
+    <WriteLinesToFile File="Build\version.txt" Lines="$(VersionString)" Overwrite="true" />
+  </Target>
 
   <ItemGroup>
     <AvaloniaResource Include="icon.ico" />
