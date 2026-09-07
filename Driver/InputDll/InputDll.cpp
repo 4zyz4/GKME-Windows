@@ -173,6 +173,16 @@ __declspec(dllexport) void MouseButtonDownUp(unsigned char button) {
     }
 }
 
+__declspec(dllexport) void MouseButtonUp(unsigned char button) {
+    DWORD flags = 0;
+    switch (button) {
+        case 0: flags = 0x0004; break;   // LEFTUP
+        case 1: flags = 0x0010; break;   // RIGHTUP
+        case 2: flags = 0x0040; break;   // MIDDLEUP
+    }
+    if (flags) SendMouseInput(flags, 0, 0, 0);
+}
+
 __declspec(dllexport) void MouseScrollVertical(int delta) {
     SendMouseInput(0x0800, 0, 0, (DWORD)delta);
 }

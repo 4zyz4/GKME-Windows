@@ -80,6 +80,9 @@ internal static class Win32Mouse
     private static extern void MouseButtonDownUp(byte button);
 
     [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void MouseButtonUp(byte button);
+
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
     private static extern void MouseScrollVertical(int delta);
 
     [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
@@ -119,7 +122,7 @@ internal static class Win32Mouse
         if (down)
             MouseButtonDown((byte)button);
         else
-            MouseButtonDownUp((byte)button);
+            MouseButtonUp((byte)button);
     }
 
     /// <summary>Scroll vertical wheel (positive = up).</summary>
