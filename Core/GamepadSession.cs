@@ -208,6 +208,9 @@ public class GamepadSession : IDisposable
     private DateTime _lastReceiveTime = DateTime.UtcNow;
     private byte _lastLargeMotor;
     private byte _lastSmallMotor;
+    // Emulated controller LED state, forwarded to the phone. color is 0xRRGGBB.
+    private volatile int _lastLedColor;
+    private volatile int _lastPlayerLed;
     private readonly ManualResetEventSlim _inputReceived = new(false, 1);
     private volatile GamepadInput? _pendingInput;
 
@@ -487,6 +490,7 @@ public class GamepadSession : IDisposable
         // one that survived a watchdog timeout) can re-sync on the auto-reconnect
         // path — otherwise the phone never receives any packet and stays stuck.
         _ = SendAsync(NetworkService.BuildServerHello());
+        _ = SendLedStateAsync();
     }
 
     private object? CreateController(ControllerMode mode)
@@ -516,6 +520,8 @@ public class GamepadSession : IDisposable
 
     private void OnHmOutputDecoded(object? sender, HMOutputDecodedEventArgs e)
     {
+        int? newColor = null;
+        int? newPlayerLed = null;
         foreach (var (k, v) in e.Fields)
         {
             var key = k.ToLowerInvariant();
@@ -523,7 +529,44 @@ public class GamepadSession : IDisposable
                 _lastLargeMotor = Convert.ToByte(v);
             else if (key is "rightmotor" or "smallmotor" or "rightactuator" or "rightlinear")
                 _lastSmallMotor = Convert.ToByte(v);
+            else if (key is "lightbar" && v is byte[] rgb && rgb.Length >= 3)
+                newColor = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
+            else if (key is "playerindicator")
+                newPlayerLed = Convert.ToInt32(v);
         }
+
+        bool changed = false;
+        if (newColor.HasValue && newColor.Value != _lastLedColor)
+        {
+            _lastLedColor = newColor.Value;
+            changed = true;
+        }
+        if (newPlayerLed.HasValue && newPlayerLed.Value != _lastPlayerLed)
+        {
+            _lastPlayerLed = newPlayerLed.Value;
+            changed = true;
+        }
+        if (changed)
+        {
+            _ = SendLedStateAsync();
+        }
+    }
+
+    /// <summary>Forwards the emulated controller's LED state to the phone. Xbox 360
+    /// has no LED, so it always reports #000000 / no player indicator.</summary>
+    private async Task SendLedStateAsync()
+    {
+        bool noLed = Mode == ControllerMode.Xbox360;
+        int color = noLed ? 0 : _lastLedColor;
+        int player = noLed ? 0 : _lastPlayerLed;
+        await SendAsync(new ServerToClient
+        {
+            LedState = new LedState
+            {
+                Color = (uint)color,
+                PlayerLed = (uint)player,
+            }
+        });
     }
 
     private void OnHmOutputReceived(HMController controller, HMOutputPacket packet)
@@ -1377,6 +1420,9 @@ public class GamepadSession : IDisposable
 
             _lastLargeMotor = 0;
             _lastSmallMotor = 0;
+            _lastLedColor = 0;
+            _lastPlayerLed = 0;
+            _ = SendLedStateAsync();
 
             if (!_readyFired)
             {

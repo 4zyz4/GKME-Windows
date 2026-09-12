@@ -62,7 +62,16 @@ message ServerToClient {
     Disconnect disconnect = 3;
     ServerHello server_hello = 7;
     AudioFrame audio_frame = 8;
+    LedState led_state = 9;
   }
+}
+
+/// Emulated controller LED state. color is 0xRRGGBB; controllers without an
+/// LED (e.g. Xbox 360) send 0x000000. player_led is the player indicator
+/// bitmask (bit0 = LED 1 ...).
+message LedState {
+  uint32 color = 1;
+  uint32 player_led = 2;
 }
 
 message AudioFrame {
