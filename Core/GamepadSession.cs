@@ -720,8 +720,13 @@ public class GamepadSession : IDisposable
         catch { }
     }
 
-    // Target sample rate for phone playback (universally supported on Android)
-    private const int TargetSampleRate = 44100;
+    // Target sample rate forwarded to the phone. Both the emulated DualSense
+    // audio endpoint and the phone's native DS5 PCM path run at 48 kHz, so
+    // forwarding at the source rate avoids a lossy double resample
+    // (48k -> 44.1k on the PC, 44.1k -> 48k on the phone). The per-window
+    // resamplers are stateless, so any rate conversion injects a click at
+    // every buffer boundary, which is heard as noise on the voice coils.
+    private const int TargetSampleRate = 48000;
 
     private void OnDualsenseAudioFrames(HMAudioOutput output, ReadOnlyMemory<byte> pcm)
     {
@@ -795,12 +800,29 @@ public class GamepadSession : IDisposable
                 dst[dstOff + 6] = (byte)(hapticR & 0xFF); dst[dstOff + 7] = (byte)((hapticR >> 8) & 0xFF);         // ch3: right voice coil
             }
 
-            DrainSingleChunk(dst);
+            // Skip silent windows: the phone's native sender keeps the DualSense
+            // endpoint fed with locally-generated silence, so forwarding silence
+            // only floods the link and blocks the phone's receive thread.
+            if (!IsSilent(dst)) DrainSingleChunk(dst);
             _audioReceivedBytes += span.Length;
             _audioWindowsSeen++;
             _lastAudioWindowBytes = span.Length;
         }
         catch { }
+    }
+
+    /// <summary>True when every 16-bit sample is within a few LSB of zero. A game
+    /// holding the DualSense audio stream open makes the endpoint deliver silent
+    /// windows (often dithered, not exactly 0) continuously; the phone cannot tell
+    /// them from real audio, so they are dropped at the source.</summary>
+    private static bool IsSilent(byte[] data)
+    {
+        for (int i = 0; i + 1 < data.Length; i += 2)
+        {
+            int s = (short)(data[i] | (data[i + 1] << 8));
+            if (s > 8 || s < -8) return false;
+        }
+        return true;
     }
 
     /// <summary>Split an already-collected PCM buffer into frame-aligned
