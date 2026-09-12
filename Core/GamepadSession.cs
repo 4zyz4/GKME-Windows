@@ -235,26 +235,10 @@ public class GamepadSession : IDisposable
     private byte _audioChannels;
     private byte _audioBitsPerSample;
 
-    // 4-channel PCM buffer for test tone. The phone side (dualsense-
-    // tester) expects 48 kHz / 4ch / 16-bit 2-byte PCM samples on
-    // channels 1/2 for the speaker and channels 3/4 for haptics.
-    // Pre-chunked into 10 ms UDP frames to tolerate network jitter.
-    private readonly List<byte[]> _toneFrames = new();
-    private int _toneFrameIdx;
-    private bool _toneRunning;
-    private double _tonePhase;              // 0..2π accumulator
-
-    private const double ToneAmplitude = 0.25;
-    private const int ToneSampleRate = 48000;
-    private const int ToneChannels = 4;
-    private const int ToneBitsPerSample = 16;
-    private const double ToneFreq = 1000.0;
-    private const double ToneStep = 2.0 * Math.PI * ToneFreq / ToneSampleRate;
-
-    // Tone drain: 10 ms frames to tolerate network jitter.
-    private const int ToneFrameMs = 10;
-    private const int ToneFrameSamples = (ToneSampleRate * ToneFrameMs) / 1000;
-    private const int ToneFrameBytes = ToneFrameSamples * ToneChannels * (ToneBitsPerSample / 8);
+    // 1 kHz test-tone state (dualsense-tester WAVEOUT_CTRL). Forwarded to the
+    // phone as a state flag; the phone synthesises and plays the tone locally
+    // instead of the PC streaming test-tone PCM over the audio lane.
+    private volatile bool _testToneEnabled;
 
     // Telemetry for the driver-delivered PCM stream (game → speaker).
     private long _audioReceivedBytes;
@@ -324,8 +308,8 @@ public class GamepadSession : IDisposable
             // when no input arrives, without fighting Windows timer throttling.
             if (!_inputReceived.Wait(500, ct))
             {
-                // Periodic wake — send vibration echo + drain tone even when idle.
-                DrainPendingTone();
+                // Periodic wake — send vibration echo + test-tone state when idle.
+                if (_testToneEnabled) _ = SendTestToneStateAsync();
                 if (Controller != null)
                 {
                     _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor, raiseSendPriority: false);
@@ -372,8 +356,7 @@ public class GamepadSession : IDisposable
                 if (_pendingInput == null && !_inputReceived.IsSet) break;
             }
 
-            // Drain tone and send vibration echo on every input wake.
-            DrainPendingTone();
+            // Send vibration echo on every input wake.
             if (Controller != null)
             {
                 _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor, raiseSendPriority: false);
@@ -491,6 +474,7 @@ public class GamepadSession : IDisposable
         // path — otherwise the phone never receives any packet and stays stuck.
         _ = SendAsync(NetworkService.BuildServerHello());
         _ = SendLedStateAsync();
+        _ = SendTestToneStateAsync();
     }
 
     private object? CreateController(ControllerMode mode)
@@ -569,6 +553,19 @@ public class GamepadSession : IDisposable
         });
     }
 
+    /// <summary>Forwards the 1 kHz test-tone on/off state to the phone. The phone
+    /// synthesises the tone locally; no test-tone PCM is streamed.</summary>
+    private async Task SendTestToneStateAsync()
+    {
+        await SendAsync(new ServerToClient
+        {
+            TestTone = new TestTone
+            {
+                Enabled = _testToneEnabled,
+            }
+        });
+    }
+
     private void OnHmOutputReceived(HMController controller, HMOutputPacket packet)
     {
         // Feature report 0x80 is Sony's test-command surface (device/action
@@ -616,115 +613,14 @@ public class GamepadSession : IDisposable
         if (d.Length < 3) return;
 
         // Feature report 0x80 with bytes [0]=6 (AUDIO), [1]=2 (WAVEOUT_CTRL),
-        // [2]!=0 = enable internal 1 kHz sine-wave generator on the phone side.
-        // We synthesise 1 kHz PCM and forward it to the phone through the
-        // normal audio lane so dualsense-tester can verify speaker output.
+        // [2]!=0 = enable the internal 1 kHz sine-wave generator. The phone
+        // synthesises the tone locally; forward only the on/off state.
         byte deviceId = d[0];
         byte actionId = d[1];
         if (deviceId != 6 || actionId != 2) return;
 
-        if (d[2] != 0)
-        {
-            ArmTestTone();
-        }
-        else
-        {
-            StopTestTone();
-        }
-    }
-
-    /// <summary>Pre-generate a 1 kHz sine-wave PCM buffer (2 seconds of
-    /// continuous tone, already split into 10 ms frames) and prime the
-    /// drain cycle.  Phase continues from its previous value so repeated
-    /// arming stays sample-continuous.</summary>
-    private void ArmTestTone()
-    {
-        if (_toneRunning) return;
-        _toneRunning = true;
-
-        // Initialise audio format if not yet known.
-        if (!_audioFormatReady)
-        {
-            _audioSampleRate = ToneSampleRate;
-            _audioChannels = ToneChannels;
-            _audioBitsPerSample = ToneBitsPerSample;
-            _audioFormatReady = true;
-        }
-
-        if (_toneFrames.Count == 0)
-        {
-            GenerateToneFrames();
-        }
-
-        _toneFrameIdx = 0;
-        DrainPendingTone();
-    }
-
-    private void StopTestTone()
-    {
-        _toneRunning = false;
-        _toneFrameIdx = 0;
-        _toneFrames.Clear();
-    }
-
-    /// <summary>Generate 2 seconds of 1 kHz PCM at 48 kHz / 4 ch / 16 bit
-    /// and split into 10 ms frames stored in _toneFrames.</summary>
-    private void GenerateToneFrames()
-    {
-        int totalSamples = ToneSampleRate * 2; // 2 seconds
-        int samplesPerFrame = ToneFrameSamples;
-        int bytesPerSample = ToneChannels * (ToneBitsPerSample / 8); // 8 bytes per sample
-        int frameCount = totalSamples / samplesPerFrame;
-
-        for (int f = 0; f < frameCount; f++)
-        {
-            var frameBytes = new byte[ToneFrameBytes];
-            int startSample = f * samplesPerFrame;
-            int bo = 0;
-            for (int s = 0; s < samplesPerFrame; s++)
-            {
-                int i = startSample + s;
-                double angle = _tonePhase + i * ToneStep;
-                short v = (short)(Math.Sin(angle) * short.MaxValue * ToneAmplitude);
-
-                // interleaved 4ch: ch0=silent, ch1=speaker, ch2=speaker, ch3=silent
-                frameBytes[bo    ] = 0;                                          // ch0 LSB
-                frameBytes[bo + 1] = 0;                                          // ch0 MSB
-                frameBytes[bo + 2] = (byte)(v & 0xFF);                           // ch1 LSB
-                frameBytes[bo + 3] = (byte)((v >> 8) & 0xFF);                    // ch1 MSB
-                frameBytes[bo + 4] = (byte)(v & 0xFF);                           // ch2 LSB
-                frameBytes[bo + 5] = (byte)((v >> 8) & 0xFF);                    // ch2 MSB
-                frameBytes[bo + 6] = 0;                                          // ch3 LSB
-                frameBytes[bo + 7] = 0;                                          // ch3 MSB
-
-                bo += bytesPerSample;
-            }
-            _toneFrames.Add(frameBytes);
-        }
-        // Advance phase so next arm restart is sample-continuous.
-        _tonePhase += totalSamples * ToneStep;
-        if (_tonePhase >= 2.0 * Math.PI)
-            _tonePhase -= 2.0 * Math.PI;
-    }
-
-    /// <summary>Drain one 10 ms tone frame through DrainSingleChunk so the
-    /// phone receives them as a continuous audio stream.  Called from the
-    /// 125 Hz ReportLoop.  When frame index wraps around, re-generate the
-    /// buffer with fresh phase.</summary>
-    private void DrainPendingTone()
-    {
-        if (!_toneRunning || _toneFrames.Count == 0) return;
-
-        var chunk = _toneFrames[_toneFrameIdx];
-        _toneFrameIdx++;
-        DrainSingleChunk(chunk);
-
-        if (_toneFrameIdx >= _toneFrames.Count)
-        {
-            _toneFrameIdx = 0;
-            _toneFrames.Clear();
-            GenerateToneFrames();
-        }
+        _testToneEnabled = d[2] != 0;
+        _ = SendTestToneStateAsync();
     }
 
     private void AttachDualsenseAudio(HMController ctrl)
@@ -908,8 +804,7 @@ public class GamepadSession : IDisposable
     }
 
     /// <summary>Split an already-collected PCM buffer into frame-aligned
-    /// UDP chunks and send them. Called by OnDualsenseAudioFrames and
-    /// DrainPendingTone.</summary>
+    /// UDP chunks and send them. Called by OnDualsenseAudioFrames.</summary>
     private void DrainSingleChunk(byte[] pcm)
     {
         if (!_audioFormatReady) return;
@@ -962,9 +857,7 @@ public class GamepadSession : IDisposable
     private void ClearPendingAudio()
     {
         _audioFrameIndex = 0;
-        _toneRunning = false;
-        _toneFrameIdx = 0;
-        _toneFrames.Clear();
+        _testToneEnabled = false;
         _audioFormatReady = false;
     }
 
@@ -1423,6 +1316,7 @@ public class GamepadSession : IDisposable
             _lastLedColor = 0;
             _lastPlayerLed = 0;
             _ = SendLedStateAsync();
+            _ = SendTestToneStateAsync();
 
             if (!_readyFired)
             {

@@ -63,7 +63,15 @@ message ServerToClient {
     ServerHello server_hello = 7;
     AudioFrame audio_frame = 8;
     LedState led_state = 9;
+    TestTone test_tone = 10;
   }
+}
+
+/// 1 kHz test-tone state for the DualSense speaker test (WAVEOUT_CTRL).
+/// When enabled the phone synthesises the tone locally and plays it; the PC
+/// no longer streams test-tone PCM over the audio lane.
+message TestTone {
+  bool enabled = 1;
 }
 
 /// Emulated controller LED state. color is 0xRRGGBB; controllers without an
