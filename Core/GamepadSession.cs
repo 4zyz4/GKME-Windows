@@ -964,9 +964,9 @@ public class GamepadSession : IDisposable
         buf[5] = (byte)Math.Clamp(rt, 0u, 255u);
 
         short lx = (short)input.LeftStickX;
-        short ly = (short)(-input.LeftStickY);
+        short ly = (short)Math.Clamp(-(long)input.LeftStickY, short.MinValue, short.MaxValue);
         short rx = (short)input.RightStickX;
-        short ry = (short)(-input.RightStickY);
+        short ry = (short)Math.Clamp(-(long)input.RightStickY, short.MinValue, short.MaxValue);
         buf[6] = (byte)(lx & 0xFF); buf[7] = (byte)((lx >> 8) & 0xFF);
         buf[8] = (byte)(ly & 0xFF); buf[9] = (byte)((ly >> 8) & 0xFF);
         buf[10] = (byte)(rx & 0xFF); buf[11] = (byte)((rx >> 8) & 0xFF);

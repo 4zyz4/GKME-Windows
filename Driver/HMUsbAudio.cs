@@ -54,12 +54,12 @@ public sealed class HMUsbAudio
         }
 
         Output = new HMAudioOutput(outStream, outIface);
-        Microphone = new HMMicrophoneInput(inStream, inIface, device.Audio);
+        Microphone = new HMMicrophoneInput(inStream, inIface, device.Audio!);
 
         foreach (var ctl in cfg.AudioControls ?? new List<UsbAudioControlSpec>())
             _unitFunctions[ctl.UnitId] = ctl.Function;
 
-        device.Audio.OutFrames += pcm => Output.RaiseFrames(pcm);
+        device.Audio!.OutFrames += pcm => Output.RaiseFrames(pcm);
         device.Audio.AltSettingChanged += (iface, alt) =>
         {
             if (iface == outIface) Output.SetStreaming(alt != 0);

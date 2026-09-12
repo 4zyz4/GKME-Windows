@@ -43,7 +43,7 @@ namespace HIDMaestro.Internal.Usbip;
 internal sealed class UsbipEmulatedDevice : IDisposable
 {
     public UsbDescriptorSet Descriptors { get; }
-    public UsbAudioEngine Audio { get; }
+    public UsbAudioEngine? Audio { get; }
     public string BusId { get; }
 
     /// <summary>Controller index, kept so the synthetic pairing MAC in
@@ -113,7 +113,20 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         _outputEvent = SharedMemoryIO.EnsureOutputEvent(index);
         _inputWaitEvent = SharedMemoryIO.OpenInputEventForWait(index);
 
-        Audio = new UsbAudioEngine(profile, CompleteIsoOnWire);
+        var cfg = profile.UsbConfiguration;
+        bool hasAudioStream = false;
+        if (cfg != null)
+        {
+            foreach (var iface in cfg.Interfaces)
+            {
+                if (iface.Function == "audioStreamingOut" || iface.Function == "audioStreamingIn")
+                {
+                    hasAudioStream = true;
+                    break;
+                }
+            }
+        }
+        Audio = hasAudioStream ? new UsbAudioEngine(profile, CompleteIsoOnWire) : null;
 
         _inputThread = new Thread(InputPumpLoop)
         {
@@ -133,7 +146,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     {
         if (Interlocked.CompareExchange(ref _connection, null, connection) != connection)
             return; // a different connection owns the device
-        Audio.Clear();
+        Audio?.Clear();
         lock (_hidLock)
         {
             _pendingInterruptIn.Clear();
@@ -310,6 +323,11 @@ internal sealed class UsbipEmulatedDevice : IDisposable
 
         if (ep.TransferType == 1) // isochronous → audio engine
         {
+            if (Audio == null)
+            {
+                SendError(cmd.Seqnum, -UsbipProtocol.EPipe);
+                return;
+            }
             var urb = new UsbAudioEngine.PendingIso
             {
                 Seqnum = cmd.Seqnum,
@@ -351,7 +369,9 @@ internal sealed class UsbipEmulatedDevice : IDisposable
 
     public void HandleUnlink(uint seqnum, uint victimSeqnum)
     {
-        bool removed = Audio.TryUnlink(victimSeqnum);
+        bool removed = false;
+        if (Audio != null)
+            removed = Audio.TryUnlink(victimSeqnum);
         if (!removed)
         {
             lock (_hidLock)
@@ -454,12 +474,13 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                     return;
                 }
                 case 0x0B: // SET_INTERFACE
-                    Audio.SetAltSetting((byte)(wIndex & 0xFF), (byte)(wValue & 0xFF));
+                    Audio?.SetAltSetting((byte)(wIndex & 0xFF), (byte)(wValue & 0xFF));
                     SendRetSubmit(cmd.Seqnum, 0, 0, null);
                     return;
                 case 0x0A: // GET_INTERFACE
                 {
-                    var d = new[] { Audio.GetAltSetting((byte)(wIndex & 0xFF)) };
+                    byte alt = Audio?.GetAltSetting((byte)(wIndex & 0xFF)) ?? (byte)0;
+                    var d = new[] { alt };
                     SendRetSubmit(cmd.Seqnum, 0, Math.Min(1, (int)wLength),
                         wLength > 0 ? d : null);
                     return;
@@ -489,20 +510,24 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             byte unitId = (byte)(wIndex >> 8);
             byte selector = (byte)(wValue >> 8);
             byte channel = (byte)(wValue & 0xFF);
-            if (deviceToHost)
+            if (Audio != null)
             {
-                var d = Audio.HandleUacGet(bRequest, unitId, selector, channel, wLength);
-                if (d == null) { SendError(cmd.Seqnum, -UsbipProtocol.EPipe); return; }
-                int n = Math.Min(d.Length, wLength);
-                SendRetSubmit(cmd.Seqnum, 0, n, d.AsSpan(0, n).ToArray());
-            }
-            else
-            {
-                bool ok = bRequest == 0x01 // SET_CUR
-                    && Audio.HandleUacSet(unitId, selector, channel,
-                        outPayload ?? Array.Empty<byte>());
-                if (ok) SendRetSubmit(cmd.Seqnum, 0, outPayload?.Length ?? 0, null);
-                else SendError(cmd.Seqnum, -UsbipProtocol.EPipe);
+                if (deviceToHost)
+                {
+                    var d = Audio.HandleUacGet(bRequest, unitId, selector, channel, wLength);
+                    if (d == null) { SendError(cmd.Seqnum, -UsbipProtocol.EPipe); return; }
+                    int n = Math.Min(d.Length, wLength);
+                    SendRetSubmit(cmd.Seqnum, 0, n, d.AsSpan(0, n).ToArray());
+                }
+                else
+                {
+                    bool ok = bRequest == 0x01 // SET_CUR
+                        && Audio.HandleUacSet(unitId, selector, channel,
+                            outPayload ?? Array.Empty<byte>());
+                    if (ok) SendRetSubmit(cmd.Seqnum, 0, outPayload?.Length ?? 0, null);
+                    else SendError(cmd.Seqnum, -UsbipProtocol.EPipe);
+                }
+                return;
             }
             return;
         }
@@ -1047,7 +1072,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     {
         _configurationValue = 0;
         ResetAltSettings();
-        Audio.Clear();
+        Audio?.Clear();
         lock (_hidLock)
         {
             _pendingInterruptIn.Clear();
@@ -1057,6 +1082,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
 
     private void ResetAltSettings()
     {
+        if (Audio == null) return;
         foreach (var kv in Descriptors.Endpoints)
         {
             if (kv.Value.TransferType == 1)
@@ -1098,7 +1124,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     {
         _stop = true;
         _connection = null;
-        Audio.Dispose();
+        Audio?.Dispose();
         try { _inputThread.Join(600); } catch { }
         if (_inputWaitEvent != IntPtr.Zero)
         {

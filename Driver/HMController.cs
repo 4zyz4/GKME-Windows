@@ -191,7 +191,23 @@ public sealed class HMController : IDisposable
         Profile = profile;
         UsbipHandle = usbipHandle;
         if (usbipHandle != null)
-            UsbAudio = new HMUsbAudio(profile.Inner, usbipHandle.Device);
+        {
+            var cfg = profile.Inner.UsbConfiguration;
+            bool hasAudioStream = false;
+            if (cfg != null)
+            {
+                foreach (var iface in cfg.Interfaces)
+                {
+                    if (iface.Function == "audioStreamingOut" || iface.Function == "audioStreamingIn")
+                    {
+                        hasAudioStream = true;
+                        break;
+                    }
+                }
+            }
+            if (hasAudioStream)
+                UsbAudio = new HMUsbAudio(profile.Inner, usbipHandle.Device);
+        }
 
         // v1.3.0 T10 — cached per-profile builder; same descriptor + same
         // maps produce identical output, so each CreateController for a
