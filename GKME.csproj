@@ -53,10 +53,6 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
-    <Content Include="profiles\**\*.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>profiles\%(RecursiveDir)%(Filename)%(Extension)</Link>
-    </Content>
     <TrimmerRootDescriptor Include="linker.xml" />
   </ItemGroup>
 
