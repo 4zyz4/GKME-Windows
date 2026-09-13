@@ -211,6 +211,8 @@ public class GamepadSession : IDisposable
     // Emulated controller LED state, forwarded to the phone. color is 0xRRGGBB.
     private volatile int _lastLedColor;
     private volatile int _lastPlayerLed;
+    private byte[]? _lastLeftTriggerEffect;
+    private byte[]? _lastRightTriggerEffect;
     private readonly ManualResetEventSlim _inputReceived = new(false, 1);
     private volatile GamepadInput? _pendingInput;
 
@@ -308,11 +310,12 @@ public class GamepadSession : IDisposable
             // when no input arrives, without fighting Windows timer throttling.
             if (!_inputReceived.Wait(500, ct))
             {
-                // Periodic wake — send vibration echo + test-tone state when idle.
+                // Periodic wake — send vibration echo + trigger effect echo + test-tone state when idle.
                 if (_testToneEnabled) _ = SendTestToneStateAsync();
                 if (Controller != null)
                 {
                     _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor, raiseSendPriority: false);
+                    _ = SendTriggerEffectEchoAsync(false);
                 }
 
                 // Periodic audio-flow diagnostics (~every 500 ms).
@@ -356,10 +359,11 @@ public class GamepadSession : IDisposable
                 if (_pendingInput == null && !_inputReceived.IsSet) break;
             }
 
-            // Send vibration echo on every input wake.
+            // Send vibration echo + trigger effect echo on every input wake.
             if (Controller != null)
             {
                 _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor, raiseSendPriority: false);
+                _ = SendTriggerEffectEchoAsync(false);
             }
 
             // Periodic audio-flow diagnostics.
@@ -506,6 +510,8 @@ public class GamepadSession : IDisposable
     {
         int? newColor = null;
         int? newPlayerLed = null;
+        byte[]? newLeftTriggerEffect = null;
+        byte[]? newRightTriggerEffect = null;
         foreach (var (k, v) in e.Fields)
         {
             var key = k.ToLowerInvariant();
@@ -517,6 +523,10 @@ public class GamepadSession : IDisposable
                 newColor = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
             else if (key is "playerindicator")
                 newPlayerLed = Convert.ToInt32(v);
+            else if (key is "lefttriggereffect" && v is byte[] leftTriggerBytes && leftTriggerBytes.Length >= 11)
+                newLeftTriggerEffect = leftTriggerBytes;
+            else if (key is "righttriggereffect" && v is byte[] rightTriggerBytes && rightTriggerBytes.Length >= 11)
+                newRightTriggerEffect = rightTriggerBytes;
         }
 
         bool changed = false;
@@ -533,6 +543,11 @@ public class GamepadSession : IDisposable
         if (changed)
         {
             _ = SendLedStateAsync();
+        }
+
+        if (newLeftTriggerEffect != null || newRightTriggerEffect != null)
+        {
+            _ = SendTriggerEffectAsync(newLeftTriggerEffect, newRightTriggerEffect);
         }
     }
 
@@ -562,6 +577,50 @@ public class GamepadSession : IDisposable
             TestTone = new TestTone
             {
                 Enabled = _testToneEnabled,
+            }
+        });
+    }
+
+    private async Task SendTriggerEffectAsync(byte[]? leftEffect, byte[]? rightEffect)
+    {
+        if (leftEffect == null && rightEffect == null) return;
+
+        _lastLeftTriggerEffect = leftEffect;
+        _lastRightTriggerEffect = rightEffect;
+
+        await SendAsync(new ServerToClient
+        {
+            TriggerEffects = new TriggerEffects
+            {
+                LeftTriggerEffect = ByteString.CopyFrom(leftEffect ?? Array.Empty<byte>()),
+                RightTriggerEffect = ByteString.CopyFrom(rightEffect ?? Array.Empty<byte>()),
+            }
+        });
+    }
+
+    private async Task SendTriggerEffectEchoAsync(bool force = true)
+    {
+        if (_lastLeftTriggerEffect == null && _lastRightTriggerEffect == null) return;
+
+        await SendAsync(new ServerToClient
+        {
+            TriggerEffects = new TriggerEffects
+            {
+                LeftTriggerEffect = ByteString.CopyFrom(_lastLeftTriggerEffect),
+                RightTriggerEffect = ByteString.CopyFrom(_lastRightTriggerEffect),
+            }
+        });
+    }
+
+    private async Task SendClearTriggerEffectsAsync()
+    {
+        var clearEffect = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+        await SendAsync(new ServerToClient
+        {
+            TriggerEffects = new TriggerEffects
+            {
+                LeftTriggerEffect = ByteString.CopyFrom(clearEffect),
+                RightTriggerEffect = ByteString.CopyFrom(clearEffect),
             }
         });
     }
@@ -1283,7 +1342,10 @@ public class GamepadSession : IDisposable
         {
             _lastLargeMotor = 0;
             _lastSmallMotor = 0;
+            _lastLeftTriggerEffect = null;
+            _lastRightTriggerEffect = null;
             ClearPendingAudio();
+            _ = SendClearTriggerEffectsAsync();
 
             // 创建新控制器；成功前保留旧控制器。若创建失败，系统仍只有一个旧手柄，
             // 不会出现 "多出一个 DS4" 或切换后无手柄的状态。
@@ -1359,6 +1421,7 @@ public class GamepadSession : IDisposable
         _disposed = true;
         _cts.Cancel();
         ClearPendingAudio();
+        _ = SendClearTriggerEffectsAsync();
 
         if (Controller is HMController hmCtrl)
         {
