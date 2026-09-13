@@ -58,6 +58,7 @@ message TouchPoint {
 
 message ServerToClient {
   oneof payload {
+    CompactFrame compact_frame = 11;
     Vibration vibration = 1;
     TriggerEffects trigger_effects = 2;
     Disconnect disconnect = 3;
@@ -111,4 +112,13 @@ message Vibration {
 
 message Disconnect {
   string reason = 1;
+}
+
+/// Single UDP packet that packs vibration + trigger effects + LED + test tone
+/// into one envelope so the Android side can process everything atomically.
+message CompactFrame {
+  Vibration vibration = 1;
+  TriggerEffects trigger_effects = 2;
+  LedState led_state = 3;
+  TestTone test_tone = 4;
 }

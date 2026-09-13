@@ -310,12 +310,14 @@ public class GamepadSession : IDisposable
             // when no input arrives, without fighting Windows timer throttling.
             if (!_inputReceived.Wait(500, ct))
             {
-                // Periodic wake — send vibration echo + trigger effect echo + test-tone state when idle.
+                // Periodic wake — send compact frame + test-tone state when idle.
                 if (_testToneEnabled) _ = SendTestToneStateAsync();
                 if (Controller != null)
                 {
-                    _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor, raiseSendPriority: false);
-                    _ = SendTriggerEffectEchoAsync(false);
+                    _ = SendCompactFrameAsync(
+                        _lastLargeMotor, _lastSmallMotor,
+                        _lastLeftTriggerEffect, _lastRightTriggerEffect,
+                        sendLed: true, sendTestTone: false);
                 }
 
                 // Periodic audio-flow diagnostics (~every 500 ms).
@@ -359,11 +361,13 @@ public class GamepadSession : IDisposable
                 if (_pendingInput == null && !_inputReceived.IsSet) break;
             }
 
-            // Send vibration echo + trigger effect echo on every input wake.
+            // Send compact frame on every input wake.
             if (Controller != null)
             {
-                _ = SendVibrationAsync(_lastLargeMotor, _lastSmallMotor, raiseSendPriority: false);
-                _ = SendTriggerEffectEchoAsync(false);
+                _ = SendCompactFrameAsync(
+                    _lastLargeMotor, _lastSmallMotor,
+                    _lastLeftTriggerEffect, _lastRightTriggerEffect,
+                    sendLed: true, sendTestTone: false);
             }
 
             // Periodic audio-flow diagnostics.
@@ -1329,6 +1333,41 @@ public class GamepadSession : IDisposable
             {
                 LargeMotor = large,
                 SmallMotor = small
+            }
+        });
+    }
+
+    private async Task SendCompactFrameAsync(
+        byte largeMotor, byte smallMotor,
+        byte[]? leftTrigger, byte[]? rightTrigger,
+        bool sendLed = true, bool sendTestTone = false)
+    {
+        await SendAsync(new ServerToClient
+        {
+            CompactFrame = new global::GamepadEmu.Protocol.CompactFrame
+            {
+                Vibration = new Vibration
+                {
+                    LargeMotor = largeMotor,
+                    SmallMotor = smallMotor,
+                },
+                TriggerEffects = (leftTrigger != null || rightTrigger != null)
+                    ? new TriggerEffects
+                    {
+                        LeftTriggerEffect = ByteString.CopyFrom(leftTrigger ?? Array.Empty<byte>()),
+                        RightTriggerEffect = ByteString.CopyFrom(rightTrigger ?? Array.Empty<byte>()),
+                    }
+                    : null,
+                LedState = sendLed
+                    ? new LedState
+                    {
+                        Color = (uint)_lastLedColor,
+                        PlayerLed = (uint)_lastPlayerLed,
+                    }
+                    : null,
+                TestTone = sendTestTone
+                    ? new TestTone { Enabled = _testToneEnabled }
+                    : null,
             }
         });
     }
