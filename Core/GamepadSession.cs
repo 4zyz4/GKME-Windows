@@ -1008,7 +1008,7 @@ public class GamepadSession : IDisposable
             var t = i == 0 ? t0 : t1;
             bool isActive = t?.Active ?? false;
             if (isActive && !_prevTouchActive[i])
-                _touchIds[i] = _nextTrackingId++;
+                _touchIds[i] = (byte)(_nextTrackingId++ & 0x7F);
             _prevTouchActive[i] = isActive;
         }
 
@@ -1017,22 +1017,21 @@ public class GamepadSession : IDisposable
         buf[33] = ds4CurrentCounter;
         WriteTouchData(buf, 34,
             (int)(t0?.X ?? 0), (int)(t0?.Y ?? 0),
-            t0?.Active ?? false, _touchIds[0]);
+            t0?.Active ?? false, (byte)(_touchIds[0] & 0x7F));
         WriteTouchData(buf, 38,
             (int)(t1?.X ?? 0), (int)(t1?.Y ?? 0),
-            t1?.Active ?? false, _touchIds[1]);
+            t1?.Active ?? false, (byte)(_touchIds[1] & 0x7F));
 
-        buf[42] = _previousTouchCounter;
+        byte tid1 = (byte)((_nextTrackingId + 1) & 0x7F);
+        WriteTouchData(buf, 42, 0, 0, false, tid1);
         byte tid2 = (byte)((_nextTrackingId + 2) & 0x7F);
-        WriteTouchData(buf, 43, 0, 0, false, tid2);
+        WriteTouchData(buf, 46, 0, 0, false, tid2);
         byte tid3 = (byte)((_nextTrackingId + 3) & 0x7F);
-        WriteTouchData(buf, 47, 0, 0, false, tid3);
-
-        buf[51] = _previousTouchCounter;
+        WriteTouchData(buf, 50, 0, 0, false, tid3);
         byte tid4 = (byte)((_nextTrackingId + 4) & 0x7F);
-        WriteTouchData(buf, 52, 0, 0, false, tid4);
+        WriteTouchData(buf, 54, 0, 0, false, tid4);
         byte tid5 = (byte)((_nextTrackingId + 5) & 0x7F);
-        WriteTouchData(buf, 56, 0, 0, false, tid5);
+        WriteTouchData(buf, 58, 0, 0, false, tid5);
 
         _previousTouchCounter = ds4CurrentCounter;
         _ds4TouchCounter++;
