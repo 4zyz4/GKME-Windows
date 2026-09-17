@@ -32,6 +32,9 @@ internal static class Win32Keyboard
     private static extern void SendKeyUpHid(byte hidUsage);
 
     [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void SendKeyRepeatHid(byte hidUsage);
+
+    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
     private static extern void SendModifierKeyDown(byte modifierBit);
 
     [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
@@ -57,6 +60,8 @@ internal static class Win32Keyboard
 
     public static void SendKeyDown(byte hidUsage) { SendKeyDownHid(hidUsage); }
     public static void SendKeyUp(byte hidUsage) { SendKeyUpHid(hidUsage); }
+
+    public static void SendKeyRepeat(byte hidUsage) { SendKeyRepeatHid(hidUsage); }
 
     public static void SendModifierKeyDown(KeyboardModifier modifier)
     { SendModifierKeyDown((byte)((ushort)modifier)); }
@@ -228,6 +233,13 @@ public class GamepadSession : IDisposable
     private uint _lastMouseButtons;
     private uint _lastKeyboardModifiers;
     private readonly HashSet<uint> _lastPressedScanCodes = new();
+
+    // Typematic auto-repeat, driven by the Windows keyboard delay/speed in
+    // Control Panel. Held keys emit repeated key-downs until a single key-up.
+    private readonly object _keyRepeatLock = new();
+    private readonly Dictionary<uint, long> _keyRepeatDueTicks = new();
+    private long _keyRepeatIntervalTicks;
+    private System.Threading.Timer? _keyRepeatTimer;
 
     // 4-channel audio forwarding (DualSense): the phone needs the raw
     // speaker + voice-coil PCM, not just the rumble peaks folded above.
@@ -1256,6 +1268,7 @@ public class GamepadSession : IDisposable
         released.ExceptWith(currentPressed);
         foreach (var scancode in released)
         {
+            StopKeyRepeat(scancode);
             Win32Keyboard.SendKeyUp((byte)scancode);
         }
 
@@ -1264,6 +1277,7 @@ public class GamepadSession : IDisposable
         foreach (var scancode in pressed)
         {
             Win32Keyboard.SendKeyDown((byte)scancode);
+            StartKeyRepeat(scancode);
         }
         _lastPressedScanCodes.Clear();
         _lastPressedScanCodes.UnionWith(currentPressed);
@@ -1290,6 +1304,103 @@ public class GamepadSession : IDisposable
             if ((pressedMods & 0x40) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RAlt);
             if ((pressedMods & 0x80) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RWin);
             _lastKeyboardModifiers = modifiers;
+        }
+    }
+
+    private const uint SPI_GETKEYBOARDDELAY = 0x0016;
+    private const uint SPI_GETKEYBOARDSPEED = 0x000A;
+    private const int KeyboardRepeatTickMs = 15;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, out int pvParam, uint fWinIni);
+
+    private static (int delayMs, int intervalMs) ReadKeyboardRepeatSettings()
+    {
+        int delay = -1;
+        int speed = -1;
+        try
+        {
+            if (!SystemParametersInfo(SPI_GETKEYBOARDDELAY, 0, out delay, 0)) delay = -1;
+            if (!SystemParametersInfo(SPI_GETKEYBOARDSPEED, 0, out speed, 0)) speed = -1;
+        }
+        catch { }
+
+        // Fall back to the persisted Control Panel values (stored as strings).
+        if ((delay < 0 || speed < 0) && OperatingSystem.IsWindows())
+        {
+            try
+            {
+                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Keyboard");
+                if (delay < 0 && key?.GetValue("KeyboardDelay") is { } delayValue)
+                    delay = Convert.ToInt32(delayValue);
+                if (speed < 0 && key?.GetValue("KeyboardSpeed") is { } speedValue)
+                    speed = Convert.ToInt32(speedValue);
+            }
+            catch { }
+        }
+
+        delay = delay < 0 ? 1 : Math.Clamp(delay, 0, 3);
+        speed = speed < 0 ? 31 : Math.Clamp(speed, 0, 31);
+
+        int delayMs = (delay + 1) * 250;
+        double charsPerSecond = 2.5 + speed * 27.5 / 31.0;
+        int intervalMs = Math.Max(1, (int)Math.Round(1000.0 / charsPerSecond));
+        return (delayMs, intervalMs);
+    }
+
+    private void StartKeyRepeat(uint hidUsage)
+    {
+        (int delayMs, int intervalMs) = ReadKeyboardRepeatSettings();
+
+        long now = Stopwatch.GetTimestamp();
+        lock (_keyRepeatLock)
+        {
+            _keyRepeatIntervalTicks = (long)(intervalMs * (double)Stopwatch.Frequency / 1000.0);
+            _keyRepeatDueTicks[hidUsage] = now + (long)(delayMs * (double)Stopwatch.Frequency / 1000.0);
+            _keyRepeatTimer ??= new System.Threading.Timer(KeyRepeatTick, null, KeyboardRepeatTickMs, KeyboardRepeatTickMs);
+            _keyRepeatTimer.Change(KeyboardRepeatTickMs, KeyboardRepeatTickMs);
+        }
+    }
+
+    private void StopKeyRepeat(uint hidUsage)
+    {
+        lock (_keyRepeatLock)
+        {
+            _keyRepeatDueTicks.Remove(hidUsage);
+            if (_keyRepeatDueTicks.Count == 0)
+                _keyRepeatTimer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+        }
+    }
+
+    private void KeyRepeatTick(object? state)
+    {
+        if (_disposed) return;
+
+        uint[] due;
+        long now = Stopwatch.GetTimestamp();
+        lock (_keyRepeatLock)
+        {
+            if (_keyRepeatDueTicks.Count == 0) return;
+
+            List<uint>? pending = null;
+            foreach (var pair in _keyRepeatDueTicks)
+            {
+                if (now >= pair.Value)
+                    (pending ??= new List<uint>()).Add(pair.Key);
+            }
+            if (pending == null) return;
+
+            foreach (var key in pending)
+                _keyRepeatDueTicks[key] = now + _keyRepeatIntervalTicks;
+            due = pending.ToArray();
+        }
+
+        // The DLL ignores repeats for keys that are no longer held, so a repeat
+        // racing a key-up can never leave the key stuck down.
+        foreach (var key in due)
+        {
+            try { Win32Keyboard.SendKeyRepeat((byte)key); } catch { }
         }
     }
 
@@ -1459,6 +1570,11 @@ public class GamepadSession : IDisposable
         if (_disposed) return;
         _disposed = true;
         _cts.Cancel();
+        lock (_keyRepeatLock)
+        {
+            _keyRepeatDueTicks.Clear();
+            _keyRepeatTimer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+        }
         ClearPendingAudio();
         _ = SendClearTriggerEffectsAsync();
 
@@ -1605,6 +1721,7 @@ public class GamepadSession : IDisposable
     public void Dispose()
     {
         Disconnect();
+        _keyRepeatTimer?.Dispose();
         _cts.Dispose();
     }
 }

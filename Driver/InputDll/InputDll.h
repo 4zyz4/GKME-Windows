@@ -12,6 +12,8 @@ __declspec(dllexport) void SendKeyUp(unsigned char vkCode);
 __declspec(dllexport) void SendKeyDownHid(unsigned char hidUsage);
 __declspec(dllexport) void SendKeyUpHid(unsigned char hidUsage);
 
+__declspec(dllexport) void SendKeyRepeatHid(unsigned char hidUsage);
+
 __declspec(dllexport) void SendModifierKeyDown(unsigned char modifierBit);
 __declspec(dllexport) void SendModifierKeyUp(unsigned char modifierBit);
 
