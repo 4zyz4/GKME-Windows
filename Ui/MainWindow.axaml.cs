@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Reflection;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -25,6 +26,9 @@ public partial class MainWindow : Window
         _instance = this;
         this.Closing += OnClosing;
         this.Loaded += async (_, _) => await _vm.InitializeAsync();
+        
+        var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
+        Title = $"GKME {version}";
     }
 
     private void OnClosing(object? sender, CancelEventArgs e)
