@@ -15,7 +15,7 @@ namespace GKME.Core;
 public class NetworkService : IDisposable
 {
     public const int Port = 37284;
-    private const string BroadcastPrefix = "GAMEPAD_SERVER:";
+    private const string BroadcastPrefix = "GKME|";
 
     private const byte TypeClientToServer = 0x00;
     private const byte TypeServerToClient = 0x01;
@@ -158,6 +158,9 @@ public class NetworkService : IDisposable
     public IReadOnlyCollection<GamepadSession> ActiveSessions => _sessions.Values.ToList();
 
     public event Action<DiscoveredDevice>? OnDeviceDiscovered;
+    /// <summary>Raised when a session's Hello fills in the device name / MAC
+    /// (notably for manual IP connections that were not seen via broadcast).</summary>
+    public event Action<DiscoveredDevice>? OnDeviceInfoUpdated;
     public event Action<GamepadSession>? OnSessionStarted;
     public event Action<GamepadSession>? OnSessionEnded;
     public event Action<string>? OnSessionConnectionLost;
@@ -336,7 +339,10 @@ public class NetworkService : IDisposable
 
     private void HandleDiscovery(IPEndPoint remoteEp, string msg)
     {
-        var deviceName = msg[BroadcastPrefix.Length..];
+        // Broadcast format: "GKME|<device name>|<MAC>"
+        var parts = msg.Split('|', 3);
+        var deviceName = parts.Length > 1 ? parts[1].Trim() : "";
+        var mac = parts.Length > 2 ? parts[2].Trim() : "";
 
         var phoneEp = new IPEndPoint(remoteEp.Address, Port);
         var key = GetSessionKey(remoteEp);
@@ -344,10 +350,12 @@ public class NetworkService : IDisposable
         var device = _discovered.GetOrAdd(key, _ => new DiscoveredDevice
         {
             DeviceName = deviceName,
+            MacAddress = mac,
             IpAddress = phoneEp.Address,
             Port = Port,
         });
         device.DeviceName = deviceName;
+        device.MacAddress = mac;
         device.LastSeen = DateTime.UtcNow;
 
         // Phone restarted its broadcast — send ServerHello so the phone can
@@ -502,6 +510,10 @@ public class NetworkService : IDisposable
             session.OnConnectionLost += s =>
             {
                 OnSessionConnectionLost?.Invoke(s.Device.IpString);
+            };
+            session.OnDeviceInfoUpdated += s =>
+            {
+                OnDeviceInfoUpdated?.Invoke(s.Device);
             };
             session.OnDisconnected += s =>
             {

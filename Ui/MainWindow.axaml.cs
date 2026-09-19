@@ -13,7 +13,6 @@ public partial class MainWindow : Window
 {
     private static Window? _instance;
     private readonly MainViewModel _vm;
-    private TriggerDebugWindow? _debugWindow;
 
     public static Window? Instance => _instance;
 
@@ -75,6 +74,20 @@ public partial class MainWindow : Window
             await _vm.DisconnectAsync(card);
     }
 
+    private async void OnEndpointConnectClick(object? sender, RoutedEventArgs e)
+    {
+        var ep = (sender as Control)?.DataContext as DeviceEndpointViewModel;
+        if (ep != null)
+            await _vm.ConnectEndpointAsync(ep);
+    }
+
+    private async void OnEndpointDisconnectClick(object? sender, RoutedEventArgs e)
+    {
+        var ep = (sender as Control)?.DataContext as DeviceEndpointViewModel;
+        if (ep != null)
+            await _vm.DisconnectEndpointAsync(ep);
+    }
+
     private void OnRefreshClick(object? sender, RoutedEventArgs e)
     {
         _vm.Refresh();
@@ -92,26 +105,5 @@ public partial class MainWindow : Window
     {
         var dialog = new AboutDialog();
         await dialog.ShowDialog(this);
-    }
-
-    private void OnDebugClick(object? sender, RoutedEventArgs e)
-    {
-        if (_debugWindow != null)
-        {
-            _debugWindow.Show();
-            _debugWindow.WindowState = WindowState.Normal;
-            _debugWindow.Activate();
-            return;
-        }
-
-        var vm = new TriggerDebugViewModel(_vm);
-        var window = new TriggerDebugWindow(vm);
-        window.Closed += (_, _) =>
-        {
-            vm.Dispose();
-            _debugWindow = null;
-        };
-        _debugWindow = window;
-        window.Show(this);
     }
 }

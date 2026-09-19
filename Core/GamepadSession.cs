@@ -218,18 +218,6 @@ public class GamepadSession : IDisposable
     private byte[]? _lastLeftTriggerEffect;
     private byte[]? _lastRightTriggerEffect;
 
-    // 调试快照：驱动收到的输出报文 + 解析后的自适应扳机字节块，供 UI 调试窗口实时显示。
-    private readonly object _outputDebugLock = new();
-    private bool _dbgHasPacket;
-    private DateTime _dbgTimestamp;
-    private HMOutputSource _dbgSource;
-    private byte _dbgReportId;
-    private uint _dbgSeqNo;
-    private byte[] _dbgRawBytes = Array.Empty<byte>();
-    private bool _dbgCrcValid = true;
-    private byte[]? _dbgLeftTriggerEffect;
-    private byte[]? _dbgRightTriggerEffect;
-
     private readonly ManualResetEventSlim _inputReceived = new(false, 1);
     private volatile GamepadInput? _pendingInput;
 
@@ -283,33 +271,9 @@ public class GamepadSession : IDisposable
     public event Action<GamepadSession>? OnReady;
     public event Action<GamepadSession>? OnConnectionLost;
     public event Action<GamepadSession>? OnDisconnected;
-
-    /// <summary>驱动收到新的输出报文或新的自适应扳机字节块时触发（在驱动的
-    /// 轮询线程上），供 UI 调试窗口刷新“最新快照”。</summary>
-    public event Action<GamepadSession>? OnOutputDebug;
-
-    /// <summary>最近一次驱动输出的调试快照。线程安全；返回的字节数组写入后不再修改，可安全跨线程读取。</summary>
-    public OutputDebugSnapshot OutputDebug
-    {
-        get
-        {
-            lock (_outputDebugLock)
-            {
-                return new OutputDebugSnapshot
-                {
-                    Timestamp = _dbgTimestamp,
-                    Source = _dbgSource,
-                    ReportId = _dbgReportId,
-                    SeqNo = _dbgSeqNo,
-                    HasPacket = _dbgHasPacket,
-                    RawBytes = _dbgRawBytes,
-                    CrcValid = _dbgCrcValid,
-                    RightTriggerEffect = _dbgRightTriggerEffect,
-                    LeftTriggerEffect = _dbgLeftTriggerEffect,
-                };
-            }
-        }
-    }
+    /// <summary>Raised when the phone's Hello provides/updates the device name
+    /// and MAC (used mainly for manually entered IP connections).</summary>
+    public event Action<GamepadSession>? OnDeviceInfoUpdated;
 
     public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, Action onAudioSendStart, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
     {
@@ -499,6 +463,22 @@ public class GamepadSession : IDisposable
     {
         if (_disposed) return;
 
+        bool infoChanged = false;
+        if (!string.IsNullOrWhiteSpace(hello.DeviceName) && hello.DeviceName != Device.DeviceName)
+        {
+            Device.DeviceName = hello.DeviceName.Trim();
+            infoChanged = true;
+        }
+        if (!string.IsNullOrWhiteSpace(hello.MacAddress) && hello.MacAddress != Device.MacAddress)
+        {
+            Device.MacAddress = hello.MacAddress.Trim();
+            infoChanged = true;
+        }
+        if (infoChanged)
+        {
+            OnDeviceInfoUpdated?.Invoke(this);
+        }
+
         if (_controller == null && !_switchingMode)
         {
             lock (_controllerLock)
@@ -624,41 +604,10 @@ public class GamepadSession : IDisposable
             triggersUpdated = true;
         }
 
-        // 调试窗口显示实际会下发给手机的有效扳机字节（已按 validFlag0 合并）。
-        UpdateDebugTriggerEffects(e.CrcValid, _lastLeftTriggerEffect, _lastRightTriggerEffect);
-
         if (triggersUpdated)
         {
             _ = SendTriggerEffectAsync(_lastLeftTriggerEffect, _lastRightTriggerEffect);
         }
-    }
-
-    private void UpdateDebugPacket(HMOutputPacket packet)
-    {
-        lock (_outputDebugLock)
-        {
-            _dbgHasPacket = true;
-            _dbgTimestamp = DateTime.Now;
-            _dbgSource = packet.Source;
-            _dbgReportId = packet.ReportId;
-            _dbgSeqNo = packet.SeqNo;
-            // packet.Data 是指向驱动复用缓冲区的视图，必须复制后再保留。
-            _dbgRawBytes = packet.Data.ToArray();
-        }
-        OnOutputDebug?.Invoke(this);
-    }
-
-    private void UpdateDebugTriggerEffects(bool crcValid, byte[]? left, byte[]? right)
-    {
-        if (left == null && right == null) return;
-        lock (_outputDebugLock)
-        {
-            _dbgTimestamp = DateTime.Now;
-            _dbgCrcValid = crcValid;
-            if (left != null) _dbgLeftTriggerEffect = left;
-            if (right != null) _dbgRightTriggerEffect = right;
-        }
-        OnOutputDebug?.Invoke(this);
     }
 
     /// <summary>Forwards the emulated controller's LED state to the phone. Xbox 360
@@ -737,8 +686,6 @@ public class GamepadSession : IDisposable
 
     private void OnHmOutputReceived(HMController controller, HMOutputPacket packet)
     {
-        UpdateDebugPacket(packet);
-
         // Feature report 0x80 is Sony's test-command surface (device/action
         // first two bytes). dualsense-tester uses it for the 1kHz sine-wave
         // audio test (WAVEOUT_CTRL on the AUDIO device); the real pad's

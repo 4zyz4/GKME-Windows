@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using GamepadEmu.Protocol;
@@ -5,68 +6,77 @@ using GKME.Core;
 
 namespace GKME.Ui;
 
+/// <summary>A device card groups all endpoints (IPs) that share the same MAC.
+/// When more than one endpoint is available and none is connected the card
+/// expands into a larger layout listing every IP with its own connect button;
+/// once one endpoint is used the card collapses back to the normal size.</summary>
 public class DeviceCardViewModel : INotifyPropertyChanged
 {
-    private readonly DiscoveredDevice _device;
-    private bool _isConnected;
-    private bool _isReconnecting;
-    private bool _isConnecting;
+    private string _deviceName = "";
+    private string _macAddress = "";
     private bool _isRestoringMode;
     private ControllerMode _mode = ControllerMode.Ds4;
 
-    public string IpAddress => _device.IpString;
-    public string DeviceName => _device.DeviceName;
+    public ObservableCollection<DeviceEndpointViewModel> Endpoints { get; } = new();
 
-    public bool IsConnected
+    public DeviceCardViewModel(DiscoveredDevice device)
     {
-        get => _isConnected;
+        AddOrUpdateEndpoint(device);
+    }
+
+    public string DeviceName
+    {
+        get => _deviceName;
         set
         {
-            if (_isConnected == value) return;
-            _isConnected = value;
+            if (_deviceName == value) return;
+            _deviceName = value;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(ShowConnect));
-            OnPropertyChanged(nameof(ShowControls));
-            OnPropertyChanged(nameof(ShowReconnecting));
-            OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(Title));
+            OnPropertyChanged(nameof(Subtitle));
+            OnPropertyChanged(nameof(HasSubtitle));
         }
     }
 
-    public bool IsReconnecting
+    public string MacAddress
     {
-        get => _isReconnecting;
+        get => _macAddress;
         set
         {
-            if (_isReconnecting == value) return;
-            _isReconnecting = value;
+            if (_macAddress == value) return;
+            _macAddress = value;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(ShowConnect));
-            OnPropertyChanged(nameof(ShowControls));
-            OnPropertyChanged(nameof(ShowReconnecting));
-            OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(ModeKey));
         }
     }
 
-    public bool IsConnecting
-    {
-        get => _isConnecting;
-        set
-        {
-            if (_isConnecting == value) return;
-            _isConnecting = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(ShowConnect));
-            OnPropertyChanged(nameof(ShowControls));
-            OnPropertyChanged(nameof(ShowReconnecting));
-            OnPropertyChanged(nameof(StatusText));
-        }
-    }
+    /// <summary>Persistence key for the emulated controller type: the MAC when
+    /// known, otherwise the first endpoint's IP.</summary>
+    public string ModeKey => string.IsNullOrWhiteSpace(MacAddress)
+        ? (Endpoints.Count > 0 ? Endpoints[0].IpAddress : "")
+        : MacAddress;
 
-    public bool ShowConnect => !IsConnected && !IsReconnecting && !IsConnecting;
-    public bool ShowControls => IsConnected;
-    public bool ShowReconnecting => IsReconnecting;
+    public bool HasMultipleEndpoints => Endpoints.Count > 1;
 
-    public string StatusText => IsConnected ? "已连接" : IsReconnecting || IsConnecting ? "尝试连接" : "可连接";
+    /// <summary>Large layout while several IPs are available and none is in use.</summary>
+    public bool IsExpanded => HasMultipleEndpoints && !Endpoints.Any(e => e.IsBusy);
+    public bool IsCollapsed => !IsExpanded;
+
+    public DeviceEndpointViewModel? ActiveEndpoint =>
+        Endpoints.FirstOrDefault(e => e.IsBusy) ?? Endpoints.FirstOrDefault();
+
+    public string ActiveIpAddress => ActiveEndpoint?.IpAddress ?? "";
+    public string Title => string.IsNullOrWhiteSpace(DeviceName) ? ActiveIpAddress : DeviceName;
+
+    public string Subtitle => IsExpanded
+        ? $"{Endpoints.Count} 个可用连接"
+        : string.IsNullOrWhiteSpace(DeviceName) ? "" : ActiveIpAddress;
+    public bool HasSubtitle => !string.IsNullOrEmpty(Subtitle);
+
+    public bool ShowConnect => ActiveEndpoint?.ShowConnect ?? false;
+    public bool ShowControls => ActiveEndpoint?.ShowControls ?? false;
+    public bool ShowReconnecting => ActiveEndpoint?.ShowReconnecting ?? false;
+    public string StatusText => ActiveEndpoint?.StatusText ?? "可连接";
 
     public ControllerMode Mode
     {
@@ -91,8 +101,6 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         finally { _isRestoringMode = false; }
     }
 
-    internal DiscoveredDevice Device => _device;
-
     public static List<ControllerMode> AllModes { get; } = new()
     {
         ControllerMode.Ds4,
@@ -108,9 +116,56 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         _ => "?",
     };
 
-    public DeviceCardViewModel(DiscoveredDevice device)
+    public DeviceEndpointViewModel AddOrUpdateEndpoint(DiscoveredDevice device)
     {
-        _device = device;
+        var existing = FindEndpoint(device.IpString);
+        if (existing != null) return existing;
+
+        var ep = new DeviceEndpointViewModel(device);
+        ep.PropertyChanged += OnEndpointPropertyChanged;
+        Endpoints.Add(ep);
+
+        if (!string.IsNullOrWhiteSpace(device.DeviceName)) DeviceName = device.DeviceName;
+        if (!string.IsNullOrWhiteSpace(device.MacAddress)) MacAddress = device.MacAddress;
+        RaiseGroupingChanged();
+        return ep;
+    }
+
+    public void RemoveEndpoint(DeviceEndpointViewModel ep)
+    {
+        ep.PropertyChanged -= OnEndpointPropertyChanged;
+        Endpoints.Remove(ep);
+        RaiseGroupingChanged();
+    }
+
+    public DeviceEndpointViewModel? FindEndpoint(string ip) =>
+        Endpoints.FirstOrDefault(e => e.IpAddress == ip);
+
+    private void OnEndpointPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(DeviceEndpointViewModel.IsConnected)
+            or nameof(DeviceEndpointViewModel.IsConnecting)
+            or nameof(DeviceEndpointViewModel.IsReconnecting))
+        {
+            RaiseGroupingChanged();
+        }
+    }
+
+    private void RaiseGroupingChanged()
+    {
+        OnPropertyChanged(nameof(ModeKey));
+        OnPropertyChanged(nameof(HasMultipleEndpoints));
+        OnPropertyChanged(nameof(IsExpanded));
+        OnPropertyChanged(nameof(IsCollapsed));
+        OnPropertyChanged(nameof(ActiveEndpoint));
+        OnPropertyChanged(nameof(ActiveIpAddress));
+        OnPropertyChanged(nameof(Title));
+        OnPropertyChanged(nameof(Subtitle));
+        OnPropertyChanged(nameof(HasSubtitle));
+        OnPropertyChanged(nameof(ShowConnect));
+        OnPropertyChanged(nameof(ShowControls));
+        OnPropertyChanged(nameof(ShowReconnecting));
+        OnPropertyChanged(nameof(StatusText));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

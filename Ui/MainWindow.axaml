@@ -91,7 +91,6 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="IP 地址" VerticalAlignment="Center" FontSize="13" Margin="0,0,8,0" />
                 <TextBox Grid.Column="1" Text="{Binding ManualIp, UpdateSourceTrigger=PropertyChanged}"
@@ -103,10 +102,7 @@
                 <Button Grid.Column="3" Content="刷新" Width="60" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnRefreshClick" />
-                <Button Grid.Column="4" Content="调试" Width="50" Height="30" Margin="8,0,0,0"
-                        Classes="action"
-                        Click="OnDebugClick" />
-                <Button Grid.Column="5" Content="关于" Width="50" Height="30" Margin="8,0,0,0"
+                <Button Grid.Column="4" Content="关于" Width="50" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnAboutClick" />
             </Grid>
@@ -117,17 +113,54 @@
             <ItemsControl ItemsSource="{Binding DeviceCards}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <Border Classes="card">
+                      <StackPanel>
+                        <!-- Expanded: same MAC reachable over several IPs and none
+                             connected. Each IP gets its own connect button. -->
+                        <Border Classes="card" IsVisible="{Binding IsExpanded}">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding Subtitle}" FontSize="11" Foreground="#9D9D9D" Margin="0,2,0,0"
+                                           IsVisible="{Binding HasSubtitle}" />
+
+                                <ItemsControl ItemsSource="{Binding Endpoints}" Margin="0,8,0,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,3,0,3">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="{Binding IpAddress}" FontSize="13"
+                                                           VerticalAlignment="Center" />
+                                                <Button Grid.Column="1" Content="连接" Width="70" Height="28"
+                                                        Classes="action"
+                                                        IsVisible="{Binding ShowConnect}"
+                                                        Click="OnEndpointConnectClick" />
+                                                <Button Grid.Column="1" Content="连接中..." Width="70" Height="28"
+                                                        Classes="action"
+                                                        IsVisible="{Binding IsConnecting}" />
+                                                <Button Grid.Column="1" Content="断开" Width="70" Height="28"
+                                                        Classes="danger"
+                                                        IsVisible="{Binding ShowReconnecting}"
+                                                        Click="OnEndpointDisconnectClick" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Collapsed (original layout): a single IP, or one already in use. -->
+                        <Border Classes="card" IsVisible="{Binding IsCollapsed}">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
 
-                                <!-- Device info -->
                                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding DeviceName}" FontSize="14" FontWeight="SemiBold" />
-                                    <TextBlock Text="{Binding IpAddress}" FontSize="11" Foreground="#9D9D9D" Margin="0,2,0,0" />
+                                    <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding ActiveIpAddress}" FontSize="11" Foreground="#9D9D9D" Margin="0,2,0,0" />
                                     <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#9D9D9D" Margin="0,2,0,0" />
                                 </StackPanel>
 
@@ -164,6 +197,7 @@
                                 </StackPanel>
                             </Grid>
                         </Border>
+                      </StackPanel>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
                 <ItemsControl.ItemsPanel>

@@ -57,6 +57,7 @@ public class MainViewModel : INotifyPropertyChanged
         }
         _network!.SavedModeResolver = (DiscoveredDevice d) => _modeStore.Get(d.ModeKey);
         _network.OnDeviceDiscovered += OnDeviceDiscovered;
+        _network.OnDeviceInfoUpdated += OnDeviceInfoUpdated;
         _network.OnSessionStarted += OnSessionStarted;
         _network.OnSessionEnded += OnSessionEnded;
         _network.OnSessionConnectionLost += OnSessionConnectionLost;
@@ -134,13 +135,21 @@ public class MainViewModel : INotifyPropertyChanged
         dlg.ShowDialog(owner);
     }
 
-    public async Task ConnectAsync(DeviceCardViewModel card)
+    public Task ConnectAsync(DeviceCardViewModel card)
+    {
+        var ep = card.ActiveEndpoint;
+        return ep == null ? Task.CompletedTask : ConnectEndpointAsync(ep);
+    }
+
+    public async Task ConnectEndpointAsync(DeviceEndpointViewModel ep)
     {
         if (_network == null) return;
-        var device = card.Device;
+        var device = ep.Device;
         var ip = device.IpString;
+        if (_sessionMap.ContainsKey(ip)) return;
+
         _initialConnecting.Add(ip);
-        card.IsConnecting = true;
+        ep.IsConnecting = true;
         StatusText = $"正在连接到 {ip}...";
         var session = await _network.ConnectAsync(device);
         if (session != null)
@@ -151,14 +160,20 @@ public class MainViewModel : INotifyPropertyChanged
         else
         {
             _initialConnecting.Remove(ip);
-            card.IsConnecting = false;
+            ep.IsConnecting = false;
             StatusText = $"连接失败: {ip}";
         }
     }
 
-    public async Task DisconnectAsync(DeviceCardViewModel card)
+    public Task DisconnectAsync(DeviceCardViewModel card)
     {
-        var ip = card.IpAddress;
+        var ep = card.ActiveEndpoint;
+        return ep == null ? Task.CompletedTask : DisconnectEndpointAsync(ep);
+    }
+
+    public async Task DisconnectEndpointAsync(DeviceEndpointViewModel ep)
+    {
+        var ip = ep.IpAddress;
         _initialConnecting.Remove(ip);
         if (_sessionMap.TryGetValue(ip, out var session))
         {
@@ -172,20 +187,22 @@ public class MainViewModel : INotifyPropertyChanged
             }
             _sessionMap.Remove(ip);
         }
-        card.IsConnected = false;
-        card.IsConnecting = false;
-        card.IsReconnecting = false;
+        ep.IsConnected = false;
+        ep.IsConnecting = false;
+        ep.IsReconnecting = false;
     }
 
     public async Task SetModeAsync(DeviceCardViewModel card, ControllerMode mode)
     {
-        var ip = card.IpAddress;
+        var ep = card.ActiveEndpoint;
+        if (ep == null) return;
+        var ip = ep.IpAddress;
 
         if (_sessionMap.TryGetValue(ip, out var session))
         {
             ControllerMode actualMode = await session.SetControllerModeAsync(mode);
             card.Mode = actualMode;
-            _modeStore.Set(card.Device.ModeKey, actualMode);
+            _modeStore.Set(card.ModeKey, actualMode);
             if (actualMode != mode)
             {
                 StatusText = "HIDMaestro 驱动不可用，已回退到 DS4 模式";
@@ -194,7 +211,7 @@ public class MainViewModel : INotifyPropertyChanged
         else
         {
             card.Mode = mode;
-            _modeStore.Set(card.Device.ModeKey, mode);
+            _modeStore.Set(card.ModeKey, mode);
         }
     }
 
@@ -213,15 +230,17 @@ public class MainViewModel : INotifyPropertyChanged
         {
             Sessions.Add(session);
             _sessionMap[session.Device.IpString] = session;
-            DeviceCards.Add(CreateCard(session.Device));
         }
 
         foreach (var device in _network.DiscoveredDevices)
         {
-            if (!_sessionMap.ContainsKey(device.IpString))
-            {
-                DeviceCards.Add(CreateCard(device));
-            }
+            AddOrUpdateCard(device);
+        }
+
+        foreach (var (ip, _) in _sessionMap)
+        {
+            var ep = FindEndpoint(ip);
+            if (ep != null) ep.IsConnected = true;
         }
 
         OnPropertyChanged(nameof(HasActiveSession));
@@ -249,61 +268,116 @@ public class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        var device = new DiscoveredDevice
-        {
-            DeviceName = ip,
-            IpAddress = addr,
-        };
-
-        var existing = DeviceCards.FirstOrDefault(c => c.IpAddress == ip);
-        DeviceCardViewModel card;
+        var existing = FindEndpoint(ip);
+        DeviceEndpointViewModel ep;
         if (existing != null)
         {
-            card = existing;
+            ep = existing;
         }
         else
         {
-            card = CreateCard(device);
+            var device = new DiscoveredDevice { IpAddress = addr };
+            var card = new DeviceCardViewModel(device);
+            ApplySavedMode(card);
             DeviceCards.Add(card);
+            ep = card.Endpoints[0];
         }
 
-        _initialConnecting.Add(ip);
-        card.IsConnecting = true;
-        StatusText = $"正在连接到 {ip}...";
-        var session = await _network.ConnectAsync(device);
-        if (session != null)
-        {
-            _sessionMap[ip] = session;
-            StatusText = $"已连接: {ip}";
-        }
-        else
-        {
-            _initialConnecting.Remove(ip);
-            card.IsConnecting = false;
-            StatusText = $"连接失败: {ip}";
-        }
+        await ConnectEndpointAsync(ep);
     }
 
-    private DeviceCardViewModel CreateCard(DiscoveredDevice device)
+    private void ApplySavedMode(DeviceCardViewModel card)
     {
-        var card = new DeviceCardViewModel(device);
-        var saved = _modeStore.Get(device.ModeKey);
+        var saved = _modeStore.Get(card.ModeKey);
         if (saved != null)
             card.Mode = saved.Value;
+    }
+
+    private DeviceCardViewModel AddOrUpdateCard(DiscoveredDevice device)
+    {
+        var key = device.GroupKey;
+        var card = DeviceCards.FirstOrDefault(c => c.ModeKey == key);
+        if (card == null)
+        {
+            card = new DeviceCardViewModel(device);
+            ApplySavedMode(card);
+            DeviceCards.Add(card);
+        }
+        else
+        {
+            card.AddOrUpdateEndpoint(device);
+            if (!string.IsNullOrWhiteSpace(device.DeviceName)) card.DeviceName = device.DeviceName;
+            if (!string.IsNullOrWhiteSpace(device.MacAddress)) card.MacAddress = device.MacAddress;
+        }
         return card;
     }
+
+    private DeviceEndpointViewModel? FindEndpoint(string ip)
+    {
+        foreach (var card in DeviceCards)
+        {
+            var ep = card.FindEndpoint(ip);
+            if (ep != null) return ep;
+        }
+        return null;
+    }
+
+    private DeviceCardViewModel? FindCardByIp(string ip) =>
+        DeviceCards.FirstOrDefault(c => c.FindEndpoint(ip) != null);
 
     private void OnDeviceDiscovered(DiscoveredDevice device)
     {
         UiInvoke(() =>
         {
-            var ip = device.IpString;
-            if (!DeviceCards.Any(c => c.IpAddress == ip))
-            {
-                DeviceCards.Add(CreateCard(device));
+            var existed = DeviceCards.Any(c => c.ModeKey == device.GroupKey && c.FindEndpoint(device.IpString) != null);
+            AddOrUpdateCard(device);
+            if (!existed)
                 StatusText = $"发现设备: {device.IpString}";
+        });
+    }
+
+    private void OnDeviceInfoUpdated(DiscoveredDevice device)
+    {
+        UiInvoke(() =>
+        {
+            var ep = FindEndpoint(device.IpString);
+            if (ep == null) return;
+            var card = FindCardByIp(device.IpString);
+            if (card == null) return;
+
+            if (!string.IsNullOrWhiteSpace(device.DeviceName)) card.DeviceName = device.DeviceName;
+            if (!string.IsNullOrWhiteSpace(device.MacAddress)) card.MacAddress = device.MacAddress;
+
+            // The handshake may reveal a MAC that another (broadcast) card already
+            // owns. Merge the manual card into the discovered one so a device is
+            // never listed twice.
+            var mac = device.MacAddress;
+            if (!string.IsNullOrWhiteSpace(mac))
+            {
+                var other = DeviceCards.FirstOrDefault(c => c != card && c.ModeKey == mac);
+                if (other != null)
+                {
+                    MergeCards(other, card);
+                }
             }
         });
+    }
+
+    /// <summary>Move every endpoint of <paramref name="remove"/> into
+    /// <paramref name="keep"/> and drop the now-empty card.</summary>
+    private static void MergeCards(DeviceCardViewModel keep, DeviceCardViewModel remove)
+    {
+        foreach (var ep in remove.Endpoints.ToList())
+        {
+            var device = ep.Device;
+            remove.RemoveEndpoint(ep);
+            var kep = keep.AddOrUpdateEndpoint(device);
+            if (!string.IsNullOrWhiteSpace(device.DeviceName)) keep.DeviceName = device.DeviceName;
+            if (!string.IsNullOrWhiteSpace(device.MacAddress)) keep.MacAddress = device.MacAddress;
+            kep.IsConnected = ep.IsConnected;
+            kep.IsConnecting = ep.IsConnecting;
+            kep.IsReconnecting = ep.IsReconnecting;
+        }
     }
 
     private void OnSessionStarted(GamepadSession session)
@@ -318,14 +392,19 @@ public class MainViewModel : INotifyPropertyChanged
             }
             _sessionMap[ip] = session;
             OnPropertyChanged(nameof(HasActiveSession));
-            var card = DeviceCards.FirstOrDefault(c => c.IpAddress == ip);
-            if (card != null)
+
+            var card = AddOrUpdateCard(session.Device);
+            if (!string.IsNullOrWhiteSpace(session.Device.DeviceName)) card.DeviceName = session.Device.DeviceName;
+            if (!string.IsNullOrWhiteSpace(session.Device.MacAddress)) card.MacAddress = session.Device.MacAddress;
+
+            var ep = card.FindEndpoint(ip);
+            if (ep != null)
             {
-                card.IsConnected = true;
-                card.IsConnecting = false;
-                card.IsReconnecting = false;
-                card.SetModeRestored(session.Mode);
+                ep.IsConnected = true;
+                ep.IsConnecting = false;
+                ep.IsReconnecting = false;
             }
+            card.SetModeRestored(session.Mode);
         });
     }
 
@@ -338,12 +417,17 @@ public class MainViewModel : INotifyPropertyChanged
             var ip = session.Device.IpString;
             _initialConnecting.Remove(ip);
             _sessionMap.Remove(ip);
-            var card = DeviceCards.FirstOrDefault(c => c.IpAddress == ip);
+
+            var card = FindCardByIp(ip);
+            var ep = card?.FindEndpoint(ip);
+            if (ep != null)
+            {
+                ep.IsConnected = false;
+                ep.IsConnecting = false;
+                ep.IsReconnecting = false;
+            }
             if (card != null)
             {
-                card.IsConnected = false;
-                card.IsConnecting = false;
-                card.IsReconnecting = false;
                 card.SetModeRestored(ControllerMode.Ds4);
             }
             StatusText = $"已断开: {ip}";
@@ -354,11 +438,12 @@ public class MainViewModel : INotifyPropertyChanged
     {
         UiInvoke(() =>
         {
-            var card = DeviceCards.FirstOrDefault(c => c.IpAddress == ip);
-            if (card != null)
+            var card = FindCardByIp(ip);
+            var ep = card?.FindEndpoint(ip);
+            if (ep != null)
             {
-                card.IsConnected = false;
-                card.IsReconnecting = true;
+                ep.IsConnected = false;
+                ep.IsReconnecting = true;
             }
             StatusText = $"连接丢失: {ip}";
         });
@@ -376,6 +461,7 @@ public class MainViewModel : INotifyPropertyChanged
     {
         if (_network == null) return;
         _network.OnDeviceDiscovered -= OnDeviceDiscovered;
+        _network.OnDeviceInfoUpdated -= OnDeviceInfoUpdated;
         _network.OnSessionStarted -= OnSessionStarted;
         _network.OnSessionEnded -= OnSessionEnded;
         _network.OnSessionConnectionLost -= OnSessionConnectionLost;
