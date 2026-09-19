@@ -56,8 +56,6 @@ public class NetworkService : IDisposable
     {
         /// <summary>Idle — poll ~100ms (10 Hz). Used when only input is present.</summary>
         Idle = 0,
-        /// <summary>Vibration echo is being sent — poll ~8ms (125 Hz).</summary>
-        Vibration,
         /// <summary>Audio PCM is being drained — poll ~8ms (125 Hz).</summary>
         Audio,
     }
@@ -329,13 +327,6 @@ public class NetworkService : IDisposable
         }
     }
 
-    /// <summary>Mark vibration send active — raises priority to Vibration.</summary>
-    private void OnVibrationSendStart()
-    {
-        SetSendPriority(SendPriority.Vibration);
-        _sendEvent.Set();
-    }
-
     /// <summary>Mark audio drain active — raises priority to Audio.</summary>
     private void OnAudioSendStart()
     {
@@ -500,7 +491,6 @@ public class NetworkService : IDisposable
             var session = new GamepadSession(
                 device,
                 msg => { EnqueueSend(phoneEp, TypeServerToClient, msg); return Task.CompletedTask; },
-                OnVibrationSendStart,
                 OnAudioSendStart,
                 _hmContext,
                 HidMaestroAvailable,

@@ -202,7 +202,6 @@ public class GamepadSession : IDisposable
     private const float Ds4AccelMaxOutput = 32760f;
 
     private readonly Func<IMessage, Task> _sendToPhone;
-    private readonly Action _onVibrationSendStart;
     private readonly Action _onAudioSendStart;
     private readonly HMContext _hmContext;
     private readonly bool _hidMaestroAvailable;
@@ -312,11 +311,10 @@ public class GamepadSession : IDisposable
         }
     }
 
-    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, Action onVibrationSendStart, Action onAudioSendStart, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
+    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, Action onAudioSendStart, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
     {
         Device = device;
         _sendToPhone = sendToPhone;
-        _onVibrationSendStart = onVibrationSendStart;
         _onAudioSendStart = onAudioSendStart;
         _hmContext = hmContext;
         _hidMaestroAvailable = hidMaestroAvailable;
@@ -1531,19 +1529,6 @@ public class GamepadSession : IDisposable
         buf[offset + 1] = (byte)(cx & 0xFF);
         buf[offset + 2] = (byte)(((cx >> 8) & 0x0F) | ((cy & 0x0F) << 4));
         buf[offset + 3] = (byte)((cy >> 4) & 0xFF);
-    }
-
-    private async Task SendVibrationAsync(byte large, byte small, bool raiseSendPriority = false)
-    {
-        if (raiseSendPriority) _onVibrationSendStart?.Invoke();
-        await SendAsync(new ServerToClient
-        {
-            Vibration = new Vibration
-            {
-                LargeMotor = large,
-                SmallMotor = small
-            }
-        });
     }
 
     private async Task SendCompactFrameAsync(
