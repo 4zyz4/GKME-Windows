@@ -2,7 +2,7 @@
 ; Requires InnoSetup 6+  https://jrsoftware.org/isdl.php
 
 #define MyAppName "GKME"
-#define MyAppVersion "4.0.0"
+#include "version.iss"
 #define MyAppPublisher "4zyz4"
 #define MyAppURL ""
 #define MyAppExeName "GKME.exe"
@@ -58,7 +58,7 @@ Name: "{group}\Uninstall GKME"; Filename: "{uninstallexe}"
 [Code]
 const
   MyAppName = 'GKME';
-  MyAppVersion = '4.0.0';
+  MyAppVersion = '{#MyAppVersion}';
 
 var
   InfoPage: TWizardPage;
