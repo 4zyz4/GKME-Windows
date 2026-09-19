@@ -366,3 +366,4 @@ FodyWeavers.xsd
 # Installer build output
 Build/
 /Install/Output
+/Install/version.iss
