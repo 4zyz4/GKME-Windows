@@ -1,0 +1,99 @@
+<Window x:Class="GKME.Ui.TriggerDebugWindow" xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="clr-namespace:GKME.Ui"
+        Title="自适应扳机调试"
+        Width="840" Height="640"
+        WindowStartupLocation="CenterOwner"
+        Background="#1E1E1E"
+        Foreground="#E0E0E0">
+    <Window.Styles>
+        <Style Selector="Border.dbgcard">
+            <Setter Property="Background" Value="#2D2D2D" />
+            <Setter Property="BorderBrush" Value="#3E3E3E" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="14" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+
+        <Style Selector="TextBlock.section">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#9CDCFE" />
+            <Setter Property="Margin" Value="0,10,0,4" />
+        </Style>
+
+        <Style Selector="TextBlock.mono">
+            <Setter Property="FontFamily" Value="Consolas,Cascadia Mono,monospace" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="#D7D7D7" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <Style Selector="TextBlock.label">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="#9D9D9D" />
+        </Style>
+    </Window.Styles>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,12" FontSize="12" Foreground="#9D9D9D"
+                   Text="实时显示 HIDMaestro 驱动收到的输出报文字节，以及解析出的左右自适应扳机效果块（各 11 字节）。仅在连接后、主机向虚拟控制器写入数据时刷新。" />
+
+        <TextBlock Grid.Row="1" Text="当前没有已连接的设备" FontSize="14" Foreground="#9D9D9D"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   IsVisible="{Binding HasEntries, Converter={x:Static ui:InvertBoolConverter.Instance}}" />
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                      IsVisible="{Binding HasEntries}">
+            <ItemsControl ItemsSource="{Binding Entries}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Classes="dbgcard">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding Subtitle}" FontSize="11" Foreground="#9D9D9D" Margin="0,2,0,0" />
+
+                                <TextBlock Classes="section" Text="最新驱动输出报文" />
+                                <TextBlock Classes="label" Text="{Binding TimeText}" />
+                                <TextBlock Classes="label" Text="{Binding RawInfoText}" Margin="0,2,0,0" />
+                                <TextBlock Classes="mono" Text="{Binding RawHex}" Margin="0,4,0,0" />
+                                <TextBlock Classes="label" Text="{Binding CrcText}" Margin="0,4,0,0" />
+
+                                <TextBlock Classes="section" Text="自适应扳机效果" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                        <TextBlock Classes="label" Text="左扳机 (L2)" FontWeight="SemiBold" />
+                                        <TextBlock Classes="mono" Text="{Binding LeftHex}" Margin="0,4,0,0" />
+                                        <TextBlock Classes="label" Text="{Binding LeftEffectText}" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                        <TextBlock Classes="label" Text="右扳机 (R2)" FontWeight="SemiBold" />
+                                        <TextBlock Classes="mono" Text="{Binding RightHex}" Margin="0,4,0,0" />
+                                        <TextBlock Classes="label" Text="{Binding RightEffectText}" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</Window>
