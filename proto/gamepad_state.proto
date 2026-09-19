@@ -16,6 +16,7 @@ message ClientToServer {
 message Hello {
   uint32 protocol_version = 1;
   string device_name = 2;
+  uint32 controller_index = 4;
 }
 
 message GamepadInput {
@@ -35,6 +36,10 @@ message GamepadInput {
   float accel_z = 14;
   uint32 battery_level = 16;
   bool is_charging = 17;
+  uint32 touchpad_x = 18;
+  uint32 touchpad_y = 19;
+  bool touchpad_touch = 20;
+  bool touchpad_click = 21;
   repeated TouchPoint touches = 22;
   // Mouse fields for high-precision scroll and relative movement
   sint32 mouse_dx = 23;
@@ -114,11 +119,13 @@ message Disconnect {
   string reason = 1;
 }
 
-/// Single UDP packet that packs vibration + trigger effects + LED + test tone
-/// into one envelope so the Android side can process everything atomically.
+/// Single UDP packet that packs vibration + trigger effects + LED + audio
+/// into one envelope so the Android side can process everything atomically
+/// without racing separate bulkTransfers to the same HID endpoint.
 message CompactFrame {
   Vibration vibration = 1;
   TriggerEffects trigger_effects = 2;
   LedState led_state = 3;
-  TestTone test_tone = 4;
+  AudioFrame audio_frame = 4;
+  TestTone test_tone = 5;
 }
