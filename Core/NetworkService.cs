@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using GamepadEmu.Protocol;
+using GKME.Core.Usb;
 using Google.Protobuf;
 using HIDMaestro;
 
@@ -17,15 +18,27 @@ public class NetworkService : IDisposable
     public const int Port = 37284;
     private const string BroadcastPrefix = "GKME|";
 
-    private const byte TypeClientToServer = 0x00;
-    private const byte TypeServerToClient = 0x01;
-    private const byte TypeGamepadInput = 0x02;
+    public const byte TypeClientToServer = 0x00;
+    public const byte TypeServerToClient = 0x01;
+    public const byte TypeGamepadInput = 0x02;
 
     private readonly ConcurrentDictionary<string, DiscoveredDevice> _discovered = new();
     private readonly ConcurrentDictionary<string, GamepadSession> _sessions = new();
     private readonly HMContext _hmContext = new();
 
+    // ── USB/ADB transport ──
+    private readonly AdbManager _adb = new();
+    private readonly object _usbLock = new();
+    private readonly Dictionary<string, DiscoveredDevice> _usbDiscovered = new();
+    private readonly Dictionary<string, UsbConnection> _usbConnections = new();
+    private Thread? _usbScanThread;
+
     public bool HidMaestroAvailable { get; private set; }
+
+    /// <summary>True once an adb executable has been located. USB discovery only
+    /// produces cards while this is true.</summary>
+    public bool UsbAdbAvailable => _adb.Available;
+    public string? UsbAdbError => _adb.LastError;
 
     /// <summary>Resolves a previously persisted controller mode for a device
     /// (keyed by <see cref="DiscoveredDevice.ModeKey"/>), or null when none is
@@ -152,8 +165,16 @@ public class NetworkService : IDisposable
             f.SetValue(obj, value);
     }
 
-    public IReadOnlyCollection<DiscoveredDevice> DiscoveredDevices =>
-        _discovered.Values.Where(d => (DateTime.UtcNow - d.LastSeen).TotalSeconds < 15).ToList();
+    public IReadOnlyCollection<DiscoveredDevice> DiscoveredDevices
+    {
+        get
+        {
+            var now = DateTime.UtcNow;
+            var list = _discovered.Values.Where(d => (now - d.LastSeen).TotalSeconds < 15).ToList();
+            lock (_usbLock) list.AddRange(_usbDiscovered.Values);
+            return list;
+        }
+    }
 
     public IReadOnlyCollection<GamepadSession> ActiveSessions => _sessions.Values.ToList();
 
@@ -204,6 +225,86 @@ public class NetworkService : IDisposable
             Priority = ThreadPriority.AboveNormal,
         };
         _sendThread.Start();
+
+        StartUsbScan();
+    }
+
+    private void StartUsbScan()
+    {
+        if (_usbScanThread != null) return;
+        _usbScanThread = new Thread(UsbScanLoop)
+        {
+            IsBackground = true,
+            Name = "HMUsbScan",
+            Priority = ThreadPriority.BelowNormal,
+        };
+        _usbScanThread.Start();
+    }
+
+    /// <summary>Polls `adb devices` and publishes each attached phone as a USB
+    /// device card. Retries locating adb (it may be installed / dropped in after
+    /// launch) without spamming the log.</summary>
+    private void UsbScanLoop()
+    {
+        while (!_stopped && !_adb.Available)
+        {
+            try
+            {
+                if (_adb.TryInitialize() && _adb.EnsureServer()) break;
+            }
+            catch { }
+            Thread.Sleep(3000);
+        }
+        if (!_adb.Available) return;
+
+        while (!_stopped)
+        {
+            try
+            {
+                var devices = _adb.ListDevices();
+                var seen = new HashSet<string>();
+                foreach (var d in devices)
+                {
+                    var key = $"usb:{d.Serial}";
+                    seen.Add(key);
+                    DiscoveredDevice? publish = null;
+                    lock (_usbLock)
+                    {
+                        if (!_usbDiscovered.TryGetValue(key, out var dev))
+                        {
+                            dev = new DiscoveredDevice
+                            {
+                                DeviceName = d.IsReady ? d.DisplayName : $"{d.DisplayName}（{d.State}）",
+                                IpAddress = IPAddress.Loopback,
+                                IsUsb = true,
+                                AdbSerial = d.Serial,
+                                AdbState = d.State,
+                            };
+                            _usbDiscovered[key] = dev;
+                            publish = dev;
+                        }
+                        else
+                        {
+                            dev.LastSeen = DateTime.UtcNow;
+                            dev.AdbState = d.State;
+                            dev.DeviceName = d.IsReady ? d.DisplayName : $"{d.DisplayName}（{d.State}）";
+                        }
+                    }
+                    if (publish != null)
+                        OnDeviceDiscovered?.Invoke(publish);
+                }
+
+                lock (_usbLock)
+                {
+                    foreach (var key in _usbDiscovered.Keys.ToList())
+                    {
+                        if (!seen.Contains(key)) _usbDiscovered.Remove(key);
+                    }
+                }
+            }
+            catch { }
+            Thread.Sleep(1500);
+        }
     }
 
     public void StopDiscovery()
@@ -223,6 +324,11 @@ public class NetworkService : IDisposable
         {
             _sendThread.Join();
             _sendThread = null;
+        }
+        if (_usbScanThread != null)
+        {
+            try { _usbScanThread.Join(2500); } catch { }
+            _usbScanThread = null;
         }
     }
 
@@ -464,6 +570,8 @@ public class NetworkService : IDisposable
 
     public async Task<GamepadSession?> ConnectAsync(DiscoveredDevice device, int connectTimeoutMs = 5000)
     {
+        if (device.IsUsb) return await ConnectUsbAsync(device, connectTimeoutMs);
+
         var key = device.Key;
         GamepadSession? oldSession = null;
 
@@ -554,6 +662,136 @@ public class NetworkService : IDisposable
         }
     }
 
+    /// <summary>Connects to a phone over USB/ADB. Sets up a `tcp:0 -> tcp:37284`
+    /// forward and opens a TCP connection to the assigned loopback port; the
+    /// phone accepts it in its USB TCP server.</summary>
+    private async Task<GamepadSession?> ConnectUsbAsync(DiscoveredDevice device, int connectTimeoutMs)
+    {
+        var key = device.Key;
+        GamepadSession? oldSession = null;
+
+        lock (_connectLock)
+        {
+            if (_connecting.Contains(key)) return null;
+            if (_sessions.TryGetValue(key, out var existing) && existing.IsConnected)
+                return existing;
+            _sessions.TryRemove(key, out oldSession);
+            _connecting.Add(key);
+        }
+
+        TcpClient? client = null;
+        int? localPort = null;
+        UsbConnection? usbConn = null;
+        try
+        {
+            if (oldSession != null)
+            {
+                oldSession.Disconnect();
+                await oldSession.WaitForCleanupAsync();
+            }
+            await DrainRetiredAsync(key);
+
+            if (string.IsNullOrEmpty(device.AdbSerial)) return null;
+            if (!_adb.Available && !_adb.TryInitialize()) return null;
+            _adb.EnsureServer();
+
+            localPort = _adb.AddForward(device.AdbSerial, AdbManager.DevicePort);
+            if (localPort == null) return null;
+
+            client = new TcpClient();
+            var connectTask = client.ConnectAsync(IPAddress.Loopback, localPort.Value);
+            var completed = await Task.WhenAny(connectTask, Task.Delay(connectTimeoutMs));
+            if (completed != connectTask)
+                return null;
+            await connectTask;
+            client.NoDelay = true;
+
+            usbConn = new UsbConnection(client);
+
+            // The live device carries the assigned local port so the forward can
+            // be removed again on disconnect.
+            var liveDevice = new DiscoveredDevice
+            {
+                DeviceName = device.DeviceName,
+                MacAddress = device.MacAddress,
+                IpAddress = IPAddress.Loopback,
+                Port = localPort.Value,
+                IsUsb = true,
+                AdbSerial = device.AdbSerial,
+                AdbState = device.AdbState,
+            };
+
+            var initialMode = SavedModeResolver?.Invoke(liveDevice) ?? ControllerMode.Ds4;
+            var session = new GamepadSession(
+                liveDevice,
+                msg => usbConn.SendAsync(TypeServerToClient, msg.ToByteArray()),
+                OnAudioSendStart,
+                _hmContext,
+                HidMaestroAvailable,
+                initialMode);
+
+            session.OnReady += s => OnSessionStarted?.Invoke(s);
+            session.OnConnectionLost += s => OnSessionConnectionLost?.Invoke(s.Device.IpString);
+            session.OnDeviceInfoUpdated += s => OnDeviceInfoUpdated?.Invoke(s.Device);
+            session.OnDisconnected += s =>
+            {
+                _sessions.TryRemove(s.Device.Key, out _);
+                Retire(s);
+                OnSessionEnded?.Invoke(s);
+            };
+
+            usbConn.OnClientToServer += cts => session.HandleClientToServer(cts);
+            usbConn.OnGamepadInput += input => session.ReportGamepadInput(input);
+            usbConn.OnClosed += () =>
+            {
+                UsbConnection? removed = null;
+                lock (_usbLock)
+                {
+                    if (_usbConnections.TryGetValue(key, out var c) && ReferenceEquals(c, usbConn))
+                    {
+                        _usbConnections.Remove(key);
+                        removed = c;
+                    }
+                }
+                removed?.Dispose();
+                if (!string.IsNullOrEmpty(device.AdbSerial) && localPort != null)
+                    _adb.RemoveForward(device.AdbSerial, localPort.Value);
+                try { session.Disconnect(); } catch { }
+            };
+
+            lock (_connectLock)
+            {
+                if (_sessions.TryGetValue(key, out var current))
+                {
+                    session.Disconnect();
+                    usbConn.Dispose();
+                    _adb.RemoveForward(device.AdbSerial, localPort.Value);
+                    return current;
+                }
+                _sessions[key] = session;
+            }
+            lock (_usbLock) _usbConnections[key] = usbConn;
+
+            session.Start();
+            _ = usbConn.StartReceiveLoopAsync();
+            await usbConn.SendAsync(TypeServerToClient, BuildServerHello().ToByteArray());
+
+            return session;
+        }
+        catch
+        {
+            usbConn?.Dispose();
+            try { client?.Dispose(); } catch { }
+            if (localPort != null && !string.IsNullOrEmpty(device.AdbSerial))
+                _adb.RemoveForward(device.AdbSerial, localPort.Value);
+            return null;
+        }
+        finally
+        {
+            lock (_connectLock) _connecting.Remove(key);
+        }
+    }
+
     public async Task SendToPhoneAsync(IPEndPoint ep, byte type, IMessage msg)
     {
         if (_disposed) return;
@@ -569,7 +807,22 @@ public class NetworkService : IDisposable
         {
             Disconnect = new Disconnect { Reason = "User disconnected" }
         };
-        EnqueueSend(new IPEndPoint(device.IpAddress, Port), TypeServerToClient, packet);
+        if (device.IsUsb)
+        {
+            await session.SendAsync(packet);
+            UsbConnection? conn = null;
+            lock (_usbLock)
+            {
+                if (_usbConnections.TryGetValue(key, out var c)) { _usbConnections.Remove(key); conn = c; }
+            }
+            conn?.Dispose();
+            if (!string.IsNullOrEmpty(device.AdbSerial))
+                _adb.RemoveForward(device.AdbSerial, device.Port);
+        }
+        else
+        {
+            EnqueueSend(new IPEndPoint(device.IpAddress, Port), TypeServerToClient, packet);
+        }
         session.Disconnect();
     }
 
@@ -578,6 +831,7 @@ public class NetworkService : IDisposable
         var tasks = new List<Task>();
         foreach (var session in _sessions.Values)
         {
+            CleanupUsbConnection(session);
             session.Disconnect();
             tasks.Add(session.WaitForCleanupAsync());
         }
@@ -589,9 +843,27 @@ public class NetworkService : IDisposable
     {
         foreach (var session in _sessions.Values)
         {
+            CleanupUsbConnection(session);
             session.Disconnect();
         }
         _sessions.Clear();
+    }
+
+    private void CleanupUsbConnection(GamepadSession session)
+    {
+        if (!session.Device.IsUsb) return;
+        UsbConnection? conn = null;
+        lock (_usbLock)
+        {
+            if (_usbConnections.TryGetValue(session.Device.Key, out var c))
+            {
+                _usbConnections.Remove(session.Device.Key);
+                conn = c;
+            }
+        }
+        conn?.Dispose();
+        if (!string.IsNullOrEmpty(session.Device.AdbSerial))
+            _adb.RemoveForward(session.Device.AdbSerial, session.Device.Port);
     }
 
     public void Refresh()
@@ -608,6 +880,7 @@ public class NetworkService : IDisposable
         _disposed = true;
         StopDiscovery();
         DisconnectAll();
+        _adb.Dispose();
         _hmContext.Dispose();
     }
 }

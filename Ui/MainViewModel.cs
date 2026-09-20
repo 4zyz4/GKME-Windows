@@ -296,7 +296,7 @@ public class MainViewModel : INotifyPropertyChanged
     private DeviceCardViewModel AddOrUpdateCard(DiscoveredDevice device)
     {
         var key = device.GroupKey;
-        var card = DeviceCards.FirstOrDefault(c => c.ModeKey == key);
+        var card = DeviceCards.FirstOrDefault(c => c.GroupKey == key);
         if (card == null)
         {
             card = new DeviceCardViewModel(device);
@@ -329,7 +329,7 @@ public class MainViewModel : INotifyPropertyChanged
     {
         UiInvoke(() =>
         {
-            var existed = DeviceCards.Any(c => c.ModeKey == device.GroupKey && c.FindEndpoint(device.IpString) != null);
+            var existed = DeviceCards.Any(c => c.GroupKey == device.GroupKey && c.FindEndpoint(device.IpString) != null);
             AddOrUpdateCard(device);
             if (!existed)
                 StatusText = $"发现设备: {device.IpString}";
@@ -350,11 +350,12 @@ public class MainViewModel : INotifyPropertyChanged
 
             // The handshake may reveal a MAC that another (broadcast) card already
             // owns. Merge the manual card into the discovered one so a device is
-            // never listed twice.
+            // never listed twice. USB cards keep their own identity (adb serial)
+            // and must never be folded into a WiFi card.
             var mac = device.MacAddress;
-            if (!string.IsNullOrWhiteSpace(mac))
+            if (!device.IsUsb && !string.IsNullOrWhiteSpace(mac))
             {
-                var other = DeviceCards.FirstOrDefault(c => c != card && c.ModeKey == mac);
+                var other = DeviceCards.FirstOrDefault(c => c != card && c.GroupKey == mac);
                 if (other != null)
                 {
                     MergeCards(other, card);

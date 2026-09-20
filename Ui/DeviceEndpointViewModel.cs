@@ -19,6 +19,8 @@ public class DeviceEndpointViewModel : INotifyPropertyChanged
 
     public DiscoveredDevice Device { get; }
     public string IpAddress => Device.IpString;
+    public string DisplayAddress => Device.DisplayAddress;
+    public bool IsUsb => Device.IsUsb;
 
     public bool IsConnected
     {

@@ -50,11 +50,12 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         }
     }
 
-    /// <summary>Persistence key for the emulated controller type: the MAC when
-    /// known, otherwise the first endpoint's IP.</summary>
-    public string ModeKey => string.IsNullOrWhiteSpace(MacAddress)
-        ? (Endpoints.Count > 0 ? Endpoints[0].IpAddress : "")
-        : MacAddress;
+    /// <summary>Stable identity of the physical device (MAC for WiFi, adb serial
+    /// for USB). Used to look up the card as endpoints come and go.</summary>
+    public string GroupKey => Endpoints.Count > 0 ? Endpoints[0].Device.GroupKey : "";
+
+    /// <summary>Persistence key for the emulated controller type.</summary>
+    public string ModeKey => GroupKey;
 
     public bool HasMultipleEndpoints => Endpoints.Count > 1;
 
@@ -65,7 +66,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
     public DeviceEndpointViewModel? ActiveEndpoint =>
         Endpoints.FirstOrDefault(e => e.IsBusy) ?? Endpoints.FirstOrDefault();
 
-    public string ActiveIpAddress => ActiveEndpoint?.IpAddress ?? "";
+    public string ActiveIpAddress => ActiveEndpoint?.DisplayAddress ?? "";
     public string Title => string.IsNullOrWhiteSpace(DeviceName) ? ActiveIpAddress : DeviceName;
 
     public string Subtitle => IsExpanded
