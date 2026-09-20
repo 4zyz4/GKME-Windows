@@ -14,6 +14,7 @@ internal static class StaticProfileRegistry
         s_profiles["xbox360-composite"] = BuildXbox360();
         s_profiles["dualsense-composite"] = BuildDualSense();
         s_profiles["dualshock-4-v2-composite"] = BuildDualShock4();
+        s_profiles["switch-pro-composite"] = BuildSwitchPro();
     }
 
     public static Dictionary<string, ControllerProfile> AllProfiles => s_profiles;
@@ -519,6 +520,96 @@ internal static class StaticProfileRegistry
                     }
                 }
             }
+        };
+    }
+
+    // Nintendo Switch Pro Controller, presented as a genuine USB HID pad
+    // (VID 0x057E / PID 0x2009) over the USB/IP backend so SDL3's
+    // HIDAPI_DriverSwitch takes the USB init path (0x80 handshake, 0x01
+    // subcommands) and eden sees a real Pro Controller with sensors and
+    // HD rumble. The HID report descriptor is DJm00n/ControllersInfo's
+    // USB dump (nativeDescriptor from HIDMaestro's switch-pro profile);
+    // it declares reports 0x30/0x21/0x81 input and 0x01/0x10/0x80/0x82
+    // output, each 63-byte payload (64 including the report ID). The
+    // 0x80/0x01/0x10 interception and SPI image live in
+    // UsbipEmulatedDevice's Switch responder; the input body is packed by
+    // Core.SwitchProInput.
+    private static ControllerProfile BuildSwitchPro()
+    {
+        const string nativeDescriptor =
+            "050115000904a1018530050105091901290a150025017501950a5500650081020509190b290e" +
+            "150025017501950481027501950281030b01000100a1000b300001000b310001000b32000100" +
+            "0b35000100150027ffff0000751095048102c00b39000100150025073500463b0165147504" +
+            "950181020509190f2912150025017501950481027508953481030600ff852109017508953f" +
+            "8103858109027508953f8103850109037508953f9183851009047508953f91838580090575" +
+            "08953f9183858209067508953f9183c0";
+
+        var uc = new UsbConfigurationSpec
+        {
+            ConfigurationValue = 1,
+            Attributes = 0x80,
+            MaxPowerMilliamps = 100,
+            BusSpeed = "full",
+            // bcdUSB 2.00, class 0, bMaxPacketSize0 64, VID 057E PID 2009,
+            // bcdDevice 0x0200, iMfr 1 / iProduct 2 / iSerial 3.
+            DeviceDescriptorHex = "12010002000000407E050920000201020301",
+            // One HID interface (class 3), HID class descriptor declares the
+            // 0xCB = 203-byte report descriptor, interrupt IN 0x81 and
+            // interrupt OUT 0x01, both 64-byte, interval 8.
+            ConfigurationDescriptorHex =
+                "090229000101008032" +
+                "090400000103000000" +
+                "09211101000122CB00" +
+                "07058103400008" +
+                "07050103400008",
+            Interfaces = new List<UsbInterfaceSpec>
+            {
+                new UsbInterfaceSpec
+                {
+                    InterfaceNumber = 0, Function = "hid",
+                    AltSettings = new List<UsbAltSettingSpec>
+                    {
+                        new UsbAltSettingSpec
+                        {
+                            AltSetting = 0, InterfaceClass = 3, InterfaceSubClass = 0, InterfaceProtocol = 0,
+                            Endpoints = new List<UsbEndpointSpec>
+                            {
+                                new UsbEndpointSpec { Address = 0x81, TransferType = "interrupt", MaxPacketSize = 64, Interval = 8 },
+                                new UsbEndpointSpec { Address = 0x01, TransferType = "interrupt", MaxPacketSize = 64, Interval = 8 }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        return new ControllerProfile
+        {
+            Id = "switch-pro-composite",
+            Name = "Nintendo Switch Pro Controller (USB)",
+            Vendor = "Nintendo",
+            Vid = "0x057E",
+            Pid = "0x2009",
+            ProductString = "Pro Controller",
+            ManufacturerString = "Nintendo Co., Ltd.",
+            SerialNumberString = "000000000001",
+            Type = "gamepad",
+            Connection = "usb",
+            Backend = "usbip",
+            Descriptor = nativeDescriptor,
+            InputReportSize = 64,
+            Notes = "Genuine USB Switch Pro persona. SDL3's HIDAPI_DriverSwitch " +
+                    "selects the USB init path from the USB bus type (HIDAPI " +
+                    "reports a USB device path), so the responder must answer " +
+                    "0x80 Handshake/HighSpeed with 0x81 replies and the 0x01 " +
+                    "subcommand stream (device info, input mode, SPI reads, IMU " +
+                    "enable) with 0x21 replies. Input reports are the 48-byte " +
+                    "SwitchControllerStatePacket_t + 3x SwitchControllerIMUState_t " +
+                    "in report 0x30 (padded to the descriptor's 64 bytes). HD " +
+                    "rumble arrives in output 0x01/0x10 as two 4-byte blocks; " +
+                    "GamepadSession decodes them and synthesizes sine audio for " +
+                    "the phone's two LRAs.",
+            UsbConfiguration = uc
         };
     }
 }

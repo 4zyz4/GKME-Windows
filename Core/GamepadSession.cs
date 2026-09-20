@@ -218,6 +218,21 @@ public class GamepadSession : IDisposable
     private byte[]? _lastLeftTriggerEffect;
     private byte[]? _lastRightTriggerEffect;
 
+    // Switch Pro HD rumble -> sine audio (dual LRA). The two 4-byte HD rumble
+    // blocks are decoded to (frequency, amplitude) per side and synthesized
+    // into the DualSense-style 4-channel haptic lane (ch2/ch3) the phone
+    // already plays on its LRA(s).
+    private const int SwitchHapticSampleRate = 48000;
+    private const int SwitchHapticChannels = 4;
+    private readonly object _switchHapticLock = new();
+    private double _swPhaseHLeft, _swPhaseLLeft, _swPhaseHRight, _swPhaseLRight;
+    private volatile bool _swHapticHadSignal;
+    // Latest decoded HD-rumble targets; the haptics thread reads these each
+    // 10 ms block and synthesizes continuously (event-driven blocks were
+    // choppy because SDL only refreshes rumble every 50 ms).
+    private float _swHiFreqL, _swHiAmpL, _swLoFreqL, _swLoAmpL;
+    private float _swHiFreqR, _swHiAmpR, _swLoFreqR, _swLoAmpR;
+
     private readonly ManualResetEventSlim _inputReceived = new(false, 1);
     private volatile GamepadInput? _pendingInput;
 
@@ -305,6 +320,15 @@ public class GamepadSession : IDisposable
             catch (OperationCanceledException) { }
             catch { }
         });
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await SwitchHapticLoop(_cts.Token);
+            }
+            catch (OperationCanceledException) { }
+            catch { }
+        });
     }
 
     /// <summary>Event-driven input submission — each UDP packet triggers an
@@ -361,6 +385,9 @@ public class GamepadSession : IDisposable
                             break;
                         case ControllerMode.Dualsense:
                             SubmitDualsenseReport(input);
+                            break;
+                        case ControllerMode.SwitchPro:
+                            SubmitSwitchReport(input);
                             break;
                         default:
                             SubmitXbox360Report(input);
@@ -524,6 +551,7 @@ public class GamepadSession : IDisposable
         {
             ControllerMode.Xbox360 => "xbox360-composite",
             ControllerMode.Dualsense => "dualsense-composite",
+            ControllerMode.SwitchPro => "switch-pro-composite",
             _ => "dualshock-4-v2-composite",
         };
 
@@ -684,8 +712,156 @@ public class GamepadSession : IDisposable
         });
     }
 
+    /// <summary>Decode one HD rumble block ([hf, hfAmp|hfHi, lf|lfAmpHi, lfAmpLo],
+    /// SDL/dekuNukem encoding). Frequency: 10 * 2^(index/32); high index =
+    /// hf/4 + 0x60, low index = lf + 0x40. Amplitude: table index / 100.</summary>
+    private static void DecodeHdRumble(ReadOnlySpan<byte> b,
+        out float hiFreqHz, out float hiAmp, out float loFreqHz, out float loAmp)
+    {
+        int encHiF = b[0] | ((b[1] & 0x01) << 8);
+        int hiCode = b[1] & 0xFE;
+        int encLoF = b[2] & 0x7F;
+        int loMsb = (b[2] & 0x80) != 0 ? 1 : 0;
+        int loLow = b[3];
+
+        int hiIndex = encHiF / 4 + 0x60;
+        hiFreqHz = 10.0f * MathF.Pow(2.0f, hiIndex / 32.0f);
+        hiAmp = Math.Clamp((hiCode / 2) / 100.0f, 0f, 1f);
+
+        int loIndex = encLoF + 0x40;
+        loFreqHz = 10.0f * MathF.Pow(2.0f, loIndex / 32.0f);
+        int loAmpIdx = loLow >= 0x40 ? (loLow - 0x40) * 2 + loMsb : 0;
+        loAmp = Math.Clamp(loAmpIdx / 100.0f, 0f, 1f);
+    }
+
+    /// <summary>Switch Pro HD rumble -> sine audio. Output reports 0x01 and
+    /// 0x10 carry one 4-byte HD rumble block per side at payload [1..4] /
+    /// [5..8] (after the packet-number byte). Decode each block and store it
+    /// as the current target; <see cref="SwitchHapticLoop"/> synthesizes and
+    /// streams continuously (ch2 = left LRA, ch3 = right LRA) so the tone is
+    /// not chopped up by SDL's 50 ms rumble-refresh cadence.</summary>
+    private void HandleSwitchRumbleOutput(HMOutputPacket packet)
+    {
+        if (packet.Source != HMOutputSource.HidOutput) return;
+        if (packet.ReportId != 0x01 && packet.ReportId != 0x10) return;
+        var d = packet.Data.Span;
+        if (d.Length < 9) return;
+
+        DecodeHdRumble(d.Slice(1, 4), out float lHiF, out float lHiA, out float lLoF, out float lLoA);
+        DecodeHdRumble(d.Slice(5, 4), out float rHiF, out float rHiA, out float rLoF, out float rLoA);
+
+        lock (_switchHapticLock)
+        {
+            _swHiFreqL = lHiF; _swHiAmpL = lHiA; _swLoFreqL = lLoF; _swLoAmpL = lLoA;
+            _swHiFreqR = rHiF; _swHiAmpR = rHiA; _swLoFreqR = rLoF; _swLoAmpR = rLoA;
+            _swHapticHadSignal = Math.Max(lHiA, lLoA) > 0.001f || Math.Max(rHiA, rLoA) > 0.001f;
+        }
+    }
+
+    /// <summary>Continuous haptics pump. Reads the last decoded HD-rumble
+    /// target and emits a sine block on the haptic lane while a signal is
+    /// live (plus a short silence tail so a stop doesn't click). The block
+    /// length is measured from the wall clock rather than assumed, so
+    /// Task.Delay's ~15.6 ms Windows granularity cannot underrun the stream.
+    /// Idles when not in Switch Pro mode.</summary>
+    private async Task SwitchHapticLoop(CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        long lastTicks = sw.ElapsedTicks;
+        double tailSec = 0;
+        const double maxBlockSec = 0.1;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(4, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            if (_disposed) return;
+
+            long now = sw.ElapsedTicks;
+            double dtSec = (now - lastTicks) / (double)System.Diagnostics.Stopwatch.Frequency;
+            lastTicks = now;
+
+            if (Mode != ControllerMode.SwitchPro || Controller == null)
+            {
+                tailSec = 0;
+                lock (_switchHapticLock)
+                {
+                    _swHapticHadSignal = false;
+                    _swHiAmpL = _swLoAmpL = _swHiAmpR = _swLoAmpR = 0f;
+                }
+                continue;
+            }
+
+            if (dtSec < 0.004) continue;
+            if (dtSec > maxBlockSec) dtSec = maxBlockSec;
+
+            float lhf, lha, llf, lla, rhf, rha, rlf, rla;
+            bool active;
+            lock (_switchHapticLock)
+            {
+                lhf = _swHiFreqL; lha = _swHiAmpL; llf = _swLoFreqL; lla = _swLoAmpL;
+                rhf = _swHiFreqR; rha = _swHiAmpR; rlf = _swLoFreqR; rla = _swLoAmpR;
+                active = _swHapticHadSignal;
+            }
+
+            if (active) tailSec = 0.3;
+            else if (tailSec <= 0) continue;
+            else tailSec -= dtSec;
+
+            if (!active) { lha = lla = rha = rla = 0f; }
+
+            int frames = (int)(dtSec * SwitchHapticSampleRate);
+            if (frames < 1) continue;
+            var pcm = new byte[frames * SwitchHapticChannels * 2];
+            SynthesizeHapticBlock(pcm, frames, lhf, lha, llf, lla, rhf, rha, rlf, rla);
+
+            _audioSampleRate = SwitchHapticSampleRate;
+            _audioChannels = (byte)SwitchHapticChannels;
+            _audioBitsPerSample = 16;
+            _audioFormatReady = true;
+            try { await SendAudioFrameAsync(pcm).ConfigureAwait(false); } catch { }
+        }
+    }
+
+    private void SynthesizeHapticBlock(byte[] pcm, int frames,
+        float lhf, float lha, float llf, float lla,
+        float rhf, float rha, float rlf, float rla)
+    {
+        double dt = 1.0 / SwitchHapticSampleRate;
+        const double twoPi = Math.PI * 2.0;
+        const double gain = 0.6;
+
+        for (int n = 0; n < frames; n++)
+        {
+            double sl = lha * Math.Sin(_swPhaseHLeft) + lla * Math.Sin(_swPhaseLLeft);
+            double sr = rha * Math.Sin(_swPhaseHRight) + rla * Math.Sin(_swPhaseLRight);
+            short l = (short)Math.Clamp(sl * gain * 32767.0, short.MinValue, short.MaxValue);
+            short r = (short)Math.Clamp(sr * gain * 32767.0, short.MinValue, short.MaxValue);
+
+            int off = n * SwitchHapticChannels * 2;
+            pcm[off + 4] = (byte)(l & 0xFF);
+            pcm[off + 5] = (byte)((l >> 8) & 0xFF);
+            pcm[off + 6] = (byte)(r & 0xFF);
+            pcm[off + 7] = (byte)((r >> 8) & 0xFF);
+
+            _swPhaseHLeft += twoPi * lhf * dt;
+            _swPhaseLLeft += twoPi * llf * dt;
+            _swPhaseHRight += twoPi * rhf * dt;
+            _swPhaseLRight += twoPi * rlf * dt;
+        }
+
+        _swPhaseHLeft %= twoPi; _swPhaseLLeft %= twoPi;
+        _swPhaseHRight %= twoPi; _swPhaseLRight %= twoPi;
+    }
+
     private void OnHmOutputReceived(HMController controller, HMOutputPacket packet)
     {
+        if (Mode == ControllerMode.SwitchPro)
+        {
+            HandleSwitchRumbleOutput(packet);
+            return;
+        }
+
         // Feature report 0x80 is Sony's test-command surface (device/action
         // first two bytes). dualsense-tester uses it for the 1kHz sine-wave
         // audio test (WAVEOUT_CTRL on the AUDIO device); the real pad's
@@ -1270,6 +1446,18 @@ public class GamepadSession : IDisposable
         SubmitMouseAndTouchpad(input);
     }
 
+    /// <summary>Packs a 48-byte Switch Pro report-0x30 body into the shared
+    /// input section; the USB/IP backend frames it and streams it at the
+    /// 15 ms wire cadence.</summary>
+    private void SubmitSwitchReport(GamepadInput input)
+    {
+        var ctrl = (HMController)Controller!;
+        Span<byte> body = stackalloc byte[SwitchProInput.BodySize];
+        SwitchProInput.BuildBody(input, body);
+        ctrl.SubmitRawReport(body);
+        SubmitMouseAndTouchpad(input);
+    }
+
     /// <summary>
     /// Process mousepad data from protobuf (WiFi/UDP mode).
     /// Reads mouse_dx, mouse_dy, mouse_wheel, mouse_pan, mouse_buttons from protobuf
@@ -1720,6 +1908,9 @@ public class GamepadSession : IDisposable
                     break;
                 case ControllerMode.Dualsense:
                     SubmitDualsenseReport(neutral);
+                    break;
+                case ControllerMode.SwitchPro:
+                    SubmitSwitchReport(neutral);
                     break;
                 default:
                     SubmitDs4Report(neutral);

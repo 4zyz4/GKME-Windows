@@ -107,6 +107,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.Ds4,
         ControllerMode.Xbox360,
         ControllerMode.Dualsense,
+        ControllerMode.SwitchPro,
     };
 
     public static string DisplayName(ControllerMode mode) => mode switch
@@ -114,6 +115,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.Ds4 => "DualShock 4",
         ControllerMode.Xbox360 => "Xbox 360",
         ControllerMode.Dualsense => "DualSense",
+        ControllerMode.SwitchPro => "Switch Pro",
         _ => "?",
     };
 

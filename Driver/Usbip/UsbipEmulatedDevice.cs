@@ -53,6 +53,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
 
     private readonly HidReportBuilder? _builder;
     private readonly bool _hasHid;
+    private readonly bool _switchProtocol;
     private readonly int _rawInputSize;
     private readonly HIDMaestro.Internal.VendorControlRequest[]? _vendorRequests;
     private readonly IntPtr _inputView;
@@ -72,6 +73,15 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     private readonly Queue<uint> _pendingInterruptIn = new();    // seqnums of parked interrupt IN URBs
     private byte[] _lastInputReport;
     private uint _lastSharedSeqNo;
+
+    // 鈹€鈹€ Switch Pro protocol responder state (VID 057E PID 2009) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private readonly object _switchLock = new();
+    private readonly Queue<byte[]> _switchReplies = new();       // 0x81/0x21 replies, served before stream frames
+    private readonly byte[] _switchBody = new byte[48];          // latest consumer-packed 0x30 body
+    private volatile bool _switchImuEnabled;
+    private int _switchTimerCounter;
+    private uint _lastSwitchSharedSeqNo;
+    private static readonly byte[] SwitchMacTemplate = { 0x98, 0xB6, 0xE9, 0x48, 0x4D, 0x30 };
 
     // Sony test command state machine
     private readonly SonyTestCommandHandler _testCmd = new();
@@ -98,13 +108,24 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         Devid = (1u << 16) | (uint)(index + 1);
 
         _hasHid = Descriptors.HasHidInterface;
-        _builder = _hasHid ? profile.GetOrBuildReportBuilder() : null;
-        _rawInputSize = _hasHid
-            ? (_builder!.InputReportByteSize > 0 ? _builder.InputReportByteSize : 64)
+        // The Switch Pro (057E:2009) drives its own 0x30 wire format from the
+        // submitted body and never uses the generic descriptor-driven encoder,
+        // so skip the (203-byte, vendor-blob) report-descriptor parse entirely.
+        _switchProtocol = Descriptors.VendorId == 0x057E && Descriptors.ProductId == 0x2009;
+        _builder = (_hasHid && !_switchProtocol) ? profile.GetOrBuildReportBuilder() : null;
+        _rawInputSize = _builder != null && _builder.InputReportByteSize > 0
+            ? _builder.InputReportByteSize
             : (profile.InputReportSize ?? 64);
         _vendorRequests = profile.UsbConfiguration?.VendorRequests?.ToArray();
         _lastInputReport = new byte[Math.Max(1, _rawInputSize)];
-        if (_hasHid && _builder!.InputReportId != 0) _lastInputReport[0] = _builder.InputReportId;
+        if (_builder != null && _builder.InputReportId != 0) _lastInputReport[0] = _builder.InputReportId;
+        if (_switchProtocol)
+        {
+            _lastInputReport[0] = 0x30;
+            // Neutral 12-bit sticks: 0x800 packed little-nibble = 00 08 80.
+            _switchBody[5] = 0x00; _switchBody[6] = 0x08; _switchBody[7] = 0x80;
+            _switchBody[8] = 0x00; _switchBody[9] = 0x08; _switchBody[10] = 0x80;
+        }
 
         // Sections and events first, so both this device and the
         // HMController constructed after it see the same objects.
@@ -151,13 +172,25 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         {
             _pendingInterruptIn.Clear();
             _frameQueue.Clear();
+            _switchReplies.Clear();
+        }
+        if (_switchProtocol)
+        {
+            _switchImuEnabled = false;
+            Interlocked.Exchange(ref _switchTimerCounter, 0);
+            _lastSwitchSharedSeqNo = 0;
         }
     }
 
-    // ── Input pump: shared section → interrupt IN ────────────────────────
+    // 鈹€鈹€ Input pump: shared section 鈫?interrupt IN 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     private void InputPumpLoop()
     {
+        if (_switchProtocol)
+        {
+            SwitchPumpLoop();
+            return;
+        }
         while (!_stop)
         {
             try
@@ -266,7 +299,318 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         return true;
     }
 
-    // ── Output ring publish (driver.c PublishOutput discipline) ──────────
+    // 鈹€鈹€ Switch Pro protocol responder (057E:2009) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    //
+    // Port of driver.c's SwitchHandle* family (HIDMaestro issue #33) onto the
+    // USB/IP transport. The consumer packs the 48-byte report-0x30 body
+    // (SwitchProPacker layout: [0]counter [1]battery [2..4]buttons [5..10]
+    // sticks [11]vibrator [12..47]IMU x3) into the shared DATA section via
+    // SubmitRawReport. This side owns the wire framing, the request/reply
+    // state machine and the fabricated SPI image, and streams report 0x30 at
+    // the real 15 ms cadence so SDL's HIDAPI_DriverSwitch completes its USB
+    // init (0x80 handshake, 0x01 subcommands) and eden sees a genuine pad.
+
+    private const byte SwitchBatteryConn = 0x91; // full + charging, wired
+    private const byte SwitchVibrator = 0xB0;
+
+    private void SwitchPumpLoop()
+    {
+        while (!_stop)
+        {
+            try
+            {
+                if (_inputWaitEvent != IntPtr.Zero)
+                    WaitForSingleObject(_inputWaitEvent, 15);
+                else
+                    Thread.Sleep(15);
+                if (_stop) break;
+
+                TryReadSwitchBody();
+
+                var frame = BuildSwitchFrame();
+                uint seq;
+                bool have = false;
+                lock (_hidLock)
+                {
+                    _lastInputReport = frame;
+                    if (_pendingInterruptIn.Count > 0)
+                    {
+                        seq = _pendingInterruptIn.Dequeue();
+                        have = true;
+                    }
+                    else
+                    {
+                        if (_frameQueue.Count >= MaxFrameQueue) _frameQueue.Dequeue();
+                        _frameQueue.Enqueue(frame);
+                        seq = 0;
+                    }
+                }
+                if (have) SendInterruptInReply(seq, frame);
+            }
+            catch
+            {
+                // Same containment contract as the generic input pump.
+            }
+        }
+    }
+
+    /// <summary>Seqlock read of the 48-byte Switch body from the shared DATA
+    /// section. Keeps the last body when no new frame has arrived so the
+    /// streamer always has a full state to send.</summary>
+    private void TryReadSwitchBody()
+    {
+        IntPtr view = _inputView;
+        if (view == IntPtr.Zero) return;
+
+        Span<byte> snap = stackalloc byte[SharedMemoryIO.SHARED_INPUT_SIZE];
+        uint seq1, seq2;
+        int retries = 4;
+        do
+        {
+            seq1 = (uint)Marshal.ReadInt32(view, 0);
+            Thread.MemoryBarrier();
+            unsafe
+            {
+                fixed (byte* dst = snap)
+                    Buffer.MemoryCopy((void*)view, dst, snap.Length, snap.Length);
+            }
+            Thread.MemoryBarrier();
+            seq2 = (uint)Marshal.ReadInt32(view, 0);
+        } while ((seq1 != seq2 || (seq1 & 1) != 0) && --retries > 0);
+        if (seq1 != seq2 || (seq1 & 1) != 0) return;
+        if (seq1 == _lastSwitchSharedSeqNo) return;
+        _lastSwitchSharedSeqNo = seq1;
+
+        int dataLen = BitConverter.ToInt32(snap[4..]);
+        if (dataLen > _switchBody.Length) dataLen = _switchBody.Length;
+        if (dataLen < 0) dataLen = 0;
+        if (dataLen == 0) return;
+        lock (_switchLock)
+            snap.Slice(SharedMemoryIO.DATA_OFFSET, dataLen).CopyTo(_switchBody);
+    }
+
+    /// <summary>Copy the latest buttons/sticks + (when enabled) IMU out of the
+    /// consumer body into the 46-byte state layout the 0x30/0x21 frames embed
+    /// ([0..9) buttons+sticks, [10..46) IMU x3).</summary>
+    private void FillSwitchState(Span<byte> state)
+    {
+        state.Clear();
+        lock (_switchLock)
+        {
+            _switchBody.AsSpan(2, 9).CopyTo(state);
+            if (_switchImuEnabled) _switchBody.AsSpan(12, 36).CopyTo(state.Slice(10, 36));
+        }
+    }
+
+    /// <summary>Build one 64-byte report-0x30 full-mode frame from the latest
+    /// body, with the timer/battery/vibrator bytes overlaid (driver.c
+    /// SwitchStreamProc).</summary>
+    private byte[] BuildSwitchFrame()
+    {
+        var state = new byte[46];
+        FillSwitchState(state);
+
+        var frame = new byte[64];
+        frame[0] = 0x30;
+        frame[1] = (byte)Interlocked.Increment(ref _switchTimerCounter);
+        frame[2] = SwitchBatteryConn;
+        state.AsSpan(0, 9).CopyTo(frame.AsSpan(3));
+        frame[12] = SwitchVibrator;
+        state.AsSpan(10, 36).CopyTo(frame.AsSpan(13));
+        return frame;
+    }
+
+    /// <summary>Queue a synthesized reply frame (0x81/0x21). Completes a parked
+    /// interrupt IN immediately when one exists; otherwise parks it ahead of
+    /// the stream frames in <see cref="_switchReplies"/>.</summary>
+    private void SwitchQueueReply(byte[] reply)
+    {
+        uint seq;
+        bool have = false;
+        lock (_hidLock)
+        {
+            if (_pendingInterruptIn.Count > 0)
+            {
+                seq = _pendingInterruptIn.Dequeue();
+                have = true;
+            }
+            else
+            {
+                if (_switchReplies.Count >= MaxFrameQueue) _switchReplies.Dequeue();
+                _switchReplies.Enqueue(reply);
+                seq = 0;
+            }
+        }
+        if (have) SendInterruptInReply(seq, reply);
+    }
+
+    /// <summary>Output report 0x80 USB init commands (dekuNukem USB-HID-Notes):
+    /// status, handshake, high-speed, ForceUSB. Payload here is the bytes
+    /// after the report ID (payload[0] = proprietary command id).</summary>
+    private void SwitchHandleProprietary(ReadOnlySpan<byte> payload)
+    {
+        byte cmd = payload.Length > 0 ? payload[0] : (byte)0;
+
+        var reply = new byte[64];
+        reply[0] = 0x81;
+        reply[1] = cmd;
+        switch (cmd)
+        {
+            case 0x01: // Status: 81 01 00 <type=Pro> <MAC reversed>
+                reply[2] = 0x00;
+                reply[3] = 0x03;
+                for (int i = 0; i < 6; i++) reply[4 + i] = SwitchMac(5 - i);
+                SwitchQueueReply(reply);
+                break;
+            case 0x02: // Handshake ack (load-bearing for BTrySetupUSB)
+            case 0x03: // Baud-switch / high-speed ack
+                SwitchQueueReply(reply);
+                break;
+            default:   // ForceUSB / ClearUSB / ResetMCU have no defined reply
+                break;
+        }
+    }
+
+    /// <summary>Output report 0x01 rumble + subcommand -> input report 0x21.
+    /// Payload is the bytes after the report ID: [counter, rumble L x4,
+    /// rumble R x4, subcommand, args...].</summary>
+    private void SwitchHandleSubcommand(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length < 10) return;
+
+        byte subcmd = payload[9];
+        var args = payload[10..];
+
+        var state = new byte[46];
+        FillSwitchState(state);
+
+        var reply = new byte[64];
+        reply[0] = 0x21;
+        reply[1] = (byte)Interlocked.Increment(ref _switchTimerCounter);
+        reply[2] = SwitchBatteryConn;
+        state.AsSpan(0, 9).CopyTo(reply.AsSpan(3));
+        reply[12] = SwitchVibrator;
+        reply[13] = 0x80; // generic ACK default
+        reply[14] = subcmd;
+
+        switch (subcmd)
+        {
+            case 0x02: // Request device info
+                reply[13] = 0x82;
+                reply[15] = 0x03; // firmware 03.8B
+                reply[16] = 0x8B;
+                reply[17] = 0x03; // type: Pro Controller
+                reply[18] = 0x02;
+                for (int i = 0; i < 6; i++) reply[19 + i] = SwitchMac(i);
+                reply[25] = 0x01;
+                reply[26] = 0x01; // colors live in SPI
+                break;
+
+            case 0x03: // Set input report mode
+                if (args.Length >= 1 &&
+                    (args[0] == 0x30 || args[0] == 0x31 || args[0] == 0x3F))
+                {
+                    // The USB descriptor only declares the 0x30 full-mode report,
+                    // so the streamer keeps emitting 0x30 regardless of the
+                    // requested mode (accepted with a generic ACK).
+                }
+                break;
+
+            case 0x04: // Trigger buttons elapsed time
+                reply[13] = 0x83;
+                break;
+
+            case 0x10: // SPI flash read: echo address+length, serve the image
+                if (args.Length < 5) break;
+                uint addr = (uint)(args[0] | (args[1] << 8) | (args[2] << 16) | (args[3] << 24));
+                int len = args[4];
+                if (len > 0x1D) len = 0x1D;
+                reply[13] = 0x90;
+                args.Slice(0, 5).CopyTo(reply.AsSpan(15));
+                for (int i = 0; i < len; i++) reply[20 + i] = SwitchSpiByte(addr + (uint)i);
+                break;
+
+            case 0x21: // Set NFC/IR MCU config
+                reply[13] = 0xA0;
+                reply[15] = 0x01; reply[16] = 0x00; reply[17] = 0xFF;
+                reply[18] = 0x00; reply[19] = 0x08; reply[20] = 0x00;
+                reply[21] = 0x1B; reply[22] = 0x01;
+                reply[48] = 0xC8;
+                break;
+
+            case 0x40: // Enable/disable IMU streaming
+                if (args.Length >= 1) _switchImuEnabled = args[0] != 0;
+                break;
+
+            case 0x48: // Enable vibration
+                reply[13] = 0x82;
+                break;
+
+            default: // Unknown: generic ACK, never NACK
+                break;
+        }
+
+        SwitchQueueReply(reply);
+    }
+
+    private byte SwitchMac(int i)
+        => i == 5 ? (byte)(SwitchMacTemplate[5] + _index) : SwitchMacTemplate[i];
+
+    /// <summary>Fabricated SPI flash image, served byte-wise so any
+    /// (address, length) read gets a consistent answer. Byte-for-byte the
+    /// image driver.c serves: IMU factory calibration @0x6020 (zero origins,
+    /// coefficients that reduce SDL's LoadIMUCalibration to its default
+    /// scales), stick factory calibration @0x603D (center 0x800, range
+    /// 0x600), colors @0x6050, and the six-axis/stick params blocks.</summary>
+    private static byte SwitchSpiByte(uint a)
+    {
+        ReadOnlySpan<byte> imuCal = stackalloc byte[24]
+        {
+            0x00,0x00, 0x00,0x00, 0x00,0x00,
+            0x00,0x40, 0x00,0x40, 0x00,0x40,
+            0x00,0x00, 0x00,0x00, 0x00,0x00,
+            0x3B,0x34, 0x3B,0x34, 0x3B,0x34,
+        };
+        ReadOnlySpan<byte> stickCal = stackalloc byte[18]
+        {
+            0x00,0x06,0x60, 0x00,0x08,0x80, 0x00,0x06,0x60,
+            0x00,0x08,0x80, 0x00,0x06,0x60, 0x00,0x06,0x60,
+        };
+        ReadOnlySpan<byte> colors = stackalloc byte[12]
+        {
+            0x32,0x32,0x32, 0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,
+        };
+        ReadOnlySpan<byte> sixAxisParams = stackalloc byte[6] { 0x50,0xFD,0x00,0x00,0xC6,0x0F };
+        ReadOnlySpan<byte> stickParams = stackalloc byte[18]
+        {
+            0x0F,0x30,0x61, 0x00,0x30,0xF3, 0xD4,0x14,0x54,
+            0x41,0x15,0x54, 0xC7,0x79,0x9C, 0x33,0x36,0x63,
+        };
+
+        if (a >= 0x6020 && a < 0x6020 + 24) return imuCal[(int)(a - 0x6020)];
+        if (a >= 0x603D && a < 0x603D + 18) return stickCal[(int)(a - 0x603D)];
+        if (a >= 0x6050 && a < 0x6050 + 12) return colors[(int)(a - 0x6050)];
+        if (a >= 0x6080 && a < 0x6080 + 6)  return sixAxisParams[(int)(a - 0x6080)];
+        if (a >= 0x6086 && a < 0x6086 + 18) return stickParams[(int)(a - 0x6086)];
+        if (a >= 0x6098 && a < 0x6098 + 18) return stickParams[(int)(a - 0x6098)];
+        return 0xFF;
+    }
+
+    /// <summary>Intercept a Switch output report. 0x80 is pure protocol and
+    /// never published; 0x01 (rumble+subcommand) and 0x10 (rumble only) are
+    /// published raw so GamepadSession can decode HD rumble into LRA audio.</summary>
+    private void HandleSwitchOutput(byte reportId, ReadOnlySpan<byte> data)
+    {
+        if (reportId == 0x80)
+        {
+            SwitchHandleProprietary(data);
+            return;
+        }
+        if (reportId == 0x01) SwitchHandleSubcommand(data);
+        PublishOutput(SourceHidOutput, reportId, data);
+    }
+
+    // 鈹€鈹€ Output ring publish (driver.c PublishOutput discipline) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     public const byte SourceHidOutput = 0;       // driver.h HIDMAESTRO_OUTPUT_SOURCE_*
     public const byte SourceHidFeature = 1;
@@ -303,7 +647,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         if (_outputEvent != IntPtr.Zero) SetEvent(_outputEvent);
     }
 
-    // ── URB dispatch (called on the connection reader thread) ────────────
+    // 鈹€鈹€ URB dispatch (called on the connection reader thread) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     public void HandleSubmit(in UsbipProtocol.CommandHeader cmd, byte[]? outPayload,
                              (uint Offset, uint Length)[]? isoPackets)
@@ -321,7 +665,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             return;
         }
 
-        if (ep.TransferType == 1) // isochronous → audio engine
+        if (ep.TransferType == 1) // isochronous 鈫?audio engine
         {
             if (Audio == null)
             {
@@ -347,7 +691,9 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                 byte[]? frame = null;
                 lock (_hidLock)
                 {
-                    if (_frameQueue.Count > 0) frame = _frameQueue.Dequeue();
+                    // Switch replies (0x81/0x21) preempt stream frames.
+                    if (_switchProtocol && _switchReplies.Count > 0) frame = _switchReplies.Dequeue();
+                    else if (_frameQueue.Count > 0) frame = _frameQueue.Dequeue();
                     else _pendingInterruptIn.Enqueue(cmd.Seqnum);
                 }
                 if (frame != null) SendInterruptInReply(cmd.Seqnum, frame);
@@ -358,8 +704,11 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             // descriptor declares IDs. Same split as driver.c WRITE_REPORT.
             var payload = outPayload ?? Array.Empty<byte>();
             byte rid = payload.Length > 0 ? payload[0] : (byte)0;
-            PublishOutput(SourceHidOutput, rid,
-                payload.Length > 0 ? payload.AsSpan(1) : ReadOnlySpan<byte>.Empty);
+            var outData = payload.Length > 0 ? payload.AsSpan(1) : ReadOnlySpan<byte>.Empty;
+            if (_switchProtocol && (rid == 0x80 || rid == 0x01 || rid == 0x10))
+                HandleSwitchOutput(rid, outData);
+            else
+                PublishOutput(SourceHidOutput, rid, outData);
             SendRetSubmit(cmd.Seqnum, 0, payload.Length, null);
             return;
         }
@@ -397,7 +746,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         try { conn.SendRetUnlink(seqnum, removed ? -UsbipProtocol.EConnReset : 0); } catch { }
     }
 
-    // ── Control transfers ────────────────────────────────────────────────
+    // 鈹€鈹€ Control transfers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     private void HandleControl(in UsbipProtocol.CommandHeader cmd, byte[]? outPayload)
     {
@@ -663,7 +1012,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                         }
                         else
                         {
-                            // Single-page response — check if it's a "standard" handler response
+                            // Single-page response 鈥?check if it's a "standard" handler response
                             // that needs [0x81, deviceId, actionId, status, data...] header injected.
                             // Standard handlers (HandleBtMac, HandleBatteryVoltage, etc.) return
                             // raw data without any header. HandleTestCommand already prepends 0x81.
@@ -673,7 +1022,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                             // _testCmdStandardDeviceId field in their SET_REPORT path.
                             if (_testCmdStandardDeviceId != 0 && _testCmdResponseLength > 0)
                             {
-                                // Standard handler response — needs full header injection
+                                // Standard handler response 鈥?needs full header injection
                                 int dataLen = _testCmdResponseLength;
                                 int maxResponseLen = Math.Min(4 + dataLen, 256);
                                 if (maxResponseLen > wLength)
@@ -694,7 +1043,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                             }
                             else
                             {
-                                // HandleTestCommand response — already has [0x81, deviceId, actionId, status, data...]
+                                // HandleTestCommand response 鈥?already has [0x81, deviceId, actionId, status, data...]
                                 response = _testCmdResponse;
                                 responseLen = _testCmdResponseLength;
                                 _testCmdReady = false;
@@ -720,6 +1069,17 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                 var payload = outPayload ?? Array.Empty<byte>();
                 byte rid = payload.Length > 0 ? payload[0] : reportId;
                 var data = payload.Length > 0 ? payload.AsSpan(1) : ReadOnlySpan<byte>.Empty;
+
+                // Switch Pro: keyboard-style SetReport routing of the 0x80/0x01/
+                // 0x10 output reports (some HID stacks send these via the control
+                // pipe when no interrupt OUT transfer is pending).
+                if (_switchProtocol && reportType != 0x03
+                    && (rid == 0x80 || rid == 0x01 || rid == 0x10))
+                {
+                    HandleSwitchOutput(rid, data);
+                    SendRetSubmit(cmd.Seqnum, 0, payload.Length, null);
+                    return;
+                }
 
                 // DS4 authentication protocol:
                 // SET_FEATURE 0x80 with [0x03, 0x03] -> next GET_FEATURE 0x81 returns challenge response
@@ -754,7 +1114,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                         // Store telemetry params for GET_REPORT header injection
                         _testCmdTelemetryDeviceId = 0x70; // DEVICE_TELEMETRY
                         _testCmdTelemetryActionId = 0x01; // GET_INFO
-                        // Write 4 pages × 56 bytes into response buffer
+                        // Write 4 pages 脳 56 bytes into response buffer
                         int pages = _testCmd.HandleTelemetry(_testCmdResponse, 4);
                         if (pages < 0)
                         {
@@ -981,7 +1341,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     /// WinUHidPS4.cpp. ASCII build date "Aug  3 2013" and time "07:01:12"
     /// followed by the hardware and firmware words. Byte 28 (0-indexed) high
     /// byte = 0xA4 (164) encodes motherboard model JDM-050 per the test-tool
-    /// mapping: e >> 8 == 164 → "JDM-050".</summary>
+    /// mapping: e >> 8 == 164 鈫?"JDM-050".</summary>
     private static readonly byte[] Ds4FirmwareInfo =
     {
         0xA3, 0x41, 0x75, 0x67, 0x20, 0x20, 0x33, 0x20,
@@ -993,7 +1353,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         0x00
     };
 
-    /// <summary>DS4 feature report 0x20 (32) — 64-byte structure used by
+    /// <summary>DS4 feature report 0x20 (32) 鈥?64-byte structure used by
     /// hid-playstation's authentication (checkReportStructure, getSerialNumber).
     /// Byte 0 = report ID (0x20). Bytes 12-27 = UTF-16LE serial number "JDM-050".</summary>
     private static readonly byte[] Ds4FeatureReport20 =
@@ -1018,7 +1378,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     };
 
-    /// <summary>DS4 feature report 0x81 (129) — authentication challenge response.
+    /// <summary>DS4 feature report 0x81 (129) 鈥?authentication challenge response.
     /// Returned after host sends SET_FEATURE 0x80 with subcommand 0x03.
     /// Value 50528769 (0x03030301) or 50528768 (0x03030300) at offset 1 (big-endian).</summary>
     private static readonly byte[] Ds4FeatureReport81 =
@@ -1077,7 +1437,11 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         {
             _pendingInterruptIn.Clear();
             _frameQueue.Clear();
+            _switchReplies.Clear();
         }
+        _switchImuEnabled = false;
+        Interlocked.Exchange(ref _switchTimerCounter, 0);
+        _lastSwitchSharedSeqNo = 0;
     }
 
     private void ResetAltSettings()
@@ -1090,7 +1454,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         }
     }
 
-    // ── Reply plumbing ───────────────────────────────────────────────────
+    // 鈹€鈹€ Reply plumbing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     //
     // Sends are guarded: the pacing pump and the input pump complete URBs
     // from their own threads, and a socket being torn down mid-completion
@@ -1142,3 +1506,4 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr h);
 }
+
