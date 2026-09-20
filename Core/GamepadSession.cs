@@ -1528,7 +1528,6 @@ public class GamepadSession : IDisposable
             _ = SendClearTriggerEffectsAsync();
 
             // 创建新控制器；成功前保留旧控制器。若创建失败，系统仍只有一个旧手柄，
-            // 不会出现 "多出一个 DS4" 或切换后无手柄的状态。
             object? newCtrl;
             try
             {
@@ -1554,7 +1553,7 @@ public class GamepadSession : IDisposable
                 Mode = mode;
             }
 
-            // 销毁旧控制器（HIDMaestro teardown 慢，放后台）；ViGEm 控制器销毁快。
+            // 销毁旧控制器
             if (oldCtrl != null && !ReferenceEquals(oldCtrl, newCtrl))
             {
                 var toDestroy = oldCtrl;
@@ -1663,8 +1662,7 @@ public class GamepadSession : IDisposable
             var status = CM_Locate_DevNodeW(ref devnode, instanceId, 0);
             if (status != CR_SUCCESS || devnode == IntPtr.Zero)
             {
-                // Already uninstalled; pick up the phantom node so HIDMaestro's
-                // non-fast teardown sweep doesn't wait on stale registry residue.
+                // Already uninstalled
                 status = CM_Locate_DevNodeW(ref devnode, instanceId, 1);
                 if (status != CR_SUCCESS || devnode == IntPtr.Zero) return;
             }
