@@ -57,6 +57,7 @@ public class MainViewModel : INotifyPropertyChanged
         }
         _network!.SavedModeResolver = (DiscoveredDevice d) => _modeStore.Get(d.ModeKey);
         _network.OnDeviceDiscovered += OnDeviceDiscovered;
+        _network.OnDeviceLost += OnDeviceLost;
         _network.OnDeviceInfoUpdated += OnDeviceInfoUpdated;
         _network.OnSessionStarted += OnSessionStarted;
         _network.OnSessionEnded += OnSessionEnded;
@@ -336,6 +337,27 @@ public class MainViewModel : INotifyPropertyChanged
         });
     }
 
+    private void OnDeviceLost(DiscoveredDevice device)
+    {
+        UiInvoke(() =>
+        {
+            var ip = device.IpString;
+            // Never drop a card that is currently in use.
+            if (_sessionMap.ContainsKey(ip)) return;
+
+            var card = DeviceCards.FirstOrDefault(c => c.GroupKey == device.GroupKey);
+            if (card == null) return;
+
+            var ep = card.FindEndpoint(ip);
+            if (ep == null) return;
+            if (ep.IsConnected || ep.IsConnecting) return;
+
+            card.RemoveEndpoint(ep);
+            if (card.Endpoints.Count == 0)
+                DeviceCards.Remove(card);
+        });
+    }
+
     private void OnDeviceInfoUpdated(DiscoveredDevice device)
     {
         UiInvoke(() =>
@@ -462,6 +484,7 @@ public class MainViewModel : INotifyPropertyChanged
     {
         if (_network == null) return;
         _network.OnDeviceDiscovered -= OnDeviceDiscovered;
+        _network.OnDeviceLost -= OnDeviceLost;
         _network.OnDeviceInfoUpdated -= OnDeviceInfoUpdated;
         _network.OnSessionStarted -= OnSessionStarted;
         _network.OnSessionEnded -= OnSessionEnded;

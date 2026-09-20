@@ -198,6 +198,90 @@ public sealed class AdbManager : IDisposable
         return result;
     }
 
+    /// <summary>Discovery snapshot for one attached phone. Mirrors what the WiFi
+    /// broadcast carries: the real (system) device name, the ANDROID_ID used as
+    /// the phone identity, and whether the phone's GKME service is actually
+    /// listening on <see cref="DevicePort"/>.</summary>
+    public sealed record AdbProbeResult
+    {
+        public bool ServiceListening { get; init; }
+        /// <summary>System device name, falling back to the adb model.</summary>
+        public string? DeviceName { get; init; }
+        public string? AndroidId { get; init; }
+    }
+
+    /// <summary>
+    /// Reads the device's system name and ANDROID_ID over a single `adb shell`
+    /// round-trip and checks whether the GKME USB service is listening on
+    /// <paramref name="port"/>. A phone that has not started its service is not
+    /// reported (its card stays hidden, like an idle WiFi phone that is not
+    /// broadcasting). Returns an empty result on any failure.
+    /// </summary>
+    public AdbProbeResult ProbeUsbDevice(string serial, int port = DevicePort)
+    {
+        if (!Available) return new AdbProbeResult();
+
+        var portHex = port.ToString("X4");
+        const string script =
+            "echo N=; settings get global device_name; " +
+            "echo M=; getprop ro.product.model; " +
+            "echo I=; settings get secure android_id; " +
+            "echo T=; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null";
+
+        var (exit, stdout, _) = Run("-s", serial, "shell", script);
+        if (exit != 0) return new AdbProbeResult();
+
+        string? systemName = null, model = null, androidId = null;
+        var listening = false;
+        var section = '\0';
+        foreach (var raw in stdout.Split('\n'))
+        {
+            var line = raw.Trim();
+            switch (line)
+            {
+                case "N=": section = 'N'; continue;
+                case "M=": section = 'M'; continue;
+                case "I=": section = 'I'; continue;
+                case "T=": section = 'T'; continue;
+            }
+
+            switch (section)
+            {
+                case 'N':
+                    if (line.Length > 0) { systemName = NormalizeSetting(line); section = '\0'; }
+                    break;
+                case 'M':
+                    if (line.Length > 0) { model = NormalizeSetting(line); section = '\0'; }
+                    break;
+                case 'I':
+                    if (line.Length > 0) { androidId = NormalizeSetting(line); section = '\0'; }
+                    break;
+                case 'T':
+                    // /proc/net/tcp[6] line: "sl local_address rem_address st ..."
+                    var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 4 &&
+                        parts[1].EndsWith(":" + portHex, StringComparison.OrdinalIgnoreCase) &&
+                        parts[3] == "0A")
+                        listening = true;
+                    break;
+            }
+        }
+
+        return new AdbProbeResult
+        {
+            ServiceListening = listening,
+            DeviceName = systemName ?? model,
+            AndroidId = androidId,
+        };
+    }
+
+    /// <summary>Trims a shell value, mapping empty/"null" (unset settings) to null.</summary>
+    private static string? NormalizeSetting(string value)
+    {
+        var v = value.Trim();
+        return v.Length == 0 || v.Equals("null", StringComparison.OrdinalIgnoreCase) ? null : v;
+    }
+
     /// <summary>Creates a port forward from the PC to the phone's transport port
     /// and returns the loopback port the PC should connect to, or null on
     /// failure. Uses <c>tcp:0</c> so adb picks a free port (avoids collisions

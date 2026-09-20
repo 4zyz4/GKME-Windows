@@ -179,6 +179,9 @@ public class NetworkService : IDisposable
     public IReadOnlyCollection<GamepadSession> ActiveSessions => _sessions.Values.ToList();
 
     public event Action<DiscoveredDevice>? OnDeviceDiscovered;
+    /// <summary>Raised when a previously discovered USB device disappears —
+    /// its cable was unplugged, or its GKME service stopped listening.</summary>
+    public event Action<DiscoveredDevice>? OnDeviceLost;
     /// <summary>Raised when a session's Hello fills in the device name / MAC
     /// (notably for manual IP connections that were not seen via broadcast).</summary>
     public event Action<DiscoveredDevice>? OnDeviceInfoUpdated;
@@ -241,9 +244,12 @@ public class NetworkService : IDisposable
         _usbScanThread.Start();
     }
 
-    /// <summary>Polls `adb devices` and publishes each attached phone as a USB
-    /// device card. Retries locating adb (it may be installed / dropped in after
-    /// launch) without spamming the log.</summary>
+    /// <summary>Polls `adb devices`, then probes each authorized phone for the
+    /// real device name, ANDROID_ID and a listening GKME service. Only phones
+    /// whose service is actually accepting connections are published — the USB
+    /// equivalent of a phone that has started broadcasting on WiFi. Retries
+    /// locating adb (it may be installed / dropped in after launch) without
+    /// spamming the log.</summary>
     private void UsbScanLoop()
     {
         while (!_stopped && !_adb.Available)
@@ -265,6 +271,14 @@ public class NetworkService : IDisposable
                 var seen = new HashSet<string>();
                 foreach (var d in devices)
                 {
+                    // Only a fully authorized device can be running the service.
+                    if (!d.IsReady) continue;
+
+                    var probe = _adb.ProbeUsbDevice(d.Serial);
+                    // Service not started yet — keep the card hidden so the USB
+                    // list matches the WiFi list (only live services show up).
+                    if (!probe.ServiceListening) continue;
+
                     var key = $"usb:{d.Serial}";
                     seen.Add(key);
                     DiscoveredDevice? publish = null;
@@ -274,7 +288,8 @@ public class NetworkService : IDisposable
                         {
                             dev = new DiscoveredDevice
                             {
-                                DeviceName = d.IsReady ? d.DisplayName : $"{d.DisplayName}（{d.State}）",
+                                DeviceName = probe.DeviceName ?? d.DisplayName,
+                                MacAddress = probe.AndroidId ?? "",
                                 IpAddress = IPAddress.Loopback,
                                 IsUsb = true,
                                 AdbSerial = d.Serial,
@@ -287,19 +302,29 @@ public class NetworkService : IDisposable
                         {
                             dev.LastSeen = DateTime.UtcNow;
                             dev.AdbState = d.State;
-                            dev.DeviceName = d.IsReady ? d.DisplayName : $"{d.DisplayName}（{d.State}）";
+                            dev.DeviceName = probe.DeviceName ?? d.DisplayName;
+                            if (!string.IsNullOrWhiteSpace(probe.AndroidId))
+                                dev.MacAddress = probe.AndroidId!;
                         }
                     }
                     if (publish != null)
                         OnDeviceDiscovered?.Invoke(publish);
                 }
 
+                List<DiscoveredDevice>? lost = null;
                 lock (_usbLock)
                 {
                     foreach (var key in _usbDiscovered.Keys.ToList())
                     {
-                        if (!seen.Contains(key)) _usbDiscovered.Remove(key);
+                        if (seen.Contains(key)) continue;
+                        if (_usbDiscovered.Remove(key, out var gone))
+                            (lost ??= new List<DiscoveredDevice>()).Add(gone);
                     }
+                }
+                if (lost != null)
+                {
+                    foreach (var gone in lost)
+                        OnDeviceLost?.Invoke(gone);
                 }
             }
             catch { }
