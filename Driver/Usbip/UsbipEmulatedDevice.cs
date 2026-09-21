@@ -557,11 +557,13 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         => i == 5 ? (byte)(SwitchMacTemplate[5] + _index) : SwitchMacTemplate[i];
 
     /// <summary>Fabricated SPI flash image, served byte-wise so any
-    /// (address, length) read gets a consistent answer. Byte-for-byte the
-    /// image driver.c serves: IMU factory calibration @0x6020 (zero origins,
+    /// (address, length) read gets a consistent answer. Mirrors the image
+    /// driver.c serves: IMU factory calibration @0x6020 (zero origins,
     /// coefficients that reduce SDL's LoadIMUCalibration to its default
     /// scales), stick factory calibration @0x603D (center 0x800, range
-    /// 0x600), colors @0x6050, and the six-axis/stick params blocks.</summary>
+    /// 0x600), colors @0x6050, and the six-axis/stick params blocks. Also
+    /// serves a serial number @0x6000 and device type @0x6012 (Pro) that
+    /// driver.c leaves 0xFF, which eden's joycon driver reads on init.</summary>
     private static byte SwitchSpiByte(uint a)
     {
         ReadOnlySpan<byte> imuCal = stackalloc byte[24]
@@ -586,7 +588,19 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             0x0F,0x30,0x61, 0x00,0x30,0xF3, 0xD4,0x14,0x54,
             0x41,0x15,0x54, 0xC7,0x79,0x9C, 0x33,0x36,0x63,
         };
+        // Serial number @0x6000 (16 bytes). dekuNukem: byte 0 is a leading
+        // 0x00, then 15 ASCII characters; eden copies from buffer+1. Real
+        // Switch serials are 14 chars + NUL, so the tail past "XAW1..." is
+        // zero-padded.
+        ReadOnlySpan<byte> serial = stackalloc byte[16]
+        {
+            0x00,
+            0x58,0x41,0x57,0x31,0x30,0x30,0x30,0x30,
+            0x30,0x30,0x30,0x30,0x30,0x30,0x00,
+        };
 
+        if (a >= 0x6000 && a < 0x6000 + 16) return serial[(int)(a - 0x6000)];
+        if (a == 0x6012) return 0x03; // device type: Pro Controller
         if (a >= 0x6020 && a < 0x6020 + 24) return imuCal[(int)(a - 0x6020)];
         if (a >= 0x603D && a < 0x603D + 18) return stickCal[(int)(a - 0x603D)];
         if (a >= 0x6050 && a < 0x6050 + 12) return colors[(int)(a - 0x6050)];
