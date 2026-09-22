@@ -218,20 +218,14 @@ public class GamepadSession : IDisposable
     private byte[]? _lastLeftTriggerEffect;
     private byte[]? _lastRightTriggerEffect;
 
-    // Switch Pro HD rumble -> sine audio (dual LRA). The two 4-byte HD rumble
-    // blocks are decoded to (frequency, amplitude) per side and synthesized
-    // into the DualSense-style 4-channel haptic lane (ch2/ch3) the phone
-    // already plays on its LRA(s).
-    private const int SwitchHapticSampleRate = 48000;
-    private const int SwitchHapticChannels = 4;
+    // Switch Pro HD rumble -> decoded band parameters for the phone, which
+    // synthesises the LRA waveform locally. Only low-rate parameter updates
+    // cross the network, so a stutter delays an update instead of tearing a
+    // hole in the PCM stream (which the phone hears as a pop). The last-sent
+    // copy is kept to suppress redundant packets and to pace a keep-alive.
     private readonly object _switchHapticLock = new();
-    private double _swPhaseHLeft, _swPhaseLLeft, _swPhaseHRight, _swPhaseLRight;
-    private volatile bool _swHapticHadSignal;
-    // Latest decoded HD-rumble targets; the haptics thread reads these each
-    // 10 ms block and synthesizes continuously (event-driven blocks were
-    // choppy because SDL only refreshes rumble every 50 ms).
-    private float _swHiFreqL, _swHiAmpL, _swLoFreqL, _swLoAmpL;
-    private float _swHiFreqR, _swHiAmpR, _swLoFreqR, _swLoAmpR;
+    private float _swLastHiFreqL, _swLastHiAmpL, _swLastLoFreqL, _swLastLoAmpL;
+    private float _swLastHiFreqR, _swLastHiAmpR, _swLastLoFreqR, _swLastLoAmpR;
 
     private readonly ManualResetEventSlim _inputReceived = new(false, 1);
     private volatile GamepadInput? _pendingInput;
@@ -324,7 +318,7 @@ public class GamepadSession : IDisposable
         {
             try
             {
-                await SwitchHapticLoop(_cts.Token);
+                await SwitchHapticPumpAsync(_cts.Token);
             }
             catch (OperationCanceledException) { }
             catch { }
@@ -734,12 +728,14 @@ public class GamepadSession : IDisposable
         loAmp = Math.Clamp(loAmpIdx / 100.0f, 0f, 1f);
     }
 
-    /// <summary>Switch Pro HD rumble -> sine audio. Output reports 0x01 and
-    /// 0x10 carry one 4-byte HD rumble block per side at payload [1..4] /
-    /// [5..8] (after the packet-number byte). Decode each block and store it
-    /// as the current target; <see cref="SwitchHapticLoop"/> synthesizes and
-    /// streams continuously (ch2 = left LRA, ch3 = right LRA) so the tone is
-    /// not chopped up by SDL's 50 ms rumble-refresh cadence.</summary>
+    /// <summary>Switch Pro HD rumble, decoded and forwarded to the phone.
+    /// Output reports 0x01 and 0x10 carry one 4-byte HD rumble block per side
+    /// at payload [1..4] / [5..8] (after the packet-number byte). The phone
+    /// synthesises the LRA waveform from (frequency, amplitude), so only these
+    /// parameters cross the network. A state change is sent immediately for low
+    /// latency; <see cref="SwitchHapticPumpAsync"/> keeps a 50 ms keep-alive
+    /// flowing so the phone's synth thread stays warm — its output device must
+    /// not stop between rumbles, or the next onset clicks.</summary>
     private void HandleSwitchRumbleOutput(HMOutputPacket packet)
     {
         if (packet.Source != HMOutputSource.HidOutput) return;
@@ -752,106 +748,57 @@ public class GamepadSession : IDisposable
 
         lock (_switchHapticLock)
         {
-            _swHiFreqL = lHiF; _swHiAmpL = lHiA; _swLoFreqL = lLoF; _swLoAmpL = lLoA;
-            _swHiFreqR = rHiF; _swHiAmpR = rHiA; _swLoFreqR = rLoF; _swLoAmpR = rLoA;
-            _swHapticHadSignal = Math.Max(lHiA, lLoA) > 0.001f || Math.Max(rHiA, rLoA) > 0.001f;
+            bool changed =
+                MathF.Abs(lHiF - _swLastHiFreqL) > 0.5f || MathF.Abs(lLoF - _swLastLoFreqL) > 0.5f ||
+                MathF.Abs(rHiF - _swLastHiFreqR) > 0.5f || MathF.Abs(rLoF - _swLastLoFreqR) > 0.5f ||
+                MathF.Abs(lHiA - _swLastHiAmpL) > 0.002f || MathF.Abs(lLoA - _swLastLoAmpL) > 0.002f ||
+                MathF.Abs(rHiA - _swLastHiAmpR) > 0.002f || MathF.Abs(rLoA - _swLastLoAmpR) > 0.002f;
+
+            _swLastHiFreqL = lHiF; _swLastHiAmpL = lHiA; _swLastLoFreqL = lLoF; _swLastLoAmpL = lLoA;
+            _swLastHiFreqR = rHiF; _swLastHiAmpR = rHiA; _swLastLoFreqR = rLoF; _swLastLoAmpR = rLoA;
+            if (!changed) return;
         }
+
+        SendHdRumble(lHiF, lHiA, lLoF, lLoA, rHiF, rHiA, rLoF, rLoA);
     }
 
-    /// <summary>Continuous haptics pump. Reads the last decoded HD-rumble
-    /// target and emits a sine block on the haptic lane while a signal is
-    /// live (plus a short silence tail so a stop doesn't click). The block
-    /// length is measured from the wall clock rather than assumed, so
-    /// Task.Delay's ~15.6 ms Windows granularity cannot underrun the stream.
-    /// Idles when not in Switch Pro mode.</summary>
-    private async Task SwitchHapticLoop(CancellationToken ct)
+    /// <summary>Keep-alive for the phone's HD-rumble synth. While a Switch Pro
+    /// is emulated the current band state is re-sent every 50 ms, including an
+    /// all-zero state, so the phone keeps its synthesis thread and output
+    /// device running. Restarting that device at each rumble onset is what
+    /// clicks; a steady stream (silent when idle) removes the transient.</summary>
+    private async Task SwitchHapticPumpAsync(CancellationToken ct)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        long lastTicks = sw.ElapsedTicks;
-        double tailSec = 0;
-        const double maxBlockSec = 0.1;
-
         while (!ct.IsCancellationRequested)
         {
-            try { await Task.Delay(4, ct).ConfigureAwait(false); }
+            try { await Task.Delay(50, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
             if (_disposed) return;
-
-            long now = sw.ElapsedTicks;
-            double dtSec = (now - lastTicks) / (double)System.Diagnostics.Stopwatch.Frequency;
-            lastTicks = now;
-
-            if (Mode != ControllerMode.SwitchPro || Controller == null)
-            {
-                tailSec = 0;
-                lock (_switchHapticLock)
-                {
-                    _swHapticHadSignal = false;
-                    _swHiAmpL = _swLoAmpL = _swHiAmpR = _swLoAmpR = 0f;
-                }
-                continue;
-            }
-
-            if (dtSec < 0.004) continue;
-            if (dtSec > maxBlockSec) dtSec = maxBlockSec;
+            if (Mode != ControllerMode.SwitchPro || Controller == null) continue;
 
             float lhf, lha, llf, lla, rhf, rha, rlf, rla;
-            bool active;
             lock (_switchHapticLock)
             {
-                lhf = _swHiFreqL; lha = _swHiAmpL; llf = _swLoFreqL; lla = _swLoAmpL;
-                rhf = _swHiFreqR; rha = _swHiAmpR; rlf = _swLoFreqR; rla = _swLoAmpR;
-                active = _swHapticHadSignal;
+                lhf = _swLastHiFreqL; lha = _swLastHiAmpL; llf = _swLastLoFreqL; lla = _swLastLoAmpL;
+                rhf = _swLastHiFreqR; rha = _swLastHiAmpR; rlf = _swLastLoFreqR; rla = _swLastLoAmpR;
             }
-
-            if (active) tailSec = 0.3;
-            else if (tailSec <= 0) continue;
-            else tailSec -= dtSec;
-
-            if (!active) { lha = lla = rha = rla = 0f; }
-
-            int frames = (int)(dtSec * SwitchHapticSampleRate);
-            if (frames < 1) continue;
-            var pcm = new byte[frames * SwitchHapticChannels * 2];
-            SynthesizeHapticBlock(pcm, frames, lhf, lha, llf, lla, rhf, rha, rlf, rla);
-
-            _audioSampleRate = SwitchHapticSampleRate;
-            _audioChannels = (byte)SwitchHapticChannels;
-            _audioBitsPerSample = 16;
-            _audioFormatReady = true;
-            try { await SendAudioFrameAsync(pcm).ConfigureAwait(false); } catch { }
+            SendHdRumble(lhf, lha, llf, lla, rhf, rha, rlf, rla);
         }
     }
 
-    private void SynthesizeHapticBlock(byte[] pcm, int frames,
-        float lhf, float lha, float llf, float lla,
-        float rhf, float rha, float rlf, float rla)
+    private void SendHdRumble(float lhf, float lha, float llf, float lla,
+                              float rhf, float rha, float rlf, float rla)
     {
-        double dt = 1.0 / SwitchHapticSampleRate;
-        const double twoPi = Math.PI * 2.0;
-        const double gain = 0.6;
-
-        for (int n = 0; n < frames; n++)
+        _ = SendAsync(new ServerToClient
         {
-            double sl = lha * Math.Sin(_swPhaseHLeft) + lla * Math.Sin(_swPhaseLLeft);
-            double sr = rha * Math.Sin(_swPhaseHRight) + rla * Math.Sin(_swPhaseLRight);
-            short l = (short)Math.Clamp(sl * gain * 32767.0, short.MinValue, short.MaxValue);
-            short r = (short)Math.Clamp(sr * gain * 32767.0, short.MinValue, short.MaxValue);
-
-            int off = n * SwitchHapticChannels * 2;
-            pcm[off + 4] = (byte)(l & 0xFF);
-            pcm[off + 5] = (byte)((l >> 8) & 0xFF);
-            pcm[off + 6] = (byte)(r & 0xFF);
-            pcm[off + 7] = (byte)((r >> 8) & 0xFF);
-
-            _swPhaseHLeft += twoPi * lhf * dt;
-            _swPhaseLLeft += twoPi * llf * dt;
-            _swPhaseHRight += twoPi * rhf * dt;
-            _swPhaseLRight += twoPi * rlf * dt;
-        }
-
-        _swPhaseHLeft %= twoPi; _swPhaseLLeft %= twoPi;
-        _swPhaseHRight %= twoPi; _swPhaseLRight %= twoPi;
+            HdRumble = new HdRumble
+            {
+                LeftHighFreqHz = lhf, LeftHighAmp = lha,
+                LeftLowFreqHz = llf, LeftLowAmp = lla,
+                RightHighFreqHz = rhf, RightHighAmp = rha,
+                RightLowFreqHz = rlf, RightLowAmp = rla,
+            }
+        });
     }
 
     private void OnHmOutputReceived(HMController controller, HMOutputPacket packet)
