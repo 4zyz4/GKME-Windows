@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using HIDMaestro.Internal;
@@ -15,6 +15,16 @@ internal static class StaticProfileRegistry
         s_profiles["dualsense-composite"] = BuildDualSense();
         s_profiles["dualshock-4-v2-composite"] = BuildDualShock4();
         s_profiles["switch-pro-composite"] = BuildSwitchPro();
+        s_profiles["joycon-l-composite"] = BuildJoycon(
+            id: "joycon-l-composite",
+            pid: "0x2006",
+            product: "Joy-Con (L)",
+            serial: "000000000001");
+        s_profiles["joycon-r-composite"] = BuildJoycon(
+            id: "joycon-r-composite",
+            pid: "0x2007",
+            product: "Joy-Con (R)",
+            serial: "000000000002");
     }
 
     public static Dictionary<string, ControllerProfile> AllProfiles => s_profiles;
@@ -534,15 +544,34 @@ internal static class StaticProfileRegistry
     // 0x80/0x01/0x10 interception and SPI image live in
     // UsbipEmulatedDevice's Switch responder; the input body is packed by
     // Core.SwitchProInput.
+
+    // The Nintendo Switch family shares one USB HID report descriptor on
+    // USB: DJm00n/ControllersInfo's dump declares reports 0x30/0x21/0x81
+    // input and 0x01/0x10/0x80/0x82 output, each a 63-byte payload (64
+    // including the report ID). The OS HID stack only needs the top-level
+    // Generic Desktop / Joystick collection; SDL and eden parse the wire
+    // bytes by fixed offset, so the same descriptor serves Pro and Joy-Con.
+    private const string SwitchUsbReportDescriptor =
+        "050115000904a1018530050105091901290a150025017501950a5500650081020509190b290e" +
+        "150025017501950481027501950281030b01000100a1000b300001000b310001000b32000100" +
+        "0b35000100150027ffff0000751095048102c00b39000100150025073500463b0165147504" +
+        "950181020509190f2912150025017501950481027508953481030600ff852109017508953f" +
+        "8103858109027508953f8103850109037508953f9183851009047508953f91838580090575" +
+        "08953f9183858209067508953f9183c0";
+
+    // One HID interface (class 3); the HID class descriptor declares the
+    // 0xCB = 203-byte report descriptor, interrupt IN 0x81 and interrupt
+    // OUT 0x01, both 64-byte, interval 8.
+    private const string SwitchUsbConfigurationDescriptor =
+        "090229000101008032" +
+        "090400000103000000" +
+        "09211101000122CB00" +
+        "07058103400008" +
+        "07050103400008";
+
     private static ControllerProfile BuildSwitchPro()
     {
-        const string nativeDescriptor =
-            "050115000904a1018530050105091901290a150025017501950a5500650081020509190b290e" +
-            "150025017501950481027501950281030b01000100a1000b300001000b310001000b32000100" +
-            "0b35000100150027ffff0000751095048102c00b39000100150025073500463b0165147504" +
-            "950181020509190f2912150025017501950481027508953481030600ff852109017508953f" +
-            "8103858109027508953f8103850109037508953f9183851009047508953f91838580090575" +
-            "08953f9183858209067508953f9183c0";
+        const string nativeDescriptor = SwitchUsbReportDescriptor;
 
         var uc = new UsbConfigurationSpec
         {
@@ -556,12 +585,7 @@ internal static class StaticProfileRegistry
             // One HID interface (class 3), HID class descriptor declares the
             // 0xCB = 203-byte report descriptor, interrupt IN 0x81 and
             // interrupt OUT 0x01, both 64-byte, interval 8.
-            ConfigurationDescriptorHex =
-                "090229000101008032" +
-                "090400000103000000" +
-                "09211101000122CB00" +
-                "07058103400008" +
-                "07050103400008",
+            ConfigurationDescriptorHex = SwitchUsbConfigurationDescriptor,
             Interfaces = new List<UsbInterfaceSpec>
             {
                 new UsbInterfaceSpec
@@ -609,6 +633,83 @@ internal static class StaticProfileRegistry
                     "rumble arrives in output 0x01/0x10 as two 4-byte blocks; " +
                     "GamepadSession decodes them and synthesizes sine audio for " +
                     "the phone's two LRAs.",
+            UsbConfiguration = uc
+        };
+    }
+
+    // One Joy-Con half, presented as a genuine USB HID pad (VID 0x057E /
+    // PID 0x2006 left, 0x2007 right) over the USB/IP backend. SDL3's
+    // HIDAPI_DriverJoyCons claims both PIDs on the USB bus and, when both
+    // halves are present, SDL_HINT_JOYSTICK_HIDAPI_COMBINE_JOY_CONS pairs
+    // them into a single virtual pad; eden's own joycon driver also
+    // enumerates 0x2006/0x2007 directly. The wire protocol (0x80
+    // handshake, 0x01 subcommands, 0x21 replies, 0x30 full-mode stream,
+    // SPI calibration) is the same as the Pro's and lives in
+    // UsbipEmulatedDevice's Switch responder; the only per-half difference
+    // is the reported device type (1 = L, 2 = R) in the Status reply, the
+    // device-info reply and SPI 0x6012.
+    private static ControllerProfile BuildJoycon(string id, string pid, string product, string serial)
+    {
+        // bcdUSB 2.00, class 0, bMaxPacketSize0 64, VID 057E, bcdDevice
+        // 0x0200, iMfr 1 / iProduct 2 / iSerial 3.
+        string deviceDescriptor = pid == "0x2006"
+            ? "12010002000000407E050620000201020301"
+            : "12010002000000407E050720000201020301";
+
+        var uc = new UsbConfigurationSpec
+        {
+            ConfigurationValue = 1,
+            Attributes = 0x80,
+            MaxPowerMilliamps = 100,
+            BusSpeed = "full",
+            DeviceDescriptorHex = deviceDescriptor,
+            ConfigurationDescriptorHex = SwitchUsbConfigurationDescriptor,
+            Interfaces = new List<UsbInterfaceSpec>
+            {
+                new UsbInterfaceSpec
+                {
+                    InterfaceNumber = 0, Function = "hid",
+                    AltSettings = new List<UsbAltSettingSpec>
+                    {
+                        new UsbAltSettingSpec
+                        {
+                            AltSetting = 0, InterfaceClass = 3, InterfaceSubClass = 0, InterfaceProtocol = 0,
+                            Endpoints = new List<UsbEndpointSpec>
+                            {
+                                new UsbEndpointSpec { Address = 0x81, TransferType = "interrupt", MaxPacketSize = 64, Interval = 8 },
+                                new UsbEndpointSpec { Address = 0x01, TransferType = "interrupt", MaxPacketSize = 64, Interval = 8 }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        return new ControllerProfile
+        {
+            Id = id,
+            Name = $"Nintendo Switch {product} (USB)",
+            Vendor = "Nintendo",
+            Vid = "0x057E",
+            Pid = pid,
+            ProductString = product,
+            ManufacturerString = "Nintendo Co., Ltd.",
+            SerialNumberString = serial,
+            Type = "gamepad",
+            Connection = "usb",
+            Backend = "usbip",
+            Descriptor = SwitchUsbReportDescriptor,
+            InputReportSize = 64,
+            Notes = "Genuine USB Joy-Con persona. SDL3's HIDAPI_DriverJoyCons " +
+                    "claims 0x057E:0x2006 (L) and 0x057E:0x2007 (R) on the USB " +
+                    "bus; with both halves attached the combined driver pairs " +
+                    "them into one pad and forwards sensors/rumble to each. " +
+                    "eden's own joycon driver also enumerates these PIDs and " +
+                    "reads the device type from subcommand 0x02 and SPI " +
+                    "0x6012. Input reports are the 48-byte SwitchController" +
+                    "StatePacket_t + 3x IMU in report 0x30 (padded to 64); HD " +
+                    "rumble arrives in output 0x01/0x10 and GamepadSession " +
+                    "decodes it for the phone's LRAs.",
             UsbConfiguration = uc
         };
     }

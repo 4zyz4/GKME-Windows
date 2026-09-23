@@ -54,6 +54,9 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     private readonly HidReportBuilder? _builder;
     private readonly bool _hasHid;
     private readonly bool _switchProtocol;
+    /// <summary>Switch device type reported to the host: 1 = Joy-Con (L),
+    /// 2 = Joy-Con (R), 3 = Pro Controller. Sourced from the profile PID.</summary>
+    private readonly byte _switchDeviceType;
     private readonly int _rawInputSize;
     private readonly HIDMaestro.Internal.VendorControlRequest[]? _vendorRequests;
     private readonly IntPtr _inputView;
@@ -108,10 +111,16 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         Devid = (1u << 16) | (uint)(index + 1);
 
         _hasHid = Descriptors.HasHidInterface;
-        // The Switch Pro (057E:2009) drives its own 0x30 wire format from the
-        // submitted body and never uses the generic descriptor-driven encoder,
-        // so skip the (203-byte, vendor-blob) report-descriptor parse entirely.
-        _switchProtocol = Descriptors.VendorId == 0x057E && Descriptors.ProductId == 0x2009;
+        // The Switch family (Pro 0x2009, Joy-Con L 0x2006, Joy-Con R 0x2007)
+        // drives its own 0x30 wire format from the submitted body and never
+        // uses the generic descriptor-driven encoder, so skip the (203-byte,
+        // vendor-blob) report-descriptor parse entirely.
+        _switchProtocol = Descriptors.VendorId == 0x057E &&
+            (Descriptors.ProductId == 0x2009 || Descriptors.ProductId == 0x2006 ||
+             Descriptors.ProductId == 0x2007);
+        _switchDeviceType = Descriptors.ProductId == 0x2006 ? (byte)0x01
+            : Descriptors.ProductId == 0x2007 ? (byte)0x02
+            : (byte)0x03;
         _builder = (_hasHid && !_switchProtocol) ? profile.GetOrBuildReportBuilder() : null;
         _rawInputSize = _builder != null && _builder.InputReportByteSize > 0
             ? _builder.InputReportByteSize
@@ -456,9 +465,9 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         reply[1] = cmd;
         switch (cmd)
         {
-            case 0x01: // Status: 81 01 00 <type=Pro> <MAC reversed>
+            case 0x01: // Status: 81 01 00 <type> <MAC reversed>
                 reply[2] = 0x00;
-                reply[3] = 0x03;
+                reply[3] = _switchDeviceType;
                 for (int i = 0; i < 6; i++) reply[4 + i] = SwitchMac(5 - i);
                 SwitchQueueReply(reply);
                 break;
@@ -499,7 +508,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                 reply[13] = 0x82;
                 reply[15] = 0x03; // firmware 03.8B
                 reply[16] = 0x8B;
-                reply[17] = 0x03; // type: Pro Controller
+                reply[17] = _switchDeviceType; // 1=L, 2=R, 3=Pro
                 reply[18] = 0x02;
                 for (int i = 0; i < 6; i++) reply[19 + i] = SwitchMac(i);
                 reply[25] = 0x01;
@@ -562,9 +571,10 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     /// coefficients that reduce SDL's LoadIMUCalibration to its default
     /// scales), stick factory calibration @0x603D (center 0x800, range
     /// 0x600), colors @0x6050, and the six-axis/stick params blocks. Also
-    /// serves a serial number @0x6000 and device type @0x6012 (Pro) that
-    /// driver.c leaves 0xFF, which eden's joycon driver reads on init.</summary>
-    private static byte SwitchSpiByte(uint a)
+    /// serves a serial number @0x6000 and device type @0x6012 (1=L, 2=R,
+    /// 3=Pro) that driver.c leaves 0xFF, which eden's joycon driver reads on
+    /// init.</summary>
+    private byte SwitchSpiByte(uint a)
     {
         ReadOnlySpan<byte> imuCal = stackalloc byte[24]
         {
@@ -600,7 +610,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         };
 
         if (a >= 0x6000 && a < 0x6000 + 16) return serial[(int)(a - 0x6000)];
-        if (a == 0x6012) return 0x03; // device type: Pro Controller
+        if (a == 0x6012) return _switchDeviceType; // 1=L, 2=R, 3=Pro
         if (a >= 0x6020 && a < 0x6020 + 24) return imuCal[(int)(a - 0x6020)];
         if (a >= 0x603D && a < 0x603D + 18) return stickCal[(int)(a - 0x603D)];
         if (a >= 0x6050 && a < 0x6050 + 12) return colors[(int)(a - 0x6050)];

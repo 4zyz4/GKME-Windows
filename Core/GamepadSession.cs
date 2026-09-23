@@ -272,7 +272,12 @@ public class GamepadSession : IDisposable
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
     private volatile object? _controller;
+    // Second USB/IP controller, used only by modes that instantiate two
+    // devices at once (currently dual Joy-Con: primary = left, secondary =
+    // right). Every other mode leaves this null.
+    private volatile object? _controllerSecondary;
     public object? Controller => _controller;
+    public object? SecondaryController => _controllerSecondary;
     public bool IsConnected => !_disposed;
     public bool IsReady => Controller != null;
     public bool HasBeenReady => _readyFired;
@@ -382,6 +387,9 @@ public class GamepadSession : IDisposable
                             break;
                         case ControllerMode.SwitchPro:
                             SubmitSwitchReport(input);
+                            break;
+                        case ControllerMode.JoyCon:
+                            SubmitJoyConReport(input);
                             break;
                         default:
                             SubmitXbox360Report(input);
@@ -508,7 +516,9 @@ public class GamepadSession : IDisposable
                 {
                     try
                     {
-                        _controller = CreateController(Mode);
+                        var created = CreateControllers(Mode);
+                        _controller = created.Primary;
+                        _controllerSecondary = created.Secondary;
                     }
                     catch (Exception ex)
                     {
@@ -536,8 +546,30 @@ public class GamepadSession : IDisposable
         _ = SendTestToneStateAsync();
     }
 
-    private object? CreateController(ControllerMode mode)
+    private readonly record struct CreatedControllers(object Primary, object? Secondary);
+
+    /// <summary>Creates the controller(s) a mode needs. Every mode is a single
+    /// USB/IP composite device except dual Joy-Con, which presents a real
+    /// left (057E:2006) and right (057E:2007) half as two independent USB
+    /// devices so eden/SDL sees a genuine pair.</summary>
+    private CreatedControllers CreateControllers(ControllerMode mode)
     {
+        if (mode == ControllerMode.JoyCon)
+        {
+            var left = CreateController("joycon-l-composite", mode);
+            object? right = null;
+            try
+            {
+                right = CreateController("joycon-r-composite", mode);
+            }
+            catch
+            {
+                DestroyController(left);
+                throw;
+            }
+            return new CreatedControllers(left, right);
+        }
+
         // All controllers are presented through the USB/IP backend. Pick the
         // matching composite profile; the Xbox 360 wired persona is a
         // vendor-class device, the others are HID composite personas.
@@ -548,7 +580,11 @@ public class GamepadSession : IDisposable
             ControllerMode.SwitchPro => "switch-pro-composite",
             _ => "dualshock-4-v2-composite",
         };
+        return new CreatedControllers(CreateController(profileId, mode), null);
+    }
 
+    private object CreateController(string profileId, ControllerMode mode)
+    {
         var profile = _hmContext.GetProfile(profileId)
             ?? throw new InvalidOperationException($"No HIDMaestro profile found for mode {mode} (profile '{profileId}').");
 
@@ -762,6 +798,43 @@ public class GamepadSession : IDisposable
         SendHdRumble(lHiF, lHiA, lLoF, lLoA, rHiF, rHiA, rLoF, rLoA);
     }
 
+    /// <summary>Joy-Con HD rumble. A single Joy-Con has one LRA and reports
+    /// one effective accent per output 0x01/0x10; decode it and drive the
+    /// phone lane matching the half that produced it (left device → left
+    /// lane, right device → right lane), keeping the other lane's last value.</summary>
+    private void HandleJoyconRumbleOutput(HMOutputPacket packet, bool left)
+    {
+        if (packet.Source != HMOutputSource.HidOutput) return;
+        if (packet.ReportId != 0x01 && packet.ReportId != 0x10) return;
+        var d = packet.Data.Span;
+        if (d.Length < 5) return;
+
+        DecodeHdRumble(d.Slice(1, 4), out float hiF, out float hiA, out float loF, out float loA);
+
+        lock (_switchHapticLock)
+        {
+            bool changed;
+            if (left)
+            {
+                changed =
+                    MathF.Abs(hiF - _swLastHiFreqL) > 0.5f || MathF.Abs(loF - _swLastLoFreqL) > 0.5f ||
+                    MathF.Abs(hiA - _swLastHiAmpL) > 0.002f || MathF.Abs(loA - _swLastLoAmpL) > 0.002f;
+                _swLastHiFreqL = hiF; _swLastHiAmpL = hiA; _swLastLoFreqL = loF; _swLastLoAmpL = loA;
+            }
+            else
+            {
+                changed =
+                    MathF.Abs(hiF - _swLastHiFreqR) > 0.5f || MathF.Abs(loF - _swLastLoFreqR) > 0.5f ||
+                    MathF.Abs(hiA - _swLastHiAmpR) > 0.002f || MathF.Abs(loA - _swLastLoAmpR) > 0.002f;
+                _swLastHiFreqR = hiF; _swLastHiAmpR = hiA; _swLastLoFreqR = loF; _swLastLoAmpR = loA;
+            }
+            if (!changed) return;
+
+            SendHdRumble(_swLastHiFreqL, _swLastHiAmpL, _swLastLoFreqL, _swLastLoAmpL,
+                         _swLastHiFreqR, _swLastHiAmpR, _swLastLoFreqR, _swLastLoAmpR);
+        }
+    }
+
     /// <summary>Keep-alive for the phone's HD-rumble synth. While a Switch Pro
     /// is emulated the current band state is re-sent every 50 ms, including an
     /// all-zero state, so the phone keeps its synthesis thread and output
@@ -774,7 +847,7 @@ public class GamepadSession : IDisposable
             try { await Task.Delay(50, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
             if (_disposed) return;
-            if (Mode != ControllerMode.SwitchPro || Controller == null) continue;
+            if ((Mode != ControllerMode.SwitchPro && Mode != ControllerMode.JoyCon) || Controller == null) continue;
 
             float lhf, lha, llf, lla, rhf, rha, rlf, rla;
             lock (_switchHapticLock)
@@ -806,6 +879,19 @@ public class GamepadSession : IDisposable
         if (Mode == ControllerMode.SwitchPro)
         {
             HandleSwitchRumbleOutput(packet);
+            return;
+        }
+
+        if (Mode == ControllerMode.JoyCon)
+        {
+            // One report per half; the primary device is the left Joy-Con,
+            // the secondary the right. Map each half's rumble to the phone's
+            // matching LRA lane. Ignore reports from a controller being
+            // torn down during a mode switch.
+            if (ReferenceEquals(controller, _controller))
+                HandleJoyconRumbleOutput(packet, left: true);
+            else if (ReferenceEquals(controller, _controllerSecondary))
+                HandleJoyconRumbleOutput(packet, left: false);
             return;
         }
 
@@ -1405,6 +1491,20 @@ public class GamepadSession : IDisposable
         SubmitMouseAndTouchpad(input);
     }
 
+    /// <summary>Packs one 48-byte Switch report-0x30 body and feeds it to both
+    /// Joy-Con halves. Each half is a separate USB HID device with its own
+    /// device type, so eden reads only the buttons/stick belonging to that
+    /// side; the shared body carries everything and each side ignores the
+    /// other's bits.</summary>
+    private void SubmitJoyConReport(GamepadInput input)
+    {
+        Span<byte> body = stackalloc byte[SwitchProInput.BodySize];
+        SwitchProInput.BuildBody(input, body);
+        if (Controller is HMController primary) primary.SubmitRawReport(body);
+        if (_controllerSecondary is HMController secondary) secondary.SubmitRawReport(body);
+        SubmitMouseAndTouchpad(input);
+    }
+
     /// <summary>
     /// Process mousepad data from protobuf (WiFi/UDP mode).
     /// Reads mouse_dx, mouse_dy, mouse_wheel, mouse_pan, mouse_buttons from protobuf
@@ -1663,10 +1763,10 @@ public class GamepadSession : IDisposable
             _ = SendClearTriggerEffectsAsync();
 
             // 创建新控制器；成功前保留旧控制器。若创建失败，系统仍只有一个旧手柄，
-            object? newCtrl;
+            CreatedControllers newSet;
             try
             {
-                newCtrl = await Task.Run(() => CreateController(mode));
+                newSet = await Task.Run(() => CreateControllers(mode));
             }
             catch (Exception ex)
             {
@@ -1675,36 +1775,32 @@ public class GamepadSession : IDisposable
                 return Mode;
             }
 
-            object? oldCtrl;
+            object? oldPrimary, oldSecondary;
             lock (_controllerLock)
             {
                 if (_disposed)
                 {
-                    DestroyController(newCtrl);
+                    DestroyController(newSet.Primary);
+                    DestroyController(newSet.Secondary);
                     return Mode;
                 }
-                oldCtrl = _controller;
-                _controller = newCtrl;
+                oldPrimary = _controller;
+                oldSecondary = _controllerSecondary;
+                _controller = newSet.Primary;
+                _controllerSecondary = newSet.Secondary;
                 Mode = mode;
             }
 
             // 销毁旧控制器
-            if (oldCtrl != null && !ReferenceEquals(oldCtrl, newCtrl))
+            if ((oldPrimary != null && !ReferenceEquals(oldPrimary, newSet.Primary))
+                || (oldSecondary != null && !ReferenceEquals(oldSecondary, newSet.Secondary)))
             {
-                var toDestroy = oldCtrl;
+                var toDestroyPrimary = oldPrimary;
+                var toDestroySecondary = oldSecondary;
                 _ = Task.Run(() =>
                 {
-                    try
-                    {
-                        if (toDestroy is HMController hm)
-                            PreRemoveDevice(hm);
-                        DestroyController(toDestroy);
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine(
-                            $"[GamepadSession] destroy old controller failed: {ex.Message}");
-                    }
+                    DestroyControllerForMode(toDestroyPrimary);
+                    DestroyControllerForMode(toDestroySecondary);
                 });
             }
 
@@ -1742,9 +1838,12 @@ public class GamepadSession : IDisposable
         ClearPendingAudio();
         _ = SendClearTriggerEffectsAsync();
 
-        if (Controller is HMController hmCtrl)
+        var primary = Controller;
+        var secondary = _controllerSecondary;
+        if (primary is HMController hmCtrl)
         {
             var ctrl = hmCtrl;
+            var ctrlSecond = secondary as HMController;
             _cleanupTask = Task.Run(() =>
             {
                 PreRemoveDevice(ctrl);
@@ -1753,13 +1852,24 @@ public class GamepadSession : IDisposable
                 {
                     System.Diagnostics.Debug.WriteLine($"[GamepadSession] dispose HM controller failed: {ex.Message}");
                 }
+                if (ctrlSecond != null)
+                {
+                    PreRemoveDevice(ctrlSecond);
+                    try { ctrlSecond.Dispose(); }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[GamepadSession] dispose HM controller failed: {ex.Message}");
+                    }
+                }
             });
         }
         else
         {
-            DestroyController(Controller);
+            DestroyController(primary);
+            DestroyController(secondary);
         }
         _controller = null;
+        _controllerSecondary = null;
 
         OnDisconnected?.Invoke(this);
     }
@@ -1859,12 +1969,30 @@ public class GamepadSession : IDisposable
                 case ControllerMode.SwitchPro:
                     SubmitSwitchReport(neutral);
                     break;
+                case ControllerMode.JoyCon:
+                    SubmitJoyConReport(neutral);
+                    break;
                 default:
                     SubmitDs4Report(neutral);
                     break;
             }
         }
         catch { }
+    }
+
+    private static void DestroyControllerForMode(object? ctrl)
+    {
+        if (ctrl == null) return;
+        try
+        {
+            if (ctrl is HMController hm) PreRemoveDevice(hm);
+            DestroyController(ctrl);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"[GamepadSession] destroy old controller failed: {ex.Message}");
+        }
     }
 
     private static void DestroyController(object? ctrl)

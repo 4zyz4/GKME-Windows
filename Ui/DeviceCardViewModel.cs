@@ -108,6 +108,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.Xbox360,
         ControllerMode.Dualsense,
         ControllerMode.SwitchPro,
+        ControllerMode.JoyCon,
     };
 
     public static string DisplayName(ControllerMode mode) => mode switch
@@ -116,6 +117,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.Xbox360 => "Xbox 360",
         ControllerMode.Dualsense => "DualSense",
         ControllerMode.SwitchPro => "Switch Pro",
+        ControllerMode.JoyCon => "双 Joy-Con",
         _ => "?",
     };
 
