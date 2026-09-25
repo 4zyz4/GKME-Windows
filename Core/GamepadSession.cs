@@ -231,6 +231,11 @@ public class GamepadSession : IDisposable
     private volatile GamepadInput? _pendingInput;
 
     private volatile bool _switchingMode;
+    // Tracks the background teardown of the controllers a previous switch
+    // retired. The next switch awaits it before creating replacements, so a
+    // new USB/IP persona never plugs in while the old one is still being
+    // removed (otherwise Windows can carry the old audio function over).
+    private Task? _pendingDestroy;
     private byte _previousTouchCounter;
     private int _ds4TouchCounter;
     private readonly System.Diagnostics.Stopwatch _ds4Timestamp = System.Diagnostics.Stopwatch.StartNew();
@@ -1755,6 +1760,18 @@ public class GamepadSession : IDisposable
         _switchingMode = true;
         try
         {
+            // Let the previous switch's background teardown finish first.
+            // The USB/IP dispose waits for the vhci port to be released; if
+            // we created the new device before that, Windows could reuse the
+            // dying port and graft the old composite's audio function onto
+            // the new persona.
+            var pendingDestroy = _pendingDestroy;
+            if (pendingDestroy != null)
+            {
+                try { await pendingDestroy; } catch { }
+                _pendingDestroy = null;
+            }
+
             _lastLargeMotor = 0;
             _lastSmallMotor = 0;
             _lastLeftTriggerEffect = null;
@@ -1797,7 +1814,7 @@ public class GamepadSession : IDisposable
             {
                 var toDestroyPrimary = oldPrimary;
                 var toDestroySecondary = oldSecondary;
-                _ = Task.Run(() =>
+                _pendingDestroy = Task.Run(() =>
                 {
                     DestroyControllerForMode(toDestroyPrimary);
                     DestroyControllerForMode(toDestroySecondary);
@@ -1844,8 +1861,15 @@ public class GamepadSession : IDisposable
         {
             var ctrl = hmCtrl;
             var ctrlSecond = secondary as HMController;
-            _cleanupTask = Task.Run(() =>
+            var priorDestroy = _pendingDestroy;
+            _cleanupTask = Task.Run(async () =>
             {
+                // Drain any teardown a mode switch left running so a caller
+                // awaiting WaitForCleanupAsync sees the whole tree gone.
+                if (priorDestroy != null)
+                {
+                    try { await priorDestroy; } catch { }
+                }
                 PreRemoveDevice(ctrl);
                 try { ctrl.Dispose(); }
                 catch (Exception ex)

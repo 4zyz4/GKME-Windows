@@ -162,6 +162,21 @@ internal sealed class UsbipBackendHandle : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         try { VhciClient.Detach(VhciPort); } catch { }
+
+        // PLUGOUT is synchronous but Windows' removal of the emulated
+        // device's child functions (audio, HID) is not. Wait for the port
+        // to actually leave the imported list before letting it be reused;
+        // otherwise a fast mode switch re-attaches onto a port whose old
+        // audio devnode is still alive and Windows keeps the audio function
+        // on the new (audio-less) persona.
+        if (!VhciClient.WaitForPortDetached(VhciPort, TimeoutScale.Apply(3_000)))
+        {
+            // One retry: the first plugout may have raced a pending PnP
+            // operation. Best-effort, bounded, never throws.
+            try { VhciClient.Detach(VhciPort); } catch { }
+            VhciClient.WaitForPortDetached(VhciPort, TimeoutScale.Apply(2_000));
+        }
+
         _server.Unregister(Device);
         Device.Dispose();
     }

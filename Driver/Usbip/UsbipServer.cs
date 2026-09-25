@@ -91,7 +91,14 @@ internal sealed class UsbipServer : IDisposable
 
     public void Unregister(UsbipEmulatedDevice device)
     {
-        lock (_devices) _devices.Remove(device.BusId);
+        // Identity-checked: a late dispose of a previous device must never
+        // unregister a newer device that already claimed the same busid
+        // (BulkId "1-N" is reused across mode switches).
+        lock (_devices)
+        {
+            if (_devices.TryGetValue(device.BusId, out var current) && ReferenceEquals(current, device))
+                _devices.Remove(device.BusId);
+        }
     }
 
     private void AcceptLoop()

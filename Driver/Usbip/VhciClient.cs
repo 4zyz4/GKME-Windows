@@ -126,6 +126,32 @@ internal static class VhciClient
             IntPtr.Zero, 0, out _, IntPtr.Zero);
     }
 
+    /// <summary>Wait, bounded, until a vhci port no longer appears in the
+    /// imported-device list. PLUGOUT_HARDWARE is synchronous, but PnP's
+    /// teardown of the emulated device's child functions (the UAC/HID
+    /// devnodes) is not; re-attaching onto the same port before that
+    /// completes makes Windows merge the new persona onto the dying
+    /// devnode, which is how a pad with no audio interface inherits a
+    /// stale USB Audio endpoint when switching modes repeatedly.
+    /// Returns true when the port is gone (or the driver is unavailable,
+    /// which degrades to the previous best-effort behavior).</summary>
+    public static bool WaitForPortDetached(int port, int timeoutMs)
+    {
+        if (port <= 0) return true;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            bool present = false;
+            foreach (var row in GetImportedDevices())
+            {
+                if (row.Port == port) { present = true; break; }
+            }
+            if (!present) return true;
+            System.Threading.Thread.Sleep(40);
+        }
+        return false;
+    }
+
     /// <summary>Cancel the driver's background re-attach attempts for one
     /// exact location. Safe to call when none exist.</summary>
     public static void StopAttachAttempts(string host, int port, string busid)

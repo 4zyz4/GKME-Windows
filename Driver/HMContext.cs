@@ -304,9 +304,16 @@ public sealed class HMContext : IDisposable
     // Called by HMController.Dispose; the context tears down its half of the state.
     internal void OnControllerDisposing(HMController controller)
     {
-        lock (_lock) _controllers.Remove(controller.Index);
+        // Tear the device down BEFORE freeing its index. The USB/IP dispose
+        // can block briefly waiting for the vhci port to be released; if the
+        // index were freed first, a concurrent CreateController could pick
+        // it (and hence the same busid "1-N") while the old device is still
+        // registered, letting the old teardown unregister/destroy the new
+        // controller's section. Keeping the index occupied until the device
+        // is gone serializes the two.
         try { controller.UsbipHandle?.Dispose(); } catch { }
         try { Internal.SharedMemoryIO.DestroyController(controller.Index); } catch { }
+        lock (_lock) _controllers.Remove(controller.Index);
     }
 
     private void ThrowIfDisposed()
