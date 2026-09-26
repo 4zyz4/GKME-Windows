@@ -25,6 +25,8 @@ internal static class StaticProfileRegistry
             pid: "0x2007",
             product: "Joy-Con (R)",
             serial: "000000000002");
+        s_profiles["keyboard-composite"] = BuildKeyboard();
+        s_profiles["mouse-composite"] = BuildMouse();
     }
 
     public static Dictionary<string, ControllerProfile> AllProfiles => s_profiles;
@@ -710,6 +712,170 @@ internal static class StaticProfileRegistry
                     "StatePacket_t + 3x IMU in report 0x30 (padded to 64); HD " +
                     "rumble arrives in output 0x01/0x10 and GamepadSession " +
                     "decodes it for the phone's LRAs.",
+            UsbConfiguration = uc
+        };
+    }
+
+    // ── HID keyboard + mouse personas ────────────────────────────────────
+    //
+    // GKME previously synthesized keyboard/mouse input with user-mode
+    // SendInput (InputDll.dll). Those personas present the input as two
+    // genuine USB HID devices on the USB/IP backend instead, exactly like
+    // the gamepads, so the host sees real hardware and no injection DLL is
+    // needed. Both descriptors are ported from VIIPER's device/keyboard and
+    // device/mouse Go definitions (the keyboard uses the full 256-bit
+    // key-bitmap report so any chord of keys survives) and validated against
+    // HIDMaestro's own report-descriptor parser at create time.
+
+    // Keyboard report descriptor (68 bytes): 8-bit modifier field, 8-bit
+    // reserved, 256-bit key bitmap, then the 5-bit LED output + 3-bit pad.
+    private const string KeyboardUsbReportDescriptor =
+        "05010906A101050719E029E7150025017501950881027508950181010507" +
+        "190029FF150025017501960001810205081901290515002501750195059102" +
+        "750395019101C0";
+
+    // HID interface (class 3, no boot subclass — the report is not the 8-byte
+    // boot layout), one interrupt IN endpoint. wDescriptorLength 0x44 = 68.
+    private const string KeyboardUsbConfigurationDescriptor =
+        "090222000101008032" +
+        "090400000103000000" +
+        "092111010001224400" +
+        "0705810340000A";
+
+    // Mouse report descriptor (119 bytes): 8 buttons, 16-bit relative X/Y
+    // (the phone can hand us deltas up to ±32767 in one frame), and 16-bit
+    // vertical Wheel / consumer AC Pan. Each scroll axis lives in its own
+    // Logical collection alongside a 120-count Resolution Multiplier feature
+    // (HID "Enhanced Wheel Support"): Windows maps 120 raw units to one
+    // WHEEL_DELTA detent, which is exactly the unit the phone sends, so
+    // sub-detent motion survives as true high-resolution scrolling. Layout
+    // ported from hid-remapper's proven kb_mouse descriptor.
+    private const string MouseUsbReportDescriptor =
+        "05010902A1010901A1000509190129089508750125018102" +
+        "0501093009319502751016008026FF7F8106" +
+        "A1020948950175021500250135014578B10209383500450016008026FF7F75108106C0" +
+        "A102094875021500250135014578B102350045007504B103050C16008026FF7F75100A38028106C0" +
+        "C0C0";
+
+    // HID interface (class 3), one interrupt IN endpoint (9-byte report → 16B
+    // packet, bInterval 1 = 1 ms poll → up to 1 kHz). wDescriptorLength
+    // 0x77 = 119.
+    private const string MouseUsbConfigurationDescriptor =
+        "090222000101008032" +
+        "090400000103000000" +
+        "092111010001227700" +
+        "07058103100001";
+
+    private static ControllerProfile BuildKeyboard()
+    {
+        var uc = new UsbConfigurationSpec
+        {
+            ConfigurationValue = 1,
+            Attributes = 0x80,          // bus powered, no remote wakeup
+            MaxPowerMilliamps = 100,
+            BusSpeed = "full",
+            // bcdUSB 2.00, class 0, bMaxPacketSize0 64, VID 2E8A PID 0010
+            // (same VID as VIIPER's reference keyboard), bcdDevice 0x0100.
+            DeviceDescriptorHex = "12010002000000408A2E1000000101020301",
+            ConfigurationDescriptorHex = KeyboardUsbConfigurationDescriptor,
+            InputReportSize = 34,
+            Interfaces = new List<UsbInterfaceSpec>
+            {
+                new UsbInterfaceSpec
+                {
+                    InterfaceNumber = 0, Function = "hid",
+                    AltSettings = new List<UsbAltSettingSpec>
+                    {
+                        new UsbAltSettingSpec
+                        {
+                            AltSetting = 0, InterfaceClass = 3, InterfaceSubClass = 0, InterfaceProtocol = 0,
+                            Endpoints = new List<UsbEndpointSpec>
+                            {
+                                new UsbEndpointSpec { Address = 0x81, TransferType = "interrupt", MaxPacketSize = 64, Interval = 10 }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        return new ControllerProfile
+        {
+            Id = "keyboard-composite",
+            Name = "HID Keyboard (USB)",
+            Vendor = "GKME",
+            Vid = "0x2E8A",
+            Pid = "0x0010",
+            ProductString = "HID Keyboard",
+            ManufacturerString = "GKME",
+            SerialNumberString = "1337",
+            Type = "keyboard",
+            Connection = "usb",
+            Backend = "usbip",
+            Descriptor = KeyboardUsbReportDescriptor,
+            InputReportSize = 34,
+            Notes = "Full N-key-rollover USB HID keyboard on the USB/IP backend. " +
+                    "Input is delivered verbatim from the shared-memory DATA section " +
+                    "as the 34-byte report [modifiers][reserved][256-bit key bitmap].",
+            UsbConfiguration = uc
+        };
+    }
+
+    private static ControllerProfile BuildMouse()
+    {
+        var uc = new UsbConfigurationSpec
+        {
+            ConfigurationValue = 1,
+            Attributes = 0x80,          // bus powered, no remote wakeup
+            MaxPowerMilliamps = 100,
+            BusSpeed = "full",
+            // bcdUSB 2.00, class 0, bMaxPacketSize0 64, VID 2E8A PID 0011,
+            // bcdDevice 0x0100.
+            DeviceDescriptorHex = "12010002000000408A2E1100000101020301",
+            ConfigurationDescriptorHex = MouseUsbConfigurationDescriptor,
+            InputReportSize = 9,
+            ResolutionMultiplier = 120,
+            Interfaces = new List<UsbInterfaceSpec>
+            {
+                new UsbInterfaceSpec
+                {
+                    InterfaceNumber = 0, Function = "hid",
+                    AltSettings = new List<UsbAltSettingSpec>
+                    {
+                        new UsbAltSettingSpec
+                        {
+                            AltSetting = 0, InterfaceClass = 3, InterfaceSubClass = 0, InterfaceProtocol = 0,
+                            Endpoints = new List<UsbEndpointSpec>
+                            {
+                                new UsbEndpointSpec { Address = 0x81, TransferType = "interrupt", MaxPacketSize = 16, Interval = 1 }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        return new ControllerProfile
+        {
+            Id = "mouse-composite",
+            Name = "HID Mouse (USB)",
+            Vendor = "GKME",
+            Vid = "0x2E8A",
+            Pid = "0x0011",
+            ProductString = "HID Mouse",
+            ManufacturerString = "GKME",
+            SerialNumberString = "1337",
+            Type = "mouse",
+            Connection = "usb",
+            Backend = "usbip",
+            Descriptor = MouseUsbReportDescriptor,
+            InputReportSize = 9,
+            Notes = "8-button USB HID mouse with 16-bit relative X/Y and high-" +
+                    "resolution 16-bit vertical wheel / horizontal pan on the " +
+                    "USB/IP backend. A 120-count Resolution Multiplier feature makes " +
+                    "the host map 120 raw units to one detent, so input is delivered " +
+                    "verbatim as the 9-byte report [buttons][dxLE16][dyLE16][wheelLE16]" +
+                    "[panLE16] in WHEEL_DELTA units.",
             UsbConfiguration = uc
         };
     }

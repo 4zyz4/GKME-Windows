@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -10,178 +9,6 @@ using HIDMaestro;
 using HIDMaestro.Internal.Usbip;
 
 namespace GKME.Core;
-
-[Flags]
-internal enum KeyboardModifier : uint
-{
-    LCtrl  = 0x01,
-    LShift = 0x02,
-    LAlt   = 0x04,
-    LWin   = 0x08,
-    RCtrl  = 0x10,
-    RShift = 0x20,
-    RAlt   = 0x40,
-    RWin   = 0x80,
-}
-
-internal static class Win32Keyboard
-{
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void SendKeyDownHid(byte hidUsage);
-
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void SendKeyUpHid(byte hidUsage);
-
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void SendKeyRepeatHid(byte hidUsage);
-
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void SendModifierKeyDown(byte modifierBit);
-
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void SendModifierKeyUp(byte modifierBit);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern IntPtr LoadLibrary(string lpFileName);
-
-    static Win32Keyboard()
-    {
-        try
-        {
-            string exeDir = AppContext.BaseDirectory;
-            string dllPath = Path.Combine(exeDir, "InputDll.dll");
-#pragma warning disable IL3000
-            if (!File.Exists(dllPath))
-                dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Keyboard).Assembly.Location) ?? ".", "InputDll.dll");
-#pragma warning restore IL3000
-            if (File.Exists(dllPath)) { LoadLibrary(dllPath); }
-        }
-        catch { }
-    }
-
-    public static void SendKeyDown(byte hidUsage) { SendKeyDownHid(hidUsage); }
-    public static void SendKeyUp(byte hidUsage) { SendKeyUpHid(hidUsage); }
-
-    public static void SendKeyRepeat(byte hidUsage) { SendKeyRepeatHid(hidUsage); }
-
-    public static void SendModifierKeyDown(KeyboardModifier modifier)
-    { SendModifierKeyDown((byte)((ushort)modifier)); }
-
-    public static void SendModifierKeyUp(KeyboardModifier modifier)
-    { SendModifierKeyUp((byte)((ushort)modifier)); }
-}
-
-/// <summary>
-/// Win32 API mouse controller using SendInput for cursor movement, clicks, and scroll.
-/// </summary>
-internal static class Win32Mouse
-{
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void MouseMoveRelative(int dx, int dy);
-
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void MouseButtonDown(byte button);
-
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void MouseButtonDownUp(byte button);
-
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void MouseButtonUp(byte button);
-
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void MouseScrollVertical(int delta);
-
-    [DllImport("InputDll.dll", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void MouseScrollHorizontal(int delta);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern IntPtr LoadLibrary(string lpFileName);
-
-    static Win32Mouse()
-    {
-        try
-        {
-            string exeDir = AppContext.BaseDirectory;
-            string dllPath = Path.Combine(exeDir, "InputDll.dll");
-#pragma warning disable IL3000
-            if (!File.Exists(dllPath))
-                dllPath = Path.Combine(Path.GetDirectoryName(typeof(Win32Mouse).Assembly.Location) ?? ".", "InputDll.dll");
-#pragma warning restore IL3000
-            if (File.Exists(dllPath)) { LoadLibrary(dllPath); }
-        }
-        catch { }
-    }
-
-    private static int _lastTouchX = 0;
-    private static int _lastTouchY = 0;
-    private static bool _hasLastTouch = false;
-
-    /// <summary>Move mouse by relative delta (dx, dy).</summary>
-    public static void MoveRelative(int dx, int dy)
-    {
-        MouseMoveRelative(dx, dy);
-    }
-
-    /// <summary>Set mouse button state (left/right/middle).</summary>
-    public static void SetButton(int button, bool down)
-    {
-        if (down)
-            MouseButtonDown((byte)button);
-        else
-            MouseButtonUp((byte)button);
-    }
-
-    /// <summary>Scroll vertical wheel (positive = up).</summary>
-    public static void ScrollVertical(int delta)
-    {
-        MouseScrollVertical(delta);
-    }
-
-    /// <summary>Scroll horizontal wheel (positive = right).</summary>
-    public static void ScrollHorizontal(int delta)
-    {
-        MouseScrollHorizontal(delta);
-    }
-
-    /// <summary>
-    /// Process touchpad input: convert finger 0 delta to relative mouse move,
-    /// handle touchpad click as left button, and apply scroll wheel/pan from protobuf.
-    /// </summary>
-    public static void ProcessTouchpad(
-        bool finger0Active, int finger0X, int finger0Y,
-        bool touchpadClick, int mouseWheel, int mousePan, int mouseButtons)
-    {
-        // Relative move from finger 0
-        if (finger0Active && _hasLastTouch)
-        {
-            int dx = finger0X - _lastTouchX;
-            int dy = finger0Y - _lastTouchY;
-            if (dx != 0 || dy != 0) MoveRelative(dx, dy);
-        }
-        if (finger0Active)
-        {
-            _lastTouchX = finger0X;
-            _lastTouchY = finger0Y;
-            _hasLastTouch = true;
-        }
-        else
-        {
-            _hasLastTouch = false;
-        }
-
-        // Touchpad click -> left mouse button
-        if (touchpadClick) SetButton(0, true);
-        else SetButton(0, false);
-
-        // Mouse wheel/pan from protobuf (high-precision scroll)
-        if (mouseWheel != 0) ScrollVertical(mouseWheel);
-        if (mousePan != 0) ScrollHorizontal(mousePan);
-
-        // Additional mouse buttons from protobuf (bits 1=right, 2=middle)
-        if ((mouseButtons & 0x02) != 0) SetButton(1, true); else SetButton(1, false);
-        if ((mouseButtons & 0x04) != 0) SetButton(2, true); else SetButton(2, false);
-    }
-}
 
 public class GamepadSession : IDisposable
 {
@@ -245,16 +72,12 @@ public class GamepadSession : IDisposable
     private byte _nextTrackingId;
     private byte _ds5SequenceCounter;
     private Task? _cleanupTask;
-    private uint _lastMouseButtons;
-    private uint _lastKeyboardModifiers;
-    private readonly HashSet<uint> _lastPressedScanCodes = new();
-
-    // Typematic auto-repeat, driven by the Windows keyboard delay/speed in
-    // Control Panel. Held keys emit repeated key-downs until a single key-up.
-    private readonly object _keyRepeatLock = new();
-    private readonly Dictionary<uint, long> _keyRepeatDueTicks = new();
-    private long _keyRepeatIntervalTicks;
-    private System.Threading.Timer? _keyRepeatTimer;
+    // Virtual USB HID keyboard + mouse (USB/IP backend). Created on first use
+    // and kept for the session's lifetime so mode switches never tear them down.
+    private readonly object _kbMouseLock = new();
+    private VirtualKeyboardMouse? _kbMouse;
+    private bool _kbMouseCreating;
+    private bool _kbMouseFailed;
 
     // 4-channel audio forwarding (DualSense): the phone needs the raw
     // speaker + voice-coil PCM, not just the rumble peaks folded above.
@@ -1532,181 +1355,97 @@ public class GamepadSession : IDisposable
         SubmitMouseAndTouchpad(input);
     }
 
-    /// <summary>
-    /// Process mousepad data from protobuf (WiFi/UDP mode).
-    /// Reads mouse_dx, mouse_dy, mouse_wheel, mouse_pan, mouse_buttons from protobuf
-    /// and uses Win32 SendInput for actual cursor control.
-    /// </summary>
+    /// <summary>Forwards the frame's mouse movement / scroll / buttons to the
+    /// virtual USB HID mouse on the USB/IP backend. The device is created
+    /// lazily on the first frame that actually carries mouse activity.</summary>
     private void SubmitMouseAndTouchpad(GamepadInput input)
     {
-        if (input.MouseDx != 0 || input.MouseDy != 0)
-        {
-            Win32Mouse.MoveRelative(input.MouseDx, input.MouseDy);
-        }
-        if (input.MouseWheel != 0)
-        {
-            Win32Mouse.ScrollVertical(input.MouseWheel);
-        }
-        if (input.MousePan != 0)
-        {
-            Win32Mouse.ScrollHorizontal(input.MousePan);
-        }
-        if (input.MouseButtons != _lastMouseButtons)
-        {
-            uint released = _lastMouseButtons & ~input.MouseButtons;
-            if ((released & 0x01) != 0) Win32Mouse.SetButton(0, false);
-            if ((released & 0x02) != 0) Win32Mouse.SetButton(1, false);
-            if ((released & 0x04) != 0) Win32Mouse.SetButton(2, false);
-            uint pressed = input.MouseButtons & ~_lastMouseButtons;
-            if ((pressed & 0x01) != 0) Win32Mouse.SetButton(0, true);
-            if ((pressed & 0x02) != 0) Win32Mouse.SetButton(1, true);
-            if ((pressed & 0x04) != 0) Win32Mouse.SetButton(2, true);
-            _lastMouseButtons = input.MouseButtons;
-        }
+        bool active = input.MouseDx != 0 || input.MouseDy != 0
+                   || input.MouseWheel != 0 || input.MousePan != 0
+                   || input.MouseButtons != 0;
+        var kbMouse = _kbMouse;
+        if (kbMouse == null && active)
+            kbMouse = EnsureKeyboardMouse();
+        if (kbMouse == null) return;
+
+        kbMouse.SubmitMouse(input.MouseDx, input.MouseDy,
+                            input.MouseWheel, input.MousePan, input.MouseButtons);
     }
 
+    /// <summary>Forwards the frame's full keyboard state (modifier bitmask +
+    /// HID key usages) to the virtual USB HID keyboard on the USB/IP backend.
+    /// Typematic auto-repeat is produced by the OS keyboard driver from the
+    /// held bitmap, so GKME no longer re-injects repeats itself.</summary>
     private void SubmitKeyboardInput(GamepadInput input)
     {
-        HashSet<uint> currentPressed = new(input.PressedScanCodes);
-        
-        HashSet<uint> released = new(_lastPressedScanCodes);
-        released.ExceptWith(currentPressed);
-        foreach (var scancode in released)
-        {
-            StopKeyRepeat(scancode);
-            Win32Keyboard.SendKeyUp((byte)scancode);
-        }
+        bool active = input.PressedScanCodes.Count > 0 || input.KeyboardModifiers != 0;
+        var kbMouse = _kbMouse;
+        if (kbMouse == null && active)
+            kbMouse = EnsureKeyboardMouse();
+        if (kbMouse == null) return;
 
-        HashSet<uint> pressed = new(currentPressed);
-        pressed.ExceptWith(_lastPressedScanCodes);
-        foreach (var scancode in pressed)
-        {
-            Win32Keyboard.SendKeyDown((byte)scancode);
-            StartKeyRepeat(scancode);
-        }
-        _lastPressedScanCodes.Clear();
-        _lastPressedScanCodes.UnionWith(currentPressed);
-
-        uint modifiers = input.KeyboardModifiers;
-        if (modifiers != _lastKeyboardModifiers)
-        {
-            uint releasedMods = _lastKeyboardModifiers & ~modifiers;
-            uint pressedMods = modifiers & ~_lastKeyboardModifiers;
-            if ((releasedMods & 0x01) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LCtrl);
-            if ((releasedMods & 0x02) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LShift);
-            if ((releasedMods & 0x04) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LAlt);
-            if ((releasedMods & 0x08) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.LWin);
-            if ((releasedMods & 0x10) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RCtrl);
-            if ((releasedMods & 0x20) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RShift);
-            if ((releasedMods & 0x40) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RAlt);
-            if ((releasedMods & 0x80) != 0) Win32Keyboard.SendModifierKeyUp(KeyboardModifier.RWin);
-            if ((pressedMods & 0x01) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LCtrl);
-            if ((pressedMods & 0x02) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LShift);
-            if ((pressedMods & 0x04) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LAlt);
-            if ((pressedMods & 0x08) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.LWin);
-            if ((pressedMods & 0x10) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RCtrl);
-            if ((pressedMods & 0x20) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RShift);
-            if ((pressedMods & 0x40) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RAlt);
-            if ((pressedMods & 0x80) != 0) Win32Keyboard.SendModifierKeyDown(KeyboardModifier.RWin);
-            _lastKeyboardModifiers = modifiers;
-        }
+        kbMouse.SubmitKeyboard(input.KeyboardModifiers, input.PressedScanCodes);
     }
 
-    private const uint SPI_GETKEYBOARDDELAY = 0x0016;
-    private const uint SPI_GETKEYBOARDSPEED = 0x000A;
-    private const int KeyboardRepeatTickMs = 15;
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, out int pvParam, uint fWinIni);
-
-    private static (int delayMs, int intervalMs) ReadKeyboardRepeatSettings()
+    /// <summary>Lazily creates the virtual USB HID keyboard/mouse pair. The
+    /// first call starts a background create (a USB/IP attach is slow enough
+    /// that doing it inline would stall the report loop); callers that arrive
+    /// before it finishes simply drop that frame. Returns the live device, or
+    /// null while the create is still in flight (or after it failed).</summary>
+    private VirtualKeyboardMouse? EnsureKeyboardMouse()
     {
-        int delay = -1;
-        int speed = -1;
-        try
-        {
-            if (!SystemParametersInfo(SPI_GETKEYBOARDDELAY, 0, out delay, 0)) delay = -1;
-            if (!SystemParametersInfo(SPI_GETKEYBOARDSPEED, 0, out speed, 0)) speed = -1;
-        }
-        catch { }
+        if (!_hidMaestroAvailable) return null;
 
-        // Fall back to the persisted Control Panel values (stored as strings).
-        if ((delay < 0 || speed < 0) && OperatingSystem.IsWindows())
+        lock (_kbMouseLock)
         {
+            if (_kbMouse != null) return _kbMouse;
+            if (_kbMouseCreating || _kbMouseFailed || _disposed) return null;
+            _kbMouseCreating = true;
+        }
+
+        _ = Task.Run(() =>
+        {
+            VirtualKeyboardMouse created;
             try
             {
-                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Keyboard");
-                if (delay < 0 && key?.GetValue("KeyboardDelay") is { } delayValue)
-                    delay = Convert.ToInt32(delayValue);
-                if (speed < 0 && key?.GetValue("KeyboardSpeed") is { } speedValue)
-                    speed = Convert.ToInt32(speedValue);
+                created = new VirtualKeyboardMouse(_hmContext);
             }
-            catch { }
-        }
-
-        delay = delay < 0 ? 1 : Math.Clamp(delay, 0, 3);
-        speed = speed < 0 ? 31 : Math.Clamp(speed, 0, 31);
-
-        int delayMs = (delay + 1) * 250;
-        double charsPerSecond = 2.5 + speed * 27.5 / 31.0;
-        int intervalMs = Math.Max(1, (int)Math.Round(1000.0 / charsPerSecond));
-        return (delayMs, intervalMs);
-    }
-
-    private void StartKeyRepeat(uint hidUsage)
-    {
-        (int delayMs, int intervalMs) = ReadKeyboardRepeatSettings();
-
-        long now = Stopwatch.GetTimestamp();
-        lock (_keyRepeatLock)
-        {
-            _keyRepeatIntervalTicks = (long)(intervalMs * (double)Stopwatch.Frequency / 1000.0);
-            _keyRepeatDueTicks[hidUsage] = now + (long)(delayMs * (double)Stopwatch.Frequency / 1000.0);
-            _keyRepeatTimer ??= new System.Threading.Timer(KeyRepeatTick, null, KeyboardRepeatTickMs, KeyboardRepeatTickMs);
-            _keyRepeatTimer.Change(KeyboardRepeatTickMs, KeyboardRepeatTickMs);
-        }
-    }
-
-    private void StopKeyRepeat(uint hidUsage)
-    {
-        lock (_keyRepeatLock)
-        {
-            _keyRepeatDueTicks.Remove(hidUsage);
-            if (_keyRepeatDueTicks.Count == 0)
-                _keyRepeatTimer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
-        }
-    }
-
-    private void KeyRepeatTick(object? state)
-    {
-        if (_disposed) return;
-
-        uint[] due;
-        long now = Stopwatch.GetTimestamp();
-        lock (_keyRepeatLock)
-        {
-            if (_keyRepeatDueTicks.Count == 0) return;
-
-            List<uint>? pending = null;
-            foreach (var pair in _keyRepeatDueTicks)
+            catch (UsbipRebootRequiredException)
             {
-                if (now >= pair.Value)
-                    (pending ??= new List<uint>()).Add(pair.Key);
+                MarkKeyboardMouseFailed();
+                try { OnRebootRequired?.Invoke(this); } catch { }
+                return;
             }
-            if (pending == null) return;
+            catch (UsbipInstallRequiredException)
+            {
+                MarkKeyboardMouseFailed();
+                try { OnUsbipInstallRequired?.Invoke(this); } catch { }
+                return;
+            }
+            catch (Exception ex)
+            {
+                MarkKeyboardMouseFailed();
+                System.Diagnostics.Debug.WriteLine(
+                    $"[GamepadSession] create virtual keyboard/mouse failed: {ex.Message}");
+                return;
+            }
 
-            foreach (var key in pending)
-                _keyRepeatDueTicks[key] = now + _keyRepeatIntervalTicks;
-            due = pending.ToArray();
-        }
+            bool orphaned;
+            lock (_kbMouseLock)
+            {
+                orphaned = _disposed || _kbMouse != null;
+                if (!orphaned) _kbMouse = created;
+                _kbMouseCreating = false;
+            }
+            if (orphaned) created.Dispose();
+        });
 
-        // The DLL ignores repeats for keys that are no longer held, so a repeat
-        // racing a key-up can never leave the key stuck down.
-        foreach (var key in due)
-        {
-            try { Win32Keyboard.SendKeyRepeat((byte)key); } catch { }
-        }
+        return null;
+    }
+
+    private void MarkKeyboardMouseFailed()
+    {
+        lock (_kbMouseLock) { _kbMouseCreating = false; _kbMouseFailed = true; }
     }
 
     private static void WriteInt16LE(byte[] buf, int offset, short value)
@@ -1879,10 +1618,11 @@ public class GamepadSession : IDisposable
         if (_disposed) return;
         _disposed = true;
         _cts.Cancel();
-        lock (_keyRepeatLock)
+        VirtualKeyboardMouse? kbMouse;
+        lock (_kbMouseLock)
         {
-            _keyRepeatDueTicks.Clear();
-            _keyRepeatTimer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+            kbMouse = _kbMouse;
+            _kbMouse = null;
         }
         ClearPendingAudio();
         _ = SendClearTriggerEffectsAsync();
@@ -1926,6 +1666,21 @@ public class GamepadSession : IDisposable
         }
         _controller = null;
         _controllerSecondary = null;
+
+        // Tear the virtual keyboard/mouse down after the gamepad so the whole
+        // tree is gone when WaitForCleanupAsync resumes.
+        if (kbMouse != null)
+        {
+            var priorCleanup = _cleanupTask;
+            _cleanupTask = Task.Run(async () =>
+            {
+                if (priorCleanup != null)
+                {
+                    try { await priorCleanup; } catch { }
+                }
+                try { kbMouse.Dispose(); } catch { }
+            });
+        }
 
         OnDisconnected?.Invoke(this);
     }
@@ -2034,6 +1789,12 @@ public class GamepadSession : IDisposable
             }
         }
         catch { }
+
+        // Release any keys / mouse buttons the virtual HID devices may still be
+        // holding, so a dropped link can't leave the host with a stuck key.
+        VirtualKeyboardMouse? kbMouse;
+        lock (_kbMouseLock) kbMouse = _kbMouse;
+        try { kbMouse?.ReleaseAll(); } catch { }
     }
 
     private static void DestroyControllerForMode(object? ctrl)
@@ -2071,7 +1832,6 @@ public class GamepadSession : IDisposable
     public void Dispose()
     {
         Disconnect();
-        _keyRepeatTimer?.Dispose();
         _cts.Dispose();
     }
 }

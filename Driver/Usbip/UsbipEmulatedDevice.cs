@@ -59,6 +59,12 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     private readonly byte _switchDeviceType;
     private readonly int _rawInputSize;
     private readonly HIDMaestro.Internal.VendorControlRequest[]? _vendorRequests;
+    // HID Enhanced Wheel Support: non-zero when the profile declares a
+    // Resolution Multiplier feature (high-resolution mouse). The feature
+    // report is report 0; GET_REPORT(Feature, 0) returns the current value
+    // and SET_REPORT(Feature, 0) stores it.
+    private readonly int _resolutionMultiplier;
+    private byte _resolutionMultiplierValue;
     private readonly IntPtr _inputView;
     private readonly IntPtr _outputView;
     private readonly IntPtr _outputEvent;
@@ -126,6 +132,11 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             ? _builder.InputReportByteSize
             : (profile.InputReportSize ?? 64);
         _vendorRequests = profile.UsbConfiguration?.VendorRequests?.ToArray();
+        _resolutionMultiplier = profile.UsbConfiguration?.ResolutionMultiplier ?? 0;
+        // Enumerating as high-resolution (logical 1 = physical max 120) avoids
+        // depending on a host-side SET before the first scroll. A host that
+        // writes the feature overwrites this.
+        _resolutionMultiplierValue = _resolutionMultiplier > 0 ? (byte)1 : (byte)0;
         _lastInputReport = new byte[Math.Max(1, _rawInputSize)];
         if (_builder != null && _builder.InputReportId != 0) _lastInputReport[0] = _builder.InputReportId;
         if (_switchProtocol)
@@ -972,6 +983,16 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         {
             case 0x01 when deviceToHost: // GET_REPORT
             {
+                // High-resolution wheel handshake: the Resolution Multiplier
+                // feature lives in report 0 (the mouse descriptor uses no
+                // report IDs).
+                if (_resolutionMultiplier > 0 && reportType == 0x03 && reportId == 0)
+                {
+                    var d = new[] { _resolutionMultiplierValue };
+                    int n = Math.Min(1, (int)wLength);
+                    SendRetSubmit(cmd.Seqnum, 0, n, n > 0 ? d : null);
+                    return;
+                }
                 if (reportType == 0x01)
                 {
                     byte[] snapshot;
@@ -1091,6 +1112,14 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             case 0x09 when !deviceToHost: // SET_REPORT
             {
                 var payload = outPayload ?? Array.Empty<byte>();
+                // Resolution Multiplier feature (report 0, no report-ID byte in
+                // the payload): store the host's value and ack.
+                if (_resolutionMultiplier > 0 && reportType == 0x03 && reportId == 0)
+                {
+                    if (payload.Length >= 1) _resolutionMultiplierValue = payload[0];
+                    SendRetSubmit(cmd.Seqnum, 0, payload.Length, null);
+                    return;
+                }
                 byte rid = payload.Length > 0 ? payload[0] : reportId;
                 var data = payload.Length > 0 ? payload.AsSpan(1) : ReadOnlySpan<byte>.Empty;
 

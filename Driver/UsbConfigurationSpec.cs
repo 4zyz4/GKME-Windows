@@ -101,6 +101,15 @@ public sealed class UsbConfigurationSpec
     /// and the USB/IP backend serves it.</summary>
     [JsonPropertyName("vendorRequests")]
     public List<VendorControlRequest>? VendorRequests { get; set; }
+
+    /// <summary>HID "Enhanced Wheel Support" resolution multiplier, when the
+    /// profile's report descriptor declares a Resolution Multiplier feature
+    /// (the high-resolution mouse). Its feature report has no report ID. The
+    /// backend answers GET_REPORT(Feature, 0) with the current value and
+    /// stores SET_REPORT(Feature, 0) writes; null for every profile without
+    /// the feature.</summary>
+    [JsonPropertyName("resolutionMultiplier")]
+    public int? ResolutionMultiplier { get; set; }
 }
 
 /// <summary>One vendor-class EP0 rule served by the USB/IP backend. The
