@@ -9,6 +9,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
 using GamepadEmu.Protocol;
 using GKME.Core;
+using HIDMaestro.Internal.Usbip;
 
 namespace GKME.Ui;
 
@@ -21,6 +22,8 @@ public class MainViewModel : INotifyPropertyChanged
     private string _manualIp = "";
     private readonly Dictionary<string, GamepadSession> _sessionMap = new();
     private readonly HashSet<string> _initialConnecting = new();
+    private int _rebootPromptShown;
+    private int _usbipInstallPromptShown;
 
     public ObservableCollection<DeviceCardViewModel> DeviceCards { get; } = new();
     public ObservableCollection<GamepadSession> Sessions { get; } = new();
@@ -62,12 +65,107 @@ public class MainViewModel : INotifyPropertyChanged
         _network.OnSessionStarted += OnSessionStarted;
         _network.OnSessionEnded += OnSessionEnded;
         _network.OnSessionConnectionLost += OnSessionConnectionLost;
+        _network.OnRebootRequired += OnRebootRequired;
+        _network.OnUsbipInstallRequired += OnUsbipInstallRequired;
+    }
+
+    private void OnRebootRequired()
+    {
+        if (Interlocked.Exchange(ref _rebootPromptShown, 1) != 0) return;
+        Dispatcher.UIThread.Post(ShowRebootRequiredDialog, DispatcherPriority.Background);
+    }
+
+    private void OnUsbipInstallRequired()
+    {
+        if (Interlocked.Exchange(ref _usbipInstallPromptShown, 1) != 0) return;
+        Dispatcher.UIThread.Post(ShowUsbipInstallDialog, DispatcherPriority.Background);
+    }
+
+    private void ShowUsbipInstallDialog()
+    {
+        var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
+        var owner = MainWindow.Instance ?? (lifetime?.MainWindow as Window);
+
+        bool applied = false;
+        var dlg = new UsbipInstallDialog();
+        dlg.Closed += (_, _) =>
+        {
+            // If nothing was installed (the user cancelled), allow the prompt
+            // again on a later controller attempt.
+            if (!applied) Interlocked.Exchange(ref _usbipInstallPromptShown, 0);
+        };
+        dlg.InstallRequested += async () =>
+        {
+            dlg.SetBusy();
+            dlg.SetStatus("正在释放并启动 USBip 安装程序...");
+
+            UsbipInstallResult result;
+            try
+            {
+                result = await Task.Run(() => UsbipDriverInstaller.Install(
+                    s => Dispatcher.UIThread.Post(() => dlg.SetStatus(s)),
+                    interactive: true));
+            }
+            catch (Exception ex)
+            {
+                dlg.SetCompleted("安装失败：" + ex.Message);
+                return;
+            }
+
+            if (result == UsbipInstallResult.Success)
+            {
+                applied = true;
+                // Refresh availability so controllers can be created without
+                // restarting GKME.
+                try { _network?.InitializeHidMaestro(); } catch { }
+                StatusText = "USBip 已安装";
+                dlg.SetCompleted("安装完成，请重新连接手机。");
+            }
+            else if (result == UsbipInstallResult.RebootRequired)
+            {
+                applied = true;
+                dlg.Close();
+                ShowRebootRequiredDialog();
+            }
+            else
+            {
+                dlg.SetCompleted("安装未完成，可稍后重试。");
+            }
+        };
+
+        if (owner != null)
+            _ = dlg.ShowDialog(owner);
+        else
+            dlg.Show();
+    }
+
+    private void ShowRebootRequiredDialog()
+    {
+        StatusText = "需要重启电脑以完成 USBip 驱动更新";
+        var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
+        var owner = MainWindow.Instance ?? (lifetime?.MainWindow as Window);
+
+        var dlg = new RebootPromptDialog();
+        dlg.Closed += (_, _) => Interlocked.Exchange(ref _rebootPromptShown, 0);
+        if (owner != null)
+            _ = dlg.ShowDialog(owner);
+        else
+            dlg.Show();
     }
 
     public Task<bool> InitializeAsync()
     {
         if (_driverOk)
             StartAutoScan();
+
+        // Any transport action detected during startup raised its event
+        // before this view model existed; pick the sticky flags up now that
+        // the window is up. Reboot takes precedence over install.
+        if (_network?.RebootRequired == true)
+            OnRebootRequired();
+        else if (_network?.UsbipInstallRequired == true)
+            OnUsbipInstallRequired();
+
         return Task.FromResult(_driverOk);
     }
 
@@ -489,6 +587,8 @@ public class MainViewModel : INotifyPropertyChanged
         _network.OnSessionStarted -= OnSessionStarted;
         _network.OnSessionEnded -= OnSessionEnded;
         _network.OnSessionConnectionLost -= OnSessionConnectionLost;
+        _network.OnRebootRequired -= OnRebootRequired;
+        _network.OnUsbipInstallRequired -= OnUsbipInstallRequired;
         _network.StopDiscovery();
         await _network.DisconnectAllAsync();
         _initialConnecting.Clear();

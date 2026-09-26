@@ -1500,7 +1500,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     }
 
     /// <summary>Completion callback from the audio engine's pacing thread.
-    /// Builds the isochronous RET_SUBMIT per the 0.9.7.7 receive rules.</summary>
+    /// Builds the isochronous RET_SUBMIT per the 0.9.8.0 receive rules.</summary>
     private void CompleteIsoOnWire(UsbAudioEngine.PendingIso p, byte[]? inCompacted, int perPacketActual)
     {
         var c = _connection;

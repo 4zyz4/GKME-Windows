@@ -6,7 +6,7 @@ embedded in HIDMaestro.Core.dll and written to disk alongside the
 component whenever HIDMaestro deploys it.
 
 --------------------------------------------------------------------
-usbip-win2 (version 0.9.7.7)
+usbip-win2 (version 0.9.8.0)
 https://github.com/vadimgrn/usbip-win2
 --------------------------------------------------------------------
 
@@ -18,8 +18,8 @@ usbip-win2's virtual host controller. Every device behavior remains in
 HIDMaestro's own user-mode code.
 
 The redistributed binary is the upstream release asset
-USBip-0.9.7.7-x64.exe, unmodified, SHA256:
-51620fa5f9f8be5932bc9d786deee557ce06d5407a99cab490dcfac71f185fea
+USBip-0.9.8.0-x64.exe, unmodified, SHA256:
+81f426741f7ee2ed991febe24a22daca8400b6ae2f171054e3fb404897e15d39
 
 BSD 2-Clause License
 

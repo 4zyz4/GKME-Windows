@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -32,17 +33,16 @@ namespace HIDMaestro.Internal.Usbip;
 /// machine, on the first composite controller ever created.</para></summary>
 internal static class UsbipDriverInstaller
 {
-    public const string Version = "0.9.7.7";
+    public const string Version = "0.9.8.0";
     private const string InstallerFile = "USBip-" + Version + "-x64.exe";
     private const string NoticeFile = "THIRD-PARTY-NOTICES.txt";
 
     /// <summary>SHA256 of the upstream release asset, as published by the
-    /// GitHub release API for v.0.9.7.7. The MSBuild PackResources target
-    /// verifies the same digest at build time, so a corrupted or
-    /// substituted binary fails the build; this is the runtime half of
-    /// that check, covering the extracted copy.</summary>
+    /// GitHub release API for v.0.9.8.0. This is the runtime check on the
+    /// extracted copy, the other half of the build-time verification the
+    /// SDK's resource packaging performs.</summary>
     private const string InstallerSha256 =
-        "51620fa5f9f8be5932bc9d786deee557ce06d5407a99cab490dcfac71f185fea";
+        "81f426741f7ee2ed991febe24a22daca8400b6ae2f171054e3fb404897e15d39";
 
     private static readonly object s_lock = new();
     private static bool s_verifiedThisProcess;
@@ -52,17 +52,19 @@ internal static class UsbipDriverInstaller
     /// install step.</summary>
     public static bool IsInstalled => VhciClient.IsAvailable();
 
-    /// <summary>Ensure the transport is installed, deploying the bundled
-    /// installer if it is not. Idempotent and safe to call on every
-    /// composite create. Returns true when the driver is usable.</summary>
+    /// <summary>Ensure the transport is installed at the ABI this build
+    /// speaks, deploying the bundled installer if it is absent and
+    /// upgrading it in place when an older usbip-win2 is present.
+    /// Idempotent and safe to call on every composite create. Returns
+    /// true when the driver is usable.</summary>
     /// <param name="progress">Optional status callback: consumers with a
     /// UI can surface "installing controller audio support" during the
-    /// one-time install, which takes a few seconds and briefly
-    /// re-enumerates USB.</param>
+    /// one-time install/upgrade, which briefly re-enumerates USB.</param>
     public static bool EnsureInstalled(Action<string>? progress = null)
     {
-        if (IsInstalled)
+        if (IsInstalled && VhciClient.IsCurrentAbi())
         {
+            ClearUpgradeNeedsRebootMarker();
             s_verifiedThisProcess = true;
             StampOwnerHardwareId();
             return true;
@@ -70,58 +72,166 @@ internal static class UsbipDriverInstaller
 
         lock (s_lock)
         {
-            if (IsInstalled) return true;
+            if (IsInstalled && VhciClient.IsCurrentAbi())
+            {
+                ClearUpgradeNeedsRebootMarker();
+                return true;
+            }
+
+            // Installing/upgrading is the user's explicit choice now: this
+            // method only reports what is needed, and the UI turns the two
+            // exceptions below into an install or reboot prompt.
+            if (IsInstalled)
+            {
+                if (UpgradeNeedsRebootThisBoot())
+                    throw new UsbipRebootRequiredException(RebootRequiredMessage());
+
+                throw new UsbipInstallRequiredException(true, UpgradeRequiredMessage());
+            }
 
             // A machine can have usbip-win2 already (VIIPER and DS4Windows
             // install the same transport) with its host controller merely
             // not started, or left interface-less by an interrupted PnP
-            // operation. Running the installer over an existing install is
-            // the wrong repair for that: Inno uninstalls the old version
-            // first, and its driver-package removal touches the extension
-            // INF bound to every USB root hub, which re-enumerates the whole
-            // USB tree and can take many minutes. Restarting the devnode
-            // republishes the interface in seconds. Try that first, and only
-            // install when the product is genuinely absent.
+            // operation. Restarting the devnode republishes the interface in
+            // seconds without touching the installer, so try that cheap
+            // repair before asking the user to install.
             if (IsProductInstalled())
             {
                 progress?.Invoke("Repairing the existing USB audio transport...");
-                if (TryRestartHostController(progress)) return true;
+                if (TryRestartHostController(progress) && VhciClient.IsCurrentAbi()) return true;
 
-                throw new InvalidOperationException(
-                    $"usbip-win2 {Version} is installed on this machine but its virtual host " +
-                    "controller is not available, and restarting the device did not recover it. " +
-                    "Reinstalling it from HIDMaestro would first uninstall the existing copy, " +
-                    "which detaches a filter driver from every USB root hub and can take several " +
-                    "minutes, so that is not done automatically. Repair or reinstall usbip-win2, " +
-                    "or reboot, and try again.");
+                if (UpgradeNeedsRebootThisBoot())
+                    throw new UsbipRebootRequiredException(RebootRequiredMessage());
+
+                throw new UsbipInstallRequiredException(true, UpgradeRequiredMessage());
             }
 
-            progress?.Invoke($"Installing USB audio transport (usbip-win2 {Version})...");
+            throw new UsbipInstallRequiredException(false, InstallRequiredMessage());
+        }
+    }
+
+    /// <summary>Extract the bundled installer and run it, then report
+    /// whether the transport is usable. Called from the install prompt after
+    /// the user clicks install; never runs on its own.
+    ///
+    /// <para><paramref name="interactive"/> shows the installer's normal UI
+    /// (the manual path). Windows keeps an already-loaded kernel service
+    /// image until the next boot, so an upgrade that applies but does not
+    /// take effect returns <see cref="UsbipInstallResult.RebootRequired"/>
+    /// and is recorded once per boot so later calls ask for the reboot
+    /// instead of reinstalling in a loop.</para></summary>
+    public static UsbipInstallResult Install(Action<string>? progress = null, bool interactive = true)
+    {
+        lock (s_lock)
+        {
+            if (IsInstalled && VhciClient.IsCurrentAbi())
+            {
+                ClearUpgradeNeedsRebootMarker();
+                StampOwnerHardwareId();
+                return UsbipInstallResult.Success;
+            }
+
+            progress?.Invoke(interactive
+                ? "正在释放并启动 USBip 安装程序..."
+                : $"Installing USB transport (usbip-win2 {Version})...");
 
             string exe = ExtractInstaller();
-            RunSilentInstall(exe);
-
-            // PnP settles the new host controller asynchronously. The
-            // driver's own device arrives quickly; the root-hub
-            // re-enumeration its filter INF triggers takes longer and does
-            // not gate us.
-            var sw = Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds < TimeoutScale.Apply(60_000))
+            if (!RunInstaller(exe, interactive))
             {
-                if (VhciClient.IsAvailable())
-                {
-                    StampOwnerHardwareId();
-                    progress?.Invoke("USB audio transport ready.");
-                    return true;
-                }
-                Thread.Sleep(250);
+                progress?.Invoke("安装未完成。");
+                return UsbipInstallResult.Cancelled;
             }
 
-            throw new InvalidOperationException(
-                $"usbip-win2 {Version} installer completed but its virtual host controller did not " +
-                "appear within the timeout. Check Device Manager for 'USBip 3.X Emulated Host " +
-                "Controller' and any pending-reboot state.");
+            progress?.Invoke("正在检查 USBip 驱动...");
+            if (WaitForCurrentAbi(progress, 60_000))
+            {
+                ClearUpgradeNeedsRebootMarker();
+                StampOwnerHardwareId();
+                progress?.Invoke("USB audio transport ready.");
+                return UsbipInstallResult.Success;
+            }
+
+            MarkUpgradeNeedsReboot();
+            return UsbipInstallResult.RebootRequired;
         }
+    }
+
+    private static string RebootRequiredMessage() =>
+        $"usbip-win2 {Version} was installed, but Windows kept the previous driver image loaded " +
+        "and did not pick up the new interface without a restart. Reboot, then create the " +
+        "controller again.";
+
+    private static string InstallRequiredMessage() =>
+        $"The usbip-win2 {Version} USB transport is not installed. Install it to create composite " +
+        "controllers.";
+
+    private static string UpgradeRequiredMessage() =>
+        "An older usbip-win2 is installed and cannot be used by this build. Upgrade it to " +
+        $"{Version} to create composite controllers.";
+
+    private static string UpgradeMarkerPath =>
+        Path.Combine(Path.GetTempPath(), $"HIDMaestro_usbip_upgrade_needs_reboot_{Version}");
+
+    /// <summary>Approximate UTC instant of the current boot, from the same
+    /// system-wide tick origin every process shares.</summary>
+    private static DateTime CurrentBootTimeUtc()
+    {
+        try { return DateTime.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64); }
+        catch { return DateTime.MinValue; }
+    }
+
+    /// <summary>True when an in-place upgrade already ran this boot,
+    /// replaced the driver package, and the running image stayed at the old
+    /// ABI: a reboot, not another install, is what is needed. Compared on
+    /// the boot instant, so the marker self-clears after a restart.</summary>
+    private static bool UpgradeNeedsRebootThisBoot()
+    {
+        try
+        {
+            if (!File.Exists(UpgradeMarkerPath)) return false;
+            string text = File.ReadAllText(UpgradeMarkerPath);
+            if (!DateTime.TryParse(text, CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind, out DateTime marked))
+                return false;
+            return Math.Abs((marked - CurrentBootTimeUtc()).TotalMinutes) < 3;
+        }
+        catch { return false; }
+    }
+
+    private static void MarkUpgradeNeedsReboot()
+    {
+        try
+        {
+            File.WriteAllText(UpgradeMarkerPath,
+                CurrentBootTimeUtc().ToString("o", CultureInfo.InvariantCulture));
+        }
+        catch { }
+    }
+
+    private static void ClearUpgradeNeedsRebootMarker()
+    {
+        try { if (File.Exists(UpgradeMarkerPath)) File.Delete(UpgradeMarkerPath); } catch { }
+    }
+
+    /// <summary>Poll, bounded, until the vhci host controller is present
+    /// and accepting the current IOCTL ABI, then stamp the owner hardware
+    /// id. PnP settles asynchronously: the driver's own device arrives
+    /// quickly, while the root-hub re-enumeration its filter INF triggers
+    /// takes longer and does not gate us.</summary>
+    private static bool WaitForCurrentAbi(Action<string>? progress, int timeoutMs = 60_000)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < TimeoutScale.Apply(timeoutMs))
+        {
+            if (VhciClient.IsAvailable() && VhciClient.IsCurrentAbi())
+            {
+                StampOwnerHardwareId();
+                progress?.Invoke("USB audio transport ready.");
+                return true;
+            }
+            Thread.Sleep(250);
+        }
+        return false;
     }
 
     /// <summary>True when usbip-win2's driver package is already in the
@@ -471,34 +581,34 @@ internal static class UsbipDriverInstaller
         catch { return false; }
     }
 
-    /// <summary>Run the Inno Setup installer silently. The flags are the
-    /// upstream installer's own: no UI, no message boxes, no reboot.</summary>
-    private static void RunSilentInstall(string exePath)
+    /// <summary>Run the Inno Setup installer and wait for it to exit.
+    /// <paramref name="interactive"/> shows the upstream wizard; otherwise it
+    /// runs silently (the SDK path). Returns true when the installer reported
+    /// success (Inno: 0, or 3010 for success-with-reboot-pending); false when
+    /// the user cancelled or it failed.</summary>
+    private static bool RunInstaller(string exePath, bool interactive)
     {
         var psi = new ProcessStartInfo
         {
             FileName = exePath,
-            Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
+            Arguments = interactive ? "" : "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
             UseShellExecute = false,
-            CreateNoWindow = true,
+            CreateNoWindow = !interactive,
         };
 
         using var p = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start the usbip-win2 installer.");
 
-        if (!p.WaitForExit(TimeoutScale.Apply(300_000)))
-        {
-            try { p.Kill(entireProcessTree: true); } catch { }
+        // An in-place upgrade first runs the previous version's uninstaller,
+        // whose driver-package removal re-enumerates every USB root hub; that
+        // can take minutes on a busy machine. An interactive install may also
+        // wait on the user, so the budget is generous and the process is not
+        // killed: aborting an Inno uninstall half-way can leave a removed
+        // driver package behind.
+        if (!p.WaitForExit(TimeoutScale.Apply(900_000)))
             throw new InvalidOperationException(
                 "The usbip-win2 installer did not finish within the timeout.");
-        }
 
-        // Inno Setup: 0 success, 3010 success-with-reboot-pending. The
-        // driver still works before that reboot, so treat it as success
-        // and let the availability poll be the real verdict.
-        if (p.ExitCode != 0 && p.ExitCode != 3010)
-            throw new InvalidOperationException(
-                $"The usbip-win2 installer failed with exit code {p.ExitCode}. " +
-                "Installing a driver requires elevation, the same as HMContext.InstallDriver.");
+        return p.ExitCode == 0 || p.ExitCode == 3010;
     }
 }

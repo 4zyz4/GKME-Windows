@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using GamepadEmu.Protocol;
 using Google.Protobuf;
 using HIDMaestro;
+using HIDMaestro.Internal.Usbip;
 
 namespace GKME.Core;
 
@@ -293,6 +294,15 @@ public class GamepadSession : IDisposable
     /// <summary>Raised when the phone's Hello provides/updates the device name
     /// and MAC (used mainly for manually entered IP connections).</summary>
     public event Action<GamepadSession>? OnDeviceInfoUpdated;
+    /// <summary>Raised when the USBip transport needs a reboot before
+    /// controllers can be created (a driver upgrade Windows will not load
+    /// until restart). The UI surfaces this as a reboot prompt, not an
+    /// error.</summary>
+    public event Action<GamepadSession>? OnRebootRequired;
+    /// <summary>Raised when the USBip transport must be installed or
+    /// upgraded before controllers can be created. The UI surfaces this as
+    /// an install prompt.</summary>
+    public event Action<GamepadSession>? OnUsbipInstallRequired;
 
     public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, Action onAudioSendStart, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
     {
@@ -524,6 +534,18 @@ public class GamepadSession : IDisposable
                         var created = CreateControllers(Mode);
                         _controller = created.Primary;
                         _controllerSecondary = created.Secondary;
+                    }
+                    catch (UsbipRebootRequiredException)
+                    {
+                        // The driver update needs a reboot, not an error
+                        // dialog; surface it as a prompt.
+                        try { OnRebootRequired?.Invoke(this); } catch { }
+                    }
+                    catch (UsbipInstallRequiredException)
+                    {
+                        // The transport must be installed/upgraded; the UI
+                        // shows the install prompt rather than an error.
+                        try { OnUsbipInstallRequired?.Invoke(this); } catch { }
                     }
                     catch (Exception ex)
                     {
@@ -1784,6 +1806,16 @@ public class GamepadSession : IDisposable
             try
             {
                 newSet = await Task.Run(() => CreateControllers(mode));
+            }
+            catch (UsbipRebootRequiredException)
+            {
+                try { OnRebootRequired?.Invoke(this); } catch { }
+                return Mode;
+            }
+            catch (UsbipInstallRequiredException)
+            {
+                try { OnUsbipInstallRequired?.Invoke(this); } catch { }
+                return Mode;
             }
             catch (Exception ex)
             {

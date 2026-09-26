@@ -40,7 +40,11 @@ internal static class UsbipBackend
         server.Register(device);
         try
         {
-            int vhciPort = VhciClient.Attach("127.0.0.1", server.Port, device.BusId);
+            // Low-latency (WSK event callbacks) is the default receive mode;
+            // pass UsbipReceiveMode.ZeroCopy to fall back to the pre-0.9.8.0
+            // MDL path if a persona's isochronous audio misbehaves.
+            int vhciPort = VhciClient.Attach("127.0.0.1", server.Port, device.BusId,
+                                             UsbipReceiveMode.LowLatency);
             return new UsbipBackendHandle(server, device, vhciPort);
         }
         catch

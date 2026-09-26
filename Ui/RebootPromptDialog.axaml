@@ -1,0 +1,46 @@
+<Window x:Class="GKME.Ui.RebootPromptDialog" xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="需要重启"
+        Width="460" Height="240"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="#1E1E1E"
+        Foreground="#E0E0E0">
+    <Window.Styles>
+        <Style Selector="Button">
+            <Setter Property="Background" Value="#3A3A3A"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="16,7"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        <Style Selector="Button:pointerover">
+            <Setter Property="Background" Value="#4A4A4A"/>
+        </Style>
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="#0E639C"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style Selector="Button.primary:pointerover">
+            <Setter Property="Background" Value="#1177BB"/>
+        </Style>
+    </Window.Styles>
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Spacing="10">
+            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#E0E0E0" Text="需要重启电脑" />
+            <TextBlock FontSize="13" Foreground="#B0B0B0" TextWrapping="Wrap"
+                       Text="USBip 驱动已更新，但 Windows 需要重启后才能加载新驱动，本次运行无法再创建手柄。&#10;重启后 GKME 会自动使用新驱动，无需手动安装。" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="12">
+            <Button x:Name="LaterButton" Content="稍后" />
+            <Button x:Name="RebootButton" Classes="primary" Content="立即重启" />
+        </StackPanel>
+    </Grid>
+</Window>

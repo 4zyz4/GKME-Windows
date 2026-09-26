@@ -10,6 +10,7 @@ using GamepadEmu.Protocol;
 using GKME.Core.Usb;
 using Google.Protobuf;
 using HIDMaestro;
+using HIDMaestro.Internal.Usbip;
 
 namespace GKME.Core;
 
@@ -114,7 +115,29 @@ public class NetworkService : IDisposable
             _hmContext.InstallDriver();
 
             HidMaestroAvailable = true;
+            RebootRequired = false;
+            UsbipInstallRequired = false;
             return true;
+        }
+        catch (UsbipRebootRequiredException)
+        {
+            // The upgrade was applied but only a reboot will load it. Surface
+            // a prompt rather than treating it as a driver failure.
+            try { System.IO.File.AppendAllText("gkme_error.log", "[InitHidMaestro] USBip upgrade requires a reboot\n"); } catch { }
+            HidMaestroAvailable = false;
+            RebootRequired = true;
+            OnRebootRequired?.Invoke();
+            return false;
+        }
+        catch (UsbipInstallRequiredException ex)
+        {
+            // Nothing is installed (or it is too old): the user chooses when
+            // to install. Surface a prompt rather than a driver failure.
+            try { System.IO.File.AppendAllText("gkme_error.log", $"[InitHidMaestro] USBip install required (upgrade={ex.IsUpgrade})\n"); } catch { }
+            HidMaestroAvailable = false;
+            UsbipInstallRequired = true;
+            OnUsbipInstallRequired?.Invoke();
+            return false;
         }
         catch (Exception ex)
         {
@@ -188,6 +211,22 @@ public class NetworkService : IDisposable
     public event Action<GamepadSession>? OnSessionStarted;
     public event Action<GamepadSession>? OnSessionEnded;
     public event Action<string>? OnSessionConnectionLost;
+    /// <summary>Raised when the USBip transport needs a reboot before
+    /// controllers can be created. The UI shows a reboot prompt.</summary>
+    public event Action? OnRebootRequired;
+
+    /// <summary>Sticky flag: the USBip upgrade was applied but only a reboot
+    /// will load it. Set during startup, before a UI can subscribe, so the
+    /// view model re-checks it once the window exists.</summary>
+    public bool RebootRequired { get; private set; }
+
+    /// <summary>Raised when usbip-win2 must be installed or upgraded. The
+    /// UI shows the install prompt.</summary>
+    public event Action? OnUsbipInstallRequired;
+
+    /// <summary>Sticky flag: usbip-win2 is missing or too old. Set during
+    /// startup so a view model that subscribes later still sees it.</summary>
+    public bool UsbipInstallRequired { get; private set; }
 
     private static string GetSessionKey(IPEndPoint remoteEp) =>
         $"{new IPEndPoint(remoteEp.Address, Port)}";
@@ -648,6 +687,8 @@ public class NetworkService : IDisposable
             {
                 OnDeviceInfoUpdated?.Invoke(s.Device);
             };
+            session.OnRebootRequired += _ => OnRebootRequired?.Invoke();
+            session.OnUsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
             session.OnDisconnected += s =>
             {
                 _sessions.TryRemove(s.Device.Key, out _);
@@ -758,6 +799,8 @@ public class NetworkService : IDisposable
             session.OnReady += s => OnSessionStarted?.Invoke(s);
             session.OnConnectionLost += s => OnSessionConnectionLost?.Invoke(s.Device.IpString);
             session.OnDeviceInfoUpdated += s => OnDeviceInfoUpdated?.Invoke(s.Device);
+            session.OnRebootRequired += _ => OnRebootRequired?.Invoke();
+            session.OnUsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
             session.OnDisconnected += s =>
             {
                 _sessions.TryRemove(s.Device.Key, out _);

@@ -8,10 +8,16 @@ namespace HIDMaestro.Internal.Usbip;
 
 /// <summary>Talks to usbip-win2's vhci host controller through its public
 /// device-interface ioctl API (issue #39). Grounded in the pinned
-/// 0.9.7.7 sources: the interface GUID and every struct layout are
+/// 0.9.8.0 sources: the interface GUID and every struct layout are
 /// <c>include/usbip/vhci.h</c>, which the driver documents as a public
 /// API whose input/output data stay stable for the lifetime of each
 /// IOCTL code.
+///
+/// <para>0.9.8.0 added <c>serial[SERIAL_BUFSZ]</c> and <c>wsk_events</c>
+/// to <c>plugin_hardware</c>, and <c>serial[SERIAL_BUFSZ]</c>,
+/// <c>iserial</c> and <c>wsk_events</c> to <c>imported_device</c>. The
+/// driver validates the input length against <c>sizeof(plugin_hardware)</c>
+/// exactly, so the enlarged sizes below are mandatory, not cosmetic.</para>
 ///
 /// <para>Attach uses PLUGIN_HARDWARE_ONCE (function 0x806): one attempt,
 /// no background retry loop, because this SDK owns the server lifecycle
@@ -41,15 +47,33 @@ internal static class VhciClient
     private const int ServiceSize = 32;  // NI_MAXSERV
     private const int HostSize = 1025;   // NI_MAXHOST
 
-    // vhci::ioctl::plugin_hardware: ULONG size; int port; busid[32];
-    // service[32]; host[1025]; natural alignment pads the 1097 payload
-    // bytes to 1100.
+    // vhci::ioctl::plugin_hardware: base{ULONG size} + imported_device_location
+    // {int port; busid[32]; service[32]; host[1025];} + serial[SERIAL_BUFSZ=16]
+    // + bool wsk_events. base occupies 0..3, the location subobject 4..1099
+    // (1093 payload bytes padded to 1096), serial sits at 1100, wsk_events at
+    // 1116, and natural alignment pads the 1117 bytes to 1120. The driver
+    // rejects any other input length, so this size is exact.
+    //
+    // LocationOffset is where the busid string starts (port is the int at
+    // offset 4, busid at 8).
     private const int LocationOffset = 8;
-    private const int PluginStructSize = 1100;
+    private const int WskEventsOffset = 1116;
+    private const int PluginStructSize = 1120;
     // vhci::ioctl::stop_attach_attempts adds int count after host; 1101
     // payload bytes pad to 1104.
     private const int StopStructSize = 1104;
     private const int PlugoutStructSize = 8;
+
+    // plugout_hardware.port: > 0 detaches that port; <= 0 detaches every
+    // imported device. PORT_ALL (-1) is the canonical "all" value; -2
+    // (PORT_ALL_CLOSEONLY) is the driver-internal variant that only closes
+    // the socket.
+    private const int PortAll = -1;
+
+    // vhci::ioctl::get_imported_devices geometry (0.9.8.0): a 4-byte
+    // header followed by imported_device rows.
+    private const int ImportedDevicesHeaderSize = 4;
+    private const int ImportedDeviceRowSize = 1128;
 
     /// <summary>True when usbip-win2's vhci controller is present and
     /// running. Requires no elevation.</summary>
@@ -95,13 +119,20 @@ internal static class VhciClient
 
     /// <summary>Attach one exported device. Blocks until the driver has
     /// connected to the server, completed the import handshake, and
-    /// plugged the UDE device in. Returns the vhci port for detach.</summary>
-    public static int Attach(string host, int port, string busid)
+    /// plugged the UDE device in. Returns the vhci port for detach.
+    ///
+    /// <para><paramref name="receiveMode"/> selects the driver's network
+    /// receive path (usbip-win2 0.9.8.0). The serial field is left empty,
+    /// which the driver accepts and which disables its serial-based
+    /// descriptor patching.</para></summary>
+    public static int Attach(string host, int port, string busid,
+                             UsbipReceiveMode receiveMode = UsbipReceiveMode.LowLatency)
     {
         using var h = Open();
         var buf = new byte[PluginStructSize];
         BitConverter.GetBytes((uint)PluginStructSize).CopyTo(buf, 0);
         WriteLocation(buf, LocationOffset, busid, port.ToString(), host);
+        buf[WskEventsOffset] = receiveMode == UsbipReceiveMode.LowLatency ? (byte)1 : (byte)0;
 
         if (!DeviceIoControl(h.Handle, PLUGIN_HARDWARE_ONCE, buf, (uint)buf.Length,
                 buf, (uint)buf.Length, out _, IntPtr.Zero))
@@ -115,13 +146,14 @@ internal static class VhciClient
     }
 
     /// <summary>Detach the device on a vhci port. portOrZero &lt;= 0
-    /// detaches every imported device (used only by explicit cleanup).</summary>
+    /// detaches every imported device (used only by explicit cleanup);
+    /// 0 is normalized to PORT_ALL, which is what the driver expects.</summary>
     public static void Detach(int portOrZero)
     {
         using var h = Open();
         var buf = new byte[PlugoutStructSize];
         BitConverter.GetBytes((uint)PlugoutStructSize).CopyTo(buf, 0);
-        BitConverter.GetBytes(portOrZero).CopyTo(buf, 4);
+        BitConverter.GetBytes(portOrZero > 0 ? portOrZero : PortAll).CopyTo(buf, 4);
         DeviceIoControl(h.Handle, PLUGOUT_HARDWARE, buf, (uint)buf.Length,
             IntPtr.Zero, 0, out _, IntPtr.Zero);
     }
@@ -168,6 +200,29 @@ internal static class VhciClient
         catch { /* cleanup path; absence of the driver is fine */ }
     }
 
+    /// <summary>True when the installed vhci driver accepts the 0.9.8.0
+    /// IOCTL structures. A pre-0.9.8.0 driver rejects
+    /// <c>get_imported_devices</c> when its <c>size</c> field is the new
+    /// sizeof (USBIP_ERROR_ABI), so a successful call proves the current
+    /// ABI and any failure is treated as "not current". Used by
+    /// <see cref="UsbipDriverInstaller"/> to decide whether the bundled
+    /// installer must upgrade an older usbip-win2 in place.</summary>
+    public static bool IsCurrentAbi()
+    {
+        try
+        {
+            using var h = Open();
+            // A generous row count so a busier controller that answers
+            // STATUS_BUFFER_TOO_SMALL is not mistaken for an old driver.
+            var buf = new byte[ImportedDevicesHeaderSize + ImportedDeviceRowSize * 64];
+            BitConverter.GetBytes((uint)(ImportedDevicesHeaderSize + ImportedDeviceRowSize))
+                .CopyTo(buf, 0);
+            return DeviceIoControl(h.Handle, GET_IMPORTED_DEVICES, buf, (uint)buf.Length,
+                buf, (uint)buf.Length, out _, IntPtr.Zero);
+        }
+        catch { return false; }
+    }
+
     /// <summary>Rows from GET_IMPORTED_DEVICES: (port, busid, service,
     /// host). Used by crash recovery to find and plug out stale imports
     /// that point at this SDK's server range.</summary>
@@ -177,17 +232,16 @@ internal static class VhciClient
         try
         {
             using var h = Open();
-            // imported_device = location (4 + 32 + 32 + 1025 = 1093) +
-            // properties (4 devid + 4 speed + 2 + 2 = 12) = 1105, padded
-            // to 1108. get_imported_devices = 4 size + pad? The struct is
-            // { ULONG size; imported_device devices[]; } with the array at
-            // natural alignment 4 → offset 4.
-            const int RowSize = 1108;
-            const int HeaderSize = 4;
+            // imported_device = location (4 + 32 + 32 + 1025 = 1093, padded
+            // to 1096) + properties (4 devid + 4 speed + 2 + 2 + 16 serial +
+            // 1 iserial + 1 wsk_events = 32) = 1128. get_imported_devices =
+            // 4 size + devices[] at natural alignment 4 → offset 4.
+            const int HeaderSize = ImportedDevicesHeaderSize;
+            const int RowSize = ImportedDeviceRowSize;
             var buf = new byte[HeaderSize + RowSize * 16];
             // The driver validates r->size against sizeof(get_imported_devices),
-            // which is the header plus ONE ANYSIZE_ARRAY row (1112), not the
-            // caller's buffer length (vhci_ioctl.cpp get_imported_devices).
+            // which is the header plus ONE ANYSIZE_ARRAY row (4 + 1128 = 1132),
+            // not the caller's buffer length (vhci_ioctl.cpp get_imported_devices).
             BitConverter.GetBytes((uint)(HeaderSize + RowSize)).CopyTo(buf, 0);
             if (!DeviceIoControl(h.Handle, GET_IMPORTED_DEVICES, buf, (uint)buf.Length,
                     buf, (uint)buf.Length, out uint written, IntPtr.Zero))
@@ -247,4 +301,19 @@ internal static class VhciClient
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr h);
+}
+
+/// <summary>Network receive path the usbip UDE driver uses for an imported
+/// device (usbip-win2 0.9.8.0 <c>plugin_hardware.wsk_events</c>).</summary>
+internal enum UsbipReceiveMode
+{
+    /// <summary>Zero-copy: the driver receives straight into the pending
+    /// URB's MDLs through WSK kernel functions; the only mode before
+    /// 0.9.8.0.</summary>
+    ZeroCopy = 0,
+
+    /// <summary>Low-latency: the driver receives through WSK event
+    /// callbacks and parses the stream from a ring buffer. Better suited
+    /// to small, high-frequency reports.</summary>
+    LowLatency = 1,
 }

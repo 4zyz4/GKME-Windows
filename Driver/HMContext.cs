@@ -64,24 +64,32 @@ public sealed class HMContext : IDisposable
     /// installs nothing.</summary>
     public static bool IsUsbipBackendAvailable => Internal.Usbip.UsbipBackend.IsAvailable;
 
-    /// <summary>Issue #39: install the bundled USB transport now instead
-    /// of on the first composite create. Optional, and only worth calling
-    /// when a consumer wants the one-time install to happen at a moment
-    /// it controls (an onboarding step, a settings toggle) rather than
-    /// mid-session. Idempotent, requires elevation, and reports progress
-    /// through <paramref name="progress"/>.</summary>
+    /// <summary>Issue #39: install/upgrade the bundled USB transport now.
+    /// Runs the installer silently (no series of prompts) and is the
+    /// programmatic counterpart of the UI's install button. Idempotent,
+    /// requires elevation, and reports progress through
+    /// <paramref name="progress"/>.</summary>
     public static void InstallUsbipBackend(Action<string>? progress = null)
-        => Internal.Usbip.UsbipDriverInstaller.EnsureInstalled(progress);
+    {
+        var result = Internal.Usbip.UsbipDriverInstaller.Install(progress, interactive: false);
+        if (result != Internal.Usbip.UsbipInstallResult.Success)
+            throw new InvalidOperationException(
+                result == Internal.Usbip.UsbipInstallResult.RebootRequired
+                    ? "usbip-win2 was installed but a reboot is required before it can be used."
+                    : "The usbip-win2 install did not complete.");
+    }
 
-    /// <summary>Install the bundled USB/IP transport. Idempotent and silent —
-    /// no user prompts beyond the elevation that brought the calling process
-    /// here. The first virtual controller attach will also trigger this
-    /// automatically, so calling it is optional but lets a consumer control
-    /// when the one-time install happens.</summary>
+    /// <summary>Ensure the bundled USB/IP transport is present and at this
+    /// build's interface. Idempotent. Installing now requires the user's
+    /// explicit action, so this does not run the installer itself: when the
+    /// transport is missing or too old it throws
+    /// <see cref="Internal.Usbip.UsbipInstallRequiredException"/> (and
+    /// <see cref="Internal.Usbip.UsbipRebootRequiredException"/> after an
+    /// upgrade that only a reboot will load), which a UI turns into a prompt.
+    /// Pair it with <see cref="InstallUsbipBackend"/> when the caller wants
+    /// to install programmatically.</summary>
     /// <exception cref="UnauthorizedAccessException">Thrown if the calling
     /// process is not elevated.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if the install
-    /// fails.</exception>
     public void InstallDriver()
     {
         ThrowIfDisposed();
