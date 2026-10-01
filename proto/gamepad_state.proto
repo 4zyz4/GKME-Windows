@@ -86,6 +86,12 @@ message HdRumble {
 message TriggerEffects {
   bytes left_trigger_effect = 1;
   bytes right_trigger_effect = 2;
+  // Xbox One impulse-trigger rumble amplitudes (0-255 per side). Unlike the
+  // adaptive-effect byte blocks above these are independent of the trigger
+  // travel and are applied unconditionally. Absent means "no trigger-rumble
+  // source"; an explicitly set 0 is a valid "stop" value.
+  optional uint32 left_trigger_rumble = 3;
+  optional uint32 right_trigger_rumble = 4;
 }
 
 /// 1 kHz test-tone state for the DualSense speaker test (WAVEOUT_CTRL).

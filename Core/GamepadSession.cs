@@ -45,6 +45,10 @@ public class GamepadSession : IDisposable
     private volatile int _lastPlayerLed;
     private byte[]? _lastLeftTriggerEffect;
     private byte[]? _lastRightTriggerEffect;
+    // Xbox One impulse-trigger rumble amplitudes (0-255). Forwarded to the phone
+    // in the TriggerEffects message (separate from the DualSense effect blocks).
+    private byte _lastLeftTriggerRumble;
+    private byte _lastRightTriggerRumble;
 
     // Switch Pro HD rumble -> decoded band parameters for the phone, which
     // synthesises the LRA waveform locally. Only low-rate parameter updates
@@ -109,6 +113,10 @@ public class GamepadSession : IDisposable
     public object? SecondaryController => _controllerSecondary;
     public bool IsConnected => !_disposed;
     public bool IsReady => Controller != null;
+    /// <summary>True when the emulated controller reports trigger rumble instead of
+    /// adaptive-trigger effects (currently Xbox One), so compact frames carry the
+    /// trigger-rumble fields rather than the DualSense effect blocks.</summary>
+    private bool SendsTriggerRumble => Mode == ControllerMode.XboxOne;
     public bool HasBeenReady => _readyFired;
 
     public event Action<GamepadSession>? OnReady;
@@ -569,6 +577,21 @@ public class GamepadSession : IDisposable
         });
     }
 
+    /// <summary>Forwards Xbox One impulse-trigger rumble amplitudes (0-255) to the
+    /// phone. Sent in the same TriggerEffects envelope as DualSense adaptive effects
+    /// but in dedicated fields, so the phone can render it unconditionally.</summary>
+    private async Task SendTriggerRumbleAsync(byte left, byte right)
+    {
+        await SendAsync(new ServerToClient
+        {
+            TriggerEffects = new TriggerEffects
+            {
+                LeftTriggerRumble = (uint)left,
+                RightTriggerRumble = (uint)right,
+            }
+        });
+    }
+
     private async Task SendTriggerEffectEchoAsync(bool force = true)
     {
         if (_lastLeftTriggerEffect == null && _lastRightTriggerEffect == null) return;
@@ -783,6 +806,18 @@ public class GamepadSession : IDisposable
             {
                 _lastLargeMotor = d[4];
                 _lastSmallMotor = d[5];
+
+                // Xbox One impulse-trigger rumble (0-255 per side), forwarded to
+                // the phone as a separate TriggerEffects field so its adaptive
+                // trigger handler can render it unconditionally.
+                byte leftRumble = d[2];
+                byte rightRumble = d[3];
+                if (leftRumble != _lastLeftTriggerRumble || rightRumble != _lastRightTriggerRumble)
+                {
+                    _lastLeftTriggerRumble = leftRumble;
+                    _lastRightTriggerRumble = rightRumble;
+                    _ = SendTriggerRumbleAsync(_lastLeftTriggerRumble, _lastRightTriggerRumble);
+                }
             }
             return;
         }
@@ -1525,13 +1560,7 @@ public class GamepadSession : IDisposable
                     LargeMotor = largeMotor,
                     SmallMotor = smallMotor,
                 },
-                TriggerEffects = (leftTrigger != null || rightTrigger != null)
-                    ? new TriggerEffects
-                    {
-                        LeftTriggerEffect = ByteString.CopyFrom(leftTrigger ?? Array.Empty<byte>()),
-                        RightTriggerEffect = ByteString.CopyFrom(rightTrigger ?? Array.Empty<byte>()),
-                    }
-                    : null,
+                TriggerEffects = BuildCompactTriggerEffects(leftTrigger, rightTrigger),
                 LedState = sendLed
                     ? new LedState
                     {
@@ -1544,6 +1573,29 @@ public class GamepadSession : IDisposable
                     : null,
             }
         });
+    }
+
+    /// <summary>Builds the compact frame's TriggerEffects envelope. DualSense modes carry
+    /// the adaptive-effect byte blocks; Xbox One carries the (always present, even 0)
+    /// trigger-rumble amplitudes so the phone can stop a latched rumble.</summary>
+    private TriggerEffects? BuildCompactTriggerEffects(byte[]? leftTrigger, byte[]? rightTrigger)
+    {
+        bool hasRumble = SendsTriggerRumble;
+        if (leftTrigger == null && rightTrigger == null && !hasRumble) return null;
+
+        var effects = new TriggerEffects
+        {
+            LeftTriggerEffect = ByteString.CopyFrom(leftTrigger ?? Array.Empty<byte>()),
+            RightTriggerEffect = ByteString.CopyFrom(rightTrigger ?? Array.Empty<byte>()),
+        };
+        if (hasRumble)
+        {
+            // Assigning marks the optional fields present, so the phone can tell an
+            // Xbox source (including an explicit 0) from "no trigger-rumble source".
+            effects.LeftTriggerRumble = _lastLeftTriggerRumble;
+            effects.RightTriggerRumble = _lastRightTriggerRumble;
+        }
+        return effects;
     }
 
     public async Task<ControllerMode> SetControllerModeAsync(ControllerMode mode)
@@ -1569,6 +1621,8 @@ public class GamepadSession : IDisposable
             _lastSmallMotor = 0;
             _lastLeftTriggerEffect = null;
             _lastRightTriggerEffect = null;
+            _lastLeftTriggerRumble = 0;
+            _lastRightTriggerRumble = 0;
             ClearPendingAudio();
             _ = SendClearTriggerEffectsAsync();
 
