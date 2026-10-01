@@ -64,6 +64,16 @@ internal sealed class UsbDescriptorSet
     public byte HidInterfaceNumber { get; }
     private readonly byte[] _hidClassDescriptor;
 
+    /// <summary>The single interrupt-IN endpoint the host reads input
+    /// reports from. For a HID persona it is the HID interface's IN
+    /// endpoint; for a vendor-class persona (Xbox 360) it is the
+    /// configuration's lowest-address interrupt-IN endpoint (0x81 in
+    /// interface 0). The input pump answers only this endpoint; every other
+    /// interrupt-IN endpoint stalls, so a vendor persona's auxiliary
+    /// endpoints (e.g. the Xbox 360 headset's 0x84) never receive gamepad
+    /// bytes and the host never synthesizes a phantom audio function.</summary>
+    public byte InputEndpoint { get; }
+
     internal readonly struct EndpointInfo
     {
         public EndpointInfo(byte address, byte attributes, ushort maxPacketSize, byte interval,
@@ -201,6 +211,34 @@ internal sealed class UsbDescriptorSet
             HasHidInterface = false;
         }
         _vendorClassDescriptors = vendorClass;
+
+        // Input endpoint: prefer the HID interface's interrupt-IN endpoint
+        // (a HID persona declares the report pipe there); otherwise the
+        // lowest-addressed interrupt-IN endpoint of the configuration, which
+        // is interface 0's 0x81 for the vendor-class Xbox 360 persona.
+        byte inputEp = 0;
+        if (hidIface != 0xFF)
+        {
+            foreach (var kv in _endpoints)
+            {
+                var e = kv.Value;
+                if (e.InterfaceNumber == hidIface && e.IsIn && e.TransferType == 3)
+                {
+                    inputEp = e.Address;
+                    break;
+                }
+            }
+        }
+        if (inputEp == 0)
+        {
+            foreach (var kv in _endpoints)
+            {
+                var e = kv.Value;
+                if (e.IsIn && e.TransferType == 3 && (inputEp == 0 || e.Address < inputEp))
+                    inputEp = e.Address;
+            }
+        }
+        InputEndpoint = inputEp == 0 ? (byte)0x81 : inputEp;
 
         // Cross-check the structured spec against the blob's endpoint table.
         foreach (var iface in cfg.Interfaces)

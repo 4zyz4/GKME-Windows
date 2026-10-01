@@ -54,6 +54,10 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     private readonly HidReportBuilder? _builder;
     private readonly bool _hasHid;
     private readonly bool _switchProtocol;
+    /// <summary>The one interrupt-IN endpoint the input pump answers (the
+    /// profile's HID input pipe, or 0x81 for the Xbox 360 vendor persona).
+    /// Every other interrupt-IN endpoint stalls.</summary>
+    private readonly byte _inputEndpoint;
     /// <summary>Switch device type reported to the host: 1 = Joy-Con (L),
     /// 2 = Joy-Con (R), 3 = Pro Controller. Sourced from the profile PID.</summary>
     private readonly byte _switchDeviceType;
@@ -117,6 +121,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         Devid = (1u << 16) | (uint)(index + 1);
 
         _hasHid = Descriptors.HasHidInterface;
+        _inputEndpoint = Descriptors.InputEndpoint;
         // The Switch family (Pro 0x2009, Joy-Con L 0x2006, Joy-Con R 0x2007)
         // drives its own 0x30 wire format from the submitted body and never
         // uses the generic descriptor-driven encoder, so skip the (203-byte,
@@ -723,6 +728,18 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         {
             if (cmd.IsIn)
             {
+                // Only the profile's designated input endpoint carries the
+                // input stream. Auxiliary interrupt-IN endpoints (the Xbox
+                // 360 headset's 0x84, the controller's 0x82/0x83) must stall:
+                // answering them with gamepad bytes makes xusb22 believe a
+                // headset is attached and synthesize a phantom USB Audio
+                // function (mono, 8 kHz) that then binds usbaudio.
+                if (epAddr != _inputEndpoint)
+                {
+                    SendError(cmd.Seqnum, -UsbipProtocol.EPipe);
+                    return;
+                }
+
                 byte[]? frame = null;
                 lock (_hidLock)
                 {
