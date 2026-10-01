@@ -229,6 +229,9 @@ public class GamepadSession : IDisposable
                         case ControllerMode.JoyCon:
                             SubmitJoyConReport(input);
                             break;
+                        case ControllerMode.XboxOne:
+                            SubmitXboxOneReport(input);
+                            break;
                         default:
                             SubmitXbox360Report(input);
                             break;
@@ -426,6 +429,7 @@ public class GamepadSession : IDisposable
         string profileId = mode switch
         {
             ControllerMode.Xbox360 => "xbox360-composite",
+            ControllerMode.XboxOne => "xbox-one-composite",
             ControllerMode.Dualsense => "dualsense-composite",
             ControllerMode.SwitchPro => "switch-pro-composite",
             _ => "dualshock-4-v2-composite",
@@ -522,7 +526,7 @@ public class GamepadSession : IDisposable
     /// has no LED, so it always reports #000000 / no player indicator.</summary>
     private async Task SendLedStateAsync()
     {
-        bool noLed = Mode == ControllerMode.Xbox360;
+        bool noLed = Mode == ControllerMode.Xbox360 || Mode == ControllerMode.XboxOne;
         int color = noLed ? 0 : _lastLedColor;
         int player = noLed ? 0 : _lastPlayerLed;
         await SendAsync(new ServerToClient
@@ -766,6 +770,20 @@ public class GamepadSession : IDisposable
             // [3]=leftMotor(large).
             _lastSmallMotor = d[2];
             _lastLargeMotor = d[3];
+            return;
+        }
+
+        if (Mode == ControllerMode.XboxOne && packet.Source == HMOutputSource.HidOutput)
+        {
+            // GIP rumble payload (gip_gamepad_pkt_rumble, 9 bytes):
+            // [0] unknown, [1] motor mask, [2] left trigger, [3] right trigger,
+            // [4] left (strong) motor, [5] right (weak) motor, [6] duration,
+            // [7] delay, [8] repeat.
+            if (d.Length >= 6)
+            {
+                _lastLargeMotor = d[4];
+                _lastSmallMotor = d[5];
+            }
             return;
         }
 
@@ -1111,6 +1129,20 @@ public class GamepadSession : IDisposable
         ctrl.SubmitRawReport(buf.AsSpan());
 
         // Mousepad handled via SubmitMouseAndTouchpad (reads protobuf mouse fields)
+        SubmitMouseAndTouchpad(input);
+    }
+
+    /// <summary>Packs the 14-byte GIP input payload into the shared DATA
+    /// section; the USB/IP backend's GipResponder frames it as a
+    /// GIP_CMD_INPUT (0x20) message with the header/sequence and streams it.
+    /// The Guide button travel is carried in the payload's otherwise-unused
+    /// bit 0 and turned into a 0x07 virtual-key report device-side.</summary>
+    private void SubmitXboxOneReport(GamepadInput input)
+    {
+        var ctrl = (HMController)Controller!;
+        Span<byte> payload = stackalloc byte[XboxOneGipInput.PayloadSize];
+        XboxOneGipInput.BuildPayload(input, payload);
+        ctrl.SubmitRawReport(payload);
         SubmitMouseAndTouchpad(input);
     }
 
@@ -1782,6 +1814,9 @@ public class GamepadSession : IDisposable
                     break;
                 case ControllerMode.JoyCon:
                     SubmitJoyConReport(neutral);
+                    break;
+                case ControllerMode.XboxOne:
+                    SubmitXboxOneReport(neutral);
                     break;
                 default:
                     SubmitDs4Report(neutral);

@@ -102,6 +102,17 @@ public sealed class UsbConfigurationSpec
     [JsonPropertyName("vendorRequests")]
     public List<VendorControlRequest>? VendorRequests { get; set; }
 
+    /// <summary>True when this vendor-class persona speaks Microsoft's
+    /// Gaming Input Protocol (GIP) over the data interface's interrupt
+    /// endpoints instead of an opaque byte stream. The Xbox One controller
+    /// (VID 0x045E) is the only GIP persona: the USB/IP device emulator
+    /// drives the announce/identify/status/input handshake and decodes the
+    /// host's power/LED/rumble/identify commands itself, so the shared
+    /// DATA section carries a GIP input-payload body rather than a
+    /// ready-to-send wire report.</summary>
+    [JsonPropertyName("gip")]
+    public bool Gip { get; set; }
+
     /// <summary>HID "Enhanced Wheel Support" resolution multiplier, when the
     /// profile's report descriptor declares a Resolution Multiplier feature
     /// (the high-resolution mouse). Its feature report has no report ID. The

@@ -54,6 +54,14 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     private readonly HidReportBuilder? _builder;
     private readonly bool _hasHid;
     private readonly bool _switchProtocol;
+    /// <summary>True for the Xbox One persona: the DATA section carries a
+    /// 14-byte GIP input payload and <see cref="_gip"/> owns the wire
+    /// protocol instead of the generic descriptor-driven encoder.</summary>
+    private readonly bool _gipProtocol;
+    private GipResponder? _gip;
+    private readonly Queue<byte[]> _gipReplies = new();          // 0x02/0x03/0x04/0x07/0x01 replies, served before stream frames
+    private uint _lastGipSharedSeqNo;
+    private int _gipSendErrCount;
     /// <summary>The one interrupt-IN endpoint the input pump answers (the
     /// profile's HID input pipe, or 0x81 for the Xbox 360 vendor persona).
     /// Every other interrupt-IN endpoint stalls.</summary>
@@ -132,7 +140,8 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         _switchDeviceType = Descriptors.ProductId == 0x2006 ? (byte)0x01
             : Descriptors.ProductId == 0x2007 ? (byte)0x02
             : (byte)0x03;
-        _builder = (_hasHid && !_switchProtocol) ? profile.GetOrBuildReportBuilder() : null;
+        _gipProtocol = !_switchProtocol && (profile.UsbConfiguration?.Gip ?? false);
+        _builder = (_hasHid && !_switchProtocol && !_gipProtocol) ? profile.GetOrBuildReportBuilder() : null;
         _rawInputSize = _builder != null && _builder.InputReportByteSize > 0
             ? _builder.InputReportByteSize
             : (profile.InputReportSize ?? 64);
@@ -158,6 +167,12 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         _outputView = SharedMemoryIO.EnsureOutputMapping(index);
         _outputEvent = SharedMemoryIO.EnsureOutputEvent(index);
         _inputWaitEvent = SharedMemoryIO.OpenInputEventForWait(index);
+
+        if (_gipProtocol)
+        {
+            _gip = new GipResponder((src, rid, data) => PublishOutput(src, rid, data), index);
+            GipLog.Write($"create index={index} vid={Descriptors.VendorId:X4} pid={Descriptors.ProductId:X4}");
+        }
 
         var cfg = profile.UsbConfiguration;
         bool hasAudioStream = false;
@@ -198,6 +213,7 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             _pendingInterruptIn.Clear();
             _frameQueue.Clear();
             _switchReplies.Clear();
+            _gipReplies.Clear();
         }
         if (_switchProtocol)
         {
@@ -205,12 +221,22 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             Interlocked.Exchange(ref _switchTimerCounter, 0);
             _lastSwitchSharedSeqNo = 0;
         }
+        if (_gipProtocol)
+        {
+            _gip?.Reset();
+            _lastGipSharedSeqNo = 0;
+        }
     }
 
     // 鈹€鈹€ Input pump: shared section 鈫?interrupt IN 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     private void InputPumpLoop()
     {
+        if (_gipProtocol)
+        {
+            GipPumpLoop();
+            return;
+        }
         if (_switchProtocol)
         {
             SwitchPumpLoop();
@@ -322,6 +348,152 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         }
         report = r;
         return true;
+    }
+
+    // 鈹€鈹€ Xbox One GIP responder (045E:02EA) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    //
+    // The vendor-class Xbox One persona speaks Microsoft's Gaming Input
+    // Protocol instead of HID. The consumer packs the 14-byte
+    // gip_gamepad_pkt_input body (XboxOneGipInput layout: buttons, triggers,
+    // sticks) into the shared DATA section via SubmitRawReport; this side owns
+    // the GIP header/sequence framing, the announce/identify/status handshake
+    // and the guide virtual-key report. The host's power/LED/rumble/identify
+    // commands arrive on the interrupt OUT endpoint and are decoded by
+    // GipResponder. See GipResponder / GipProtocol and xone's bus/protocol.c.
+
+    private void GipPumpLoop()
+    {
+        if (_gip == null) return;
+
+        SendGipFrame(_gip.EncodeHello(), control: true);
+        GipLog.Write("gip pump: sent initial HELLO (0x02)");
+        long lastAnnounce = Environment.TickCount64;
+        long lastStatus = 0;
+        long lastInputSend = 0;
+        bool loggedActive = false;
+
+        while (!_stop)
+        {
+            try
+            {
+                if (_inputWaitEvent != IntPtr.Zero)
+                    WaitForSingleObject(_inputWaitEvent, 8);
+                else
+                    Thread.Sleep(8);
+                if (_stop) break;
+
+                long now = Environment.TickCount64;
+
+                // Keep announcing until the host answers; a booting host may
+                // enumerate before its GIP stack is ready to read.
+                if (!_gip.HostSeen && now - lastAnnounce >= 500)
+                {
+                    SendGipFrame(_gip.EncodeHello(), control: true);
+                    lastAnnounce = now;
+                }
+
+                bool changed = false;
+                if (TryReadGipPayload(out var body))
+                    changed = _gip.UpdatePayload(body);
+
+                if (_gip.Active && !loggedActive)
+                {
+                    loggedActive = true;
+                    GipLog.Write("gip pump: host seen -> streaming INPUT");
+                }
+
+                if (_gip.Active)
+                {
+                    if (_gip.TakeGuideChange(out bool down))
+                        SendGipFrame(_gip.EncodeGuide(down), control: true);
+
+                    // Spec: input reports go out only when the payload changed,
+                    // plus a slow keep-alive so a parked URB is still serviced.
+                    if (changed || now - lastInputSend >= 250)
+                    {
+                        SendGipFrame(_gip.BuildInputFrame(), control: false);
+                        lastInputSend = now;
+                    }
+
+                    if (now - lastStatus >= 1000)
+                    {
+                        SendGipFrame(_gip.EncodeStatus(), control: true);
+                        lastStatus = now;
+                    }
+                }
+            }
+            catch
+            {
+                // Same containment contract as the other pumps: a transient
+                // failure must not kill the thread.
+            }
+        }
+    }
+
+    /// <summary>Seqlock read of the 14-byte GIP input payload from the shared
+    /// DATA section. Keeps the last body when no new frame has arrived.</summary>
+    private bool TryReadGipPayload(out byte[] body)
+    {
+        body = Array.Empty<byte>();
+        IntPtr view = _inputView;
+        if (view == IntPtr.Zero) return false;
+
+        Span<byte> snap = stackalloc byte[SharedMemoryIO.SHARED_INPUT_SIZE];
+        uint seq1, seq2;
+        int retries = 4;
+        do
+        {
+            seq1 = (uint)Marshal.ReadInt32(view, 0);
+            Thread.MemoryBarrier();
+            unsafe
+            {
+                fixed (byte* dst = snap)
+                    Buffer.MemoryCopy((void*)view, dst, snap.Length, snap.Length);
+            }
+            Thread.MemoryBarrier();
+            seq2 = (uint)Marshal.ReadInt32(view, 0);
+        } while ((seq1 != seq2 || (seq1 & 1) != 0) && --retries > 0);
+        if (seq1 != seq2 || (seq1 & 1) != 0) return false;
+        if (seq1 == _lastGipSharedSeqNo) return false;
+        _lastGipSharedSeqNo = seq1;
+
+        int dataLen = BitConverter.ToInt32(snap[4..]);
+        if (dataLen > 14) dataLen = 14;
+        if (dataLen <= 0) return false;
+        var b = new byte[14];
+        snap.Slice(SharedMemoryIO.DATA_OFFSET, dataLen).CopyTo(b);
+        body = b;
+        return true;
+    }
+
+    /// <summary>Completes a parked interrupt-IN URB with <paramref name="frame"/>
+    /// immediately, or queues it. Control replies (announce/identify/status/
+    /// guide/ack) preempt stream frames in <see cref="_gipReplies"/>.</summary>
+    private void SendGipFrame(byte[] frame, bool control)
+    {
+        uint seq;
+        bool have = false;
+        lock (_hidLock)
+        {
+            if (_pendingInterruptIn.Count > 0)
+            {
+                seq = _pendingInterruptIn.Dequeue();
+                have = true;
+            }
+            else
+            {
+                var q = control ? _gipReplies : _frameQueue;
+                if (q.Count >= MaxFrameQueue) q.Dequeue();
+                q.Enqueue(frame);
+                seq = 0;
+            }
+        }
+        if (have) SendInterruptInReply(seq, frame);
+    }
+
+    private void HandleGipOutput(ReadOnlySpan<byte> payload)
+    {
+        _gip?.HandleHostBuffer(payload, f => SendGipFrame(f, control: true));
     }
 
     // 鈹€鈹€ Switch Pro protocol responder (057E:2009) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -743,10 +915,15 @@ internal sealed class UsbipEmulatedDevice : IDisposable
                 byte[]? frame = null;
                 lock (_hidLock)
                 {
-                    // Switch replies (0x81/0x21) preempt stream frames.
-                    if (_switchProtocol && _switchReplies.Count > 0) frame = _switchReplies.Dequeue();
+                    // Protocol replies (GIP 0x02/0x03/0x04/0x07, Switch
+                    // 0x81/0x21) preempt stream frames.
+                    if (_gipProtocol && _gipReplies.Count > 0) frame = _gipReplies.Dequeue();
+                    else if (_switchProtocol && _switchReplies.Count > 0) frame = _switchReplies.Dequeue();
                     else if (_frameQueue.Count > 0) frame = _frameQueue.Dequeue();
-                    else _pendingInterruptIn.Enqueue(cmd.Seqnum);
+                    else
+                    {
+                        _pendingInterruptIn.Enqueue(cmd.Seqnum);
+                    }
                 }
                 if (frame != null) SendInterruptInReply(cmd.Seqnum, frame);
                 return;
@@ -757,7 +934,9 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             var payload = outPayload ?? Array.Empty<byte>();
             byte rid = payload.Length > 0 ? payload[0] : (byte)0;
             var outData = payload.Length > 0 ? payload.AsSpan(1) : ReadOnlySpan<byte>.Empty;
-            if (_switchProtocol && (rid == 0x80 || rid == 0x01 || rid == 0x10))
+            if (_gipProtocol)
+                HandleGipOutput(payload); // GIP frames are not report-ID prefixed
+            else if (_switchProtocol && (rid == 0x80 || rid == 0x01 || rid == 0x10))
                 HandleSwitchOutput(rid, outData);
             else
                 PublishOutput(SourceHidOutput, rid, outData);
@@ -813,6 +992,10 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         byte type = (byte)((bmRequestType >> 5) & 0x03);      // 0 standard, 1 class, 2 vendor
         byte recipient = (byte)(bmRequestType & 0x1F);        // 0 device, 1 interface, 2 endpoint, 3 other
         bool deviceToHost = (bmRequestType & 0x80) != 0;
+
+        if (_gipProtocol)
+            GipLog.Write($"CTRL rt=0x{bmRequestType:X2} req=0x{bRequest:X2} " +
+                         $"val=0x{wValue:X4} idx=0x{wIndex:X4} len={wLength} type={type} rcp={recipient} in={deviceToHost}");
 
         // Hub port reset arrives as USB_RT_PORT SET_FEATURE(PORT_RESET)
         // (usbip-win2 device_ioctl.cpp make_reset_port: "meaningless for a
@@ -1508,10 +1691,13 @@ internal sealed class UsbipEmulatedDevice : IDisposable
             _pendingInterruptIn.Clear();
             _frameQueue.Clear();
             _switchReplies.Clear();
+            _gipReplies.Clear();
         }
         _switchImuEnabled = false;
         Interlocked.Exchange(ref _switchTimerCounter, 0);
         _lastSwitchSharedSeqNo = 0;
+        _gip?.Reset();
+        _lastGipSharedSeqNo = 0;
     }
 
     private void ResetAltSettings()
@@ -1542,7 +1728,12 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     {
         var c = _connection;
         if (c == null) return;
-        try { c.SendRetSubmitNonIso(seqnum, status, actualLength, inPayload); } catch { }
+        try { c.SendRetSubmitNonIso(seqnum, status, actualLength, inPayload); }
+        catch (Exception ex)
+        {
+            if (Interlocked.Increment(ref _gipSendErrCount) <= 5)
+                GipLog.Write($"SEND FAIL seq={seqnum} status={status} len={actualLength}: {ex.Message}");
+        }
     }
 
     /// <summary>Completion callback from the audio engine's pacing thread.
@@ -1576,4 +1767,6 @@ internal sealed class UsbipEmulatedDevice : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr h);
 }
+
+
 

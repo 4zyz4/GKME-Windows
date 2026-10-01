@@ -105,8 +105,9 @@ public class DeviceCardViewModel : INotifyPropertyChanged
     public static List<ControllerMode> AllModes { get; } = new()
     {
         ControllerMode.Ds4,
-        ControllerMode.Xbox360,
         ControllerMode.Dualsense,
+        ControllerMode.Xbox360,
+        ControllerMode.XboxOne,
         ControllerMode.SwitchPro,
         ControllerMode.JoyCon,
     };
@@ -118,6 +119,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.Dualsense => "DualSense",
         ControllerMode.SwitchPro => "Switch Pro",
         ControllerMode.JoyCon => "双 Joy-Con",
+        ControllerMode.XboxOne => "Xbox One",
         _ => "?",
     };
 

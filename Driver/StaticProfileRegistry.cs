@@ -27,6 +27,7 @@ internal static class StaticProfileRegistry
             serial: "000000000002");
         s_profiles["keyboard-composite"] = BuildKeyboard();
         s_profiles["mouse-composite"] = BuildMouse();
+        s_profiles["xbox-one-composite"] = BuildXboxOne();
     }
 
     public static Dictionary<string, ControllerProfile> AllProfiles => s_profiles;
@@ -134,6 +135,92 @@ internal static class StaticProfileRegistry
             InputReportSize = 20,
             Notes = "Wired Xbox 360 controller as synthesized by usbip-win. Ported from VIIPER's device/xbox360 device.go: a full-speed, vendor-class (bDeviceClass 0xFF) composite with four 0xFF interfaces, 0x21/0x41 class descriptors and a 20-byte opaque input report. No HID report descriptor; input is delivered verbatim from shared memory as 20 raw bytes (RID-less). The only control request is the 0xC1/0x01/0x0100 capability report (handled via the vendorRequests table). Rum/LED output arrives on EP0x01 OUT and is surfaced through the shared-memory output ring.",
             Backend = "usbip",
+            UsbConfiguration = uc
+        };
+    }
+
+    // ── Xbox One (Model 1708) GIP persona ────────────────────────────────
+    //
+    // The wired Xbox One controller is a vendor-class USB device
+    // (bDeviceClass 0xFF, bInterfaceSubClass 0x47, bDeviceProtocol 0xD0)
+    // whose real protocol is Microsoft's Gaming Input Protocol (GIP), not
+    // HID. Windows binds it through dc1-controller.inf (XboxComposite) and
+    // xboxgip.sys, and turns the GIP attachments into HID children that
+    // xinputhid.sys presents as XInput. The USB/IP device emulator owns the
+    // GIP state machine (GipResponder); this profile only declares the
+    // descriptor and the routing metadata.
+    //
+    // Descriptor shape (single data interface, no audio function): the data
+    // interface is class 0xFF/0x47/0xD0 with an interrupt IN (0x81) and
+    // interrupt OUT (0x01), both 64-byte, which is exactly what xone's
+    // wired transport and Windows' xboxgip expect. Audio (interface 1) is
+    // omitted: it is optional for both drivers and third-party Xbox One
+    // pads ship without it.
+
+    private static ControllerProfile BuildXboxOne()
+    {
+        var uc = new UsbConfigurationSpec
+        {
+            ConfigurationValue = 1,
+            Attributes = 0x80,
+            MaxPowerMilliamps = 500,
+            BusSpeed = "full",
+            Gip = true,
+            // bcdUSB 2.00, class 0xFF, subclass 0x47, protocol 0xD0,
+            // bMaxPacketSize0 64, VID 045E PID 02EA, bcdDevice 0x0501,
+            // iMfr 1 / iProduct 2 / iSerial 3.
+            DeviceDescriptorHex = "12010002FF47D0405E04EA02010501020301",
+            // Config wTotalLength 0x20: one vendor-class interface with an
+            // interrupt IN 0x81 and interrupt OUT 0x01, 64-byte packets.
+            ConfigurationDescriptorHex =
+                "0902200001010080FA" +
+                "0904000002FF47D000" +
+                "07058103400004" +
+                "07050103400004",
+            InputReportSize = 18,
+            Interfaces = new List<UsbInterfaceSpec>
+            {
+                new UsbInterfaceSpec
+                {
+                    InterfaceNumber = 0, Function = "",
+                    AltSettings = new List<UsbAltSettingSpec>
+                    {
+                        new UsbAltSettingSpec
+                        {
+                            AltSetting = 0, InterfaceClass = 0xFF, InterfaceSubClass = 0x47,
+                            InterfaceProtocol = 0xD0,
+                            Endpoints = new List<UsbEndpointSpec>
+                            {
+                                new UsbEndpointSpec { Address = 0x81, TransferType = "interrupt", MaxPacketSize = 64, Interval = 4 },
+                                new UsbEndpointSpec { Address = 0x01, TransferType = "interrupt", MaxPacketSize = 64, Interval = 4 }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        return new ControllerProfile
+        {
+            Id = "xbox-one-composite",
+            Name = "Xbox One Controller (Model 1708)",
+            Vendor = "Microsoft",
+            Vid = "0x045E",
+            Pid = "0x02EA",
+            ProductString = "Controller",
+            ManufacturerString = "Microsoft",
+            Type = "gamepad",
+            Connection = "usb",
+            InputReportSize = 18,
+            Backend = "usbip",
+            Notes = "Wired Xbox One controller (Model 1708, VID 045E:02EA) as a " +
+                    "genuine vendor-class GIP device. Windows binds dc1-controller.inf " +
+                    "(xboxgip.sys) and the GIP attachment becomes a HID child that " +
+                    "xinputhid.sys exposes as XInput. The GIP announce/identify/status/" +
+                    "input handshake and the host's power/LED/rumble commands are " +
+                    "implemented by UsbipEmulatedDevice's GipResponder. Audio (the " +
+                    "controller's headset function) is not presented, matching " +
+                    "third-party pads.",
             UsbConfiguration = uc
         };
     }
