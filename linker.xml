@@ -2,4 +2,7 @@
   <assembly fullname="GKME">
     <type fullname="GKME.*" preserve="all" />
   </assembly>
+  <assembly fullname="GKMD">
+    <type fullname="GKMD.*" preserve="all" />
+  </assembly>
 </linker>

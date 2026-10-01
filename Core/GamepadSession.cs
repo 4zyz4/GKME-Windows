@@ -5,8 +5,8 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using GamepadEmu.Protocol;
 using Google.Protobuf;
-using HIDMaestro;
-using HIDMaestro.Internal.Usbip;
+using GKMD;
+using GKMD.Internal.Usbip;
 
 namespace GKME.Core;
 
@@ -31,7 +31,7 @@ public class GamepadSession : IDisposable
 
     private readonly Func<IMessage, Task> _sendToPhone;
     private readonly Action _onAudioSendStart;
-    private readonly HMContext _hmContext;
+    private readonly GKContext _gkContext;
     private readonly bool _hidMaestroAvailable;
     private readonly object _controllerLock = new();
     private CancellationTokenSource _cts = new();
@@ -127,12 +127,12 @@ public class GamepadSession : IDisposable
     /// an install prompt.</summary>
     public event Action<GamepadSession>? OnUsbipInstallRequired;
 
-    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, Action onAudioSendStart, HMContext hmContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
+    public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, Action onAudioSendStart, GKContext gkContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
     {
         Device = device;
         _sendToPhone = sendToPhone;
         _onAudioSendStart = onAudioSendStart;
-        _hmContext = hmContext;
+        _gkContext = gkContext;
         _hidMaestroAvailable = hidMaestroAvailable;
         Mode = initialMode;
     }
@@ -439,12 +439,12 @@ public class GamepadSession : IDisposable
 
     private object CreateController(string profileId, ControllerMode mode)
     {
-        var profile = _hmContext.GetProfile(profileId)
-            ?? throw new InvalidOperationException($"No HIDMaestro profile found for mode {mode} (profile '{profileId}').");
+        var profile = _gkContext.GetProfile(profileId)
+            ?? throw new InvalidOperationException($"No GKMD profile found for mode {mode} (profile '{profileId}').");
 
-        var ctrl = _hmContext.CreateController(profile);
-        ctrl.OutputDecoded += OnHmOutputDecoded;
-        ctrl.OutputReceived += OnHmOutputReceived;
+        var ctrl = _gkContext.CreateController(profile);
+        ctrl.OutputDecoded += OnGkOutputDecoded;
+        ctrl.OutputReceived += OnGkOutputReceived;
         if (mode == ControllerMode.Dualsense)
             AttachDualsenseAudio(ctrl);
         else if (mode == ControllerMode.Ds4)
@@ -452,7 +452,7 @@ public class GamepadSession : IDisposable
         return ctrl;
     }
 
-    private void OnHmOutputDecoded(object? sender, HMOutputDecodedEventArgs e)
+    private void OnGkOutputDecoded(object? sender, GKOutputDecodedEventArgs e)
     {
         int? newColor = null;
         int? newPlayerLed = null;
@@ -626,9 +626,9 @@ public class GamepadSession : IDisposable
     /// latency; <see cref="SwitchHapticPumpAsync"/> keeps a 50 ms keep-alive
     /// flowing so the phone's synth thread stays warm — its output device must
     /// not stop between rumbles, or the next onset clicks.</summary>
-    private void HandleSwitchRumbleOutput(HMOutputPacket packet)
+    private void HandleSwitchRumbleOutput(GKOutputPacket packet)
     {
-        if (packet.Source != HMOutputSource.HidOutput) return;
+        if (packet.Source != GKOutputSource.HidOutput) return;
         if (packet.ReportId != 0x01 && packet.ReportId != 0x10) return;
         var d = packet.Data.Span;
         if (d.Length < 9) return;
@@ -656,9 +656,9 @@ public class GamepadSession : IDisposable
     /// one effective accent per output 0x01/0x10; decode it and drive the
     /// phone lane matching the half that produced it (left device → left
     /// lane, right device → right lane), keeping the other lane's last value.</summary>
-    private void HandleJoyconRumbleOutput(HMOutputPacket packet, bool left)
+    private void HandleJoyconRumbleOutput(GKOutputPacket packet, bool left)
     {
-        if (packet.Source != HMOutputSource.HidOutput) return;
+        if (packet.Source != GKOutputSource.HidOutput) return;
         if (packet.ReportId != 0x01 && packet.ReportId != 0x10) return;
         var d = packet.Data.Span;
         if (d.Length < 5) return;
@@ -728,7 +728,7 @@ public class GamepadSession : IDisposable
         });
     }
 
-    private void OnHmOutputReceived(HMController controller, HMOutputPacket packet)
+    private void OnGkOutputReceived(GKController controller, GKOutputPacket packet)
     {
         if (Mode == ControllerMode.SwitchPro)
         {
@@ -754,7 +754,7 @@ public class GamepadSession : IDisposable
         // audio test (WAVEOUT_CTRL on the AUDIO device); the real pad's
         // firmware generates the tone internally. Synthesize it here instead
         // of misreading the command bytes as rumble amplitudes.
-        if (packet.Source == HMOutputSource.HidFeature && packet.ReportId == 0x80)
+        if (packet.Source == GKOutputSource.HidFeature && packet.ReportId == 0x80)
         {
             HandleDualsenseTestCommand(packet.Data.Span);
             return;
@@ -773,7 +773,7 @@ public class GamepadSession : IDisposable
             return;
         }
 
-        if (Mode == ControllerMode.XboxOne && packet.Source == HMOutputSource.HidOutput)
+        if (Mode == ControllerMode.XboxOne && packet.Source == GKOutputSource.HidOutput)
         {
             // GIP rumble payload (gip_gamepad_pkt_rumble, 9 bytes):
             // [0] unknown, [1] motor mask, [2] left trigger, [3] right trigger,
@@ -787,7 +787,7 @@ public class GamepadSession : IDisposable
             return;
         }
 
-        if (Mode == ControllerMode.Xbox360 && packet.Source == HMOutputSource.HidOutput)
+        if (Mode == ControllerMode.Xbox360 && packet.Source == GKOutputSource.HidOutput)
         {
             // Xbox 360 wired output report arrives on the interrupt OUT
             // endpoint: wire bytes are [RID=0x00][len=0x08][0x00][large][small]...
@@ -818,7 +818,7 @@ public class GamepadSession : IDisposable
         _ = SendTestToneStateAsync();
     }
 
-    private void AttachDualsenseAudio(HMController ctrl)
+    private void AttachDualsenseAudio(GKController ctrl)
     {
         try
         {
@@ -833,7 +833,7 @@ public class GamepadSession : IDisposable
         catch { }
     }
 
-    private void AttachDs4Audio(HMController ctrl)
+    private void AttachDs4Audio(GKController ctrl)
     {
         try
         {
@@ -847,7 +847,7 @@ public class GamepadSession : IDisposable
         catch { }
     }
 
-    private void OnDs4AudioFrames(HMAudioOutput output, ReadOnlyMemory<byte> pcm)
+    private void OnDs4AudioFrames(GKAudioOutput output, ReadOnlyMemory<byte> pcm)
     {
         try
         {
@@ -923,7 +923,7 @@ public class GamepadSession : IDisposable
     // every buffer boundary, which is heard as noise on the voice coils.
     private const int TargetSampleRate = 48000;
 
-    private void OnDualsenseAudioFrames(HMAudioOutput output, ReadOnlyMemory<byte> pcm)
+    private void OnDualsenseAudioFrames(GKAudioOutput output, ReadOnlyMemory<byte> pcm)
     {
         try
         {
@@ -1080,7 +1080,7 @@ public class GamepadSession : IDisposable
 
     private void SubmitXbox360Report(GamepadInput input)
     {
-        var ctrl = (HMController)Controller!;
+        var ctrl = (GKController)Controller!;
 
         // XInput button word: A/B/X/Y live in the high byte, LB/RB/Guide and
         // the menu/d-pad buttons in the low byte. This is the native layout a
@@ -1139,7 +1139,7 @@ public class GamepadSession : IDisposable
     /// bit 0 and turned into a 0x07 virtual-key report device-side.</summary>
     private void SubmitXboxOneReport(GamepadInput input)
     {
-        var ctrl = (HMController)Controller!;
+        var ctrl = (GKController)Controller!;
         Span<byte> payload = stackalloc byte[XboxOneGipInput.PayloadSize];
         XboxOneGipInput.BuildPayload(input, payload);
         ctrl.SubmitRawReport(payload);
@@ -1148,7 +1148,7 @@ public class GamepadSession : IDisposable
 
     private void SubmitDs4Report(GamepadInput input)
     {
-        var ctrl = (HMController)Controller!;
+        var ctrl = (GKController)Controller!;
         var buf = new byte[63];
 
         buf[0] = (byte)((input.LeftStickX + 32768) / 256);
@@ -1252,7 +1252,7 @@ public class GamepadSession : IDisposable
 
     private void SubmitDualsenseReport(GamepadInput input)
     {
-        var ctrl = (HMController)Controller!;
+        var ctrl = (GKController)Controller!;
         var buf = new byte[63];
 
         buf[0] = (byte)((input.LeftStickX + 32768) / 256);
@@ -1366,7 +1366,7 @@ public class GamepadSession : IDisposable
     /// 15 ms wire cadence.</summary>
     private void SubmitSwitchReport(GamepadInput input)
     {
-        var ctrl = (HMController)Controller!;
+        var ctrl = (GKController)Controller!;
         Span<byte> body = stackalloc byte[SwitchProInput.BodySize];
         SwitchProInput.BuildBody(input, body);
         ctrl.SubmitRawReport(body);
@@ -1382,8 +1382,8 @@ public class GamepadSession : IDisposable
     {
         Span<byte> body = stackalloc byte[SwitchProInput.BodySize];
         SwitchProInput.BuildBody(input, body);
-        if (Controller is HMController primary) primary.SubmitRawReport(body);
-        if (_controllerSecondary is HMController secondary) secondary.SubmitRawReport(body);
+        if (Controller is GKController primary) primary.SubmitRawReport(body);
+        if (_controllerSecondary is GKController secondary) secondary.SubmitRawReport(body);
         SubmitMouseAndTouchpad(input);
     }
 
@@ -1440,7 +1440,7 @@ public class GamepadSession : IDisposable
             VirtualKeyboardMouse created;
             try
             {
-                created = new VirtualKeyboardMouse(_hmContext);
+                created = new VirtualKeyboardMouse(_gkContext);
             }
             catch (UsbipRebootRequiredException)
             {
@@ -1661,10 +1661,10 @@ public class GamepadSession : IDisposable
 
         var primary = Controller;
         var secondary = _controllerSecondary;
-        if (primary is HMController hmCtrl)
+        if (primary is GKController gkCtrl)
         {
-            var ctrl = hmCtrl;
-            var ctrlSecond = secondary as HMController;
+            var ctrl = gkCtrl;
+            var ctrlSecond = secondary as GKController;
             var priorDestroy = _pendingDestroy;
             _cleanupTask = Task.Run(async () =>
             {
@@ -1678,7 +1678,7 @@ public class GamepadSession : IDisposable
                 try { ctrl.Dispose(); }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[GamepadSession] dispose HM controller failed: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[GamepadSession] dispose GK controller failed: {ex.Message}");
                 }
                 if (ctrlSecond != null)
                 {
@@ -1686,7 +1686,7 @@ public class GamepadSession : IDisposable
                     try { ctrlSecond.Dispose(); }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine($"[GamepadSession] dispose HM controller failed: {ex.Message}");
+                        System.Diagnostics.Debug.WriteLine($"[GamepadSession] dispose GK controller failed: {ex.Message}");
                     }
                 }
             });
@@ -1738,7 +1738,7 @@ public class GamepadSession : IDisposable
     private static readonly object _preRemoveLock = new();
     private static FieldInfo? _instanceIdField;
 
-    private static void PreRemoveDevice(HMController ctrl)
+    private static void PreRemoveDevice(GKController ctrl)
     {
         try
         {
@@ -1782,7 +1782,7 @@ public class GamepadSession : IDisposable
         while (CM_Get_Sibling(ref child, child, 0) == CR_SUCCESS);
     }
 
-    private static void EnsureReflectionCache(HMController ctrl)
+    private static void EnsureReflectionCache(GKController ctrl)
     {
         if (_instanceIdField != null) return;
         lock (_preRemoveLock)
@@ -1837,7 +1837,7 @@ public class GamepadSession : IDisposable
         if (ctrl == null) return;
         try
         {
-            if (ctrl is HMController hm) PreRemoveDevice(hm);
+            if (ctrl is GKController gk) PreRemoveDevice(gk);
             DestroyController(ctrl);
         }
         catch (Exception ex)
@@ -1851,7 +1851,7 @@ public class GamepadSession : IDisposable
     {
         try
         {
-            if (ctrl is HMController hm) hm.Dispose();
+            if (ctrl is GKController gk) gk.Dispose();
         }
         catch (Exception ex)
         {

@@ -1,4 +1,4 @@
-using HIDMaestro;
+using GKMD;
 
 namespace GKME.Core;
 
@@ -8,7 +8,7 @@ namespace GKME.Core;
 ///
 /// <para>Both devices are backed by the <c>keyboard</c> /
 /// <c>mouse</c> profiles in <c>StaticProfileRegistry</c> and are fed
-/// with complete HID input reports via <see cref="HMController.SubmitRawReport"/>
+/// with complete HID input reports via <see cref="GKController.SubmitRawReport"/>
 /// — the same shared-memory contract the gamepad personas use. This replaces
 /// the old user-mode <c>SendInput</c> injection (InputDll.dll): the host now
 /// sees genuine USB HID hardware and no injection DLL is loaded into the
@@ -31,8 +31,8 @@ internal sealed class VirtualKeyboardMouse : IDisposable
     private const int MouseReportSize = 9;
 
     private readonly object _lock = new();
-    private readonly HMController _keyboard;
-    private readonly HMController _mouse;
+    private readonly GKController _keyboard;
+    private readonly GKController _mouse;
     private bool _disposed;
 
     private readonly byte[] _keyboardReport = new byte[KeyboardReportSize];
@@ -41,14 +41,14 @@ internal sealed class VirtualKeyboardMouse : IDisposable
 
     private readonly byte[] _mouseReport = new byte[MouseReportSize];
 
-    public VirtualKeyboardMouse(HMContext context)
+    public VirtualKeyboardMouse(GKContext context)
     {
         var keyboardProfile = context.GetProfile(KeyboardProfileId)
             ?? throw new InvalidOperationException(
-                $"HIDMaestro profile '{KeyboardProfileId}' is not loaded.");
+                $"GKMD profile '{KeyboardProfileId}' is not loaded.");
         var mouseProfile = context.GetProfile(MouseProfileId)
             ?? throw new InvalidOperationException(
-                $"HIDMaestro profile '{MouseProfileId}' is not loaded.");
+                $"GKMD profile '{MouseProfileId}' is not loaded.");
 
         _keyboard = context.CreateController(keyboardProfile);
         try
@@ -63,10 +63,10 @@ internal sealed class VirtualKeyboardMouse : IDisposable
     }
 
     /// <summary>The live keyboard controller (for teardown bookkeeping).</summary>
-    public HMController Keyboard => _keyboard;
+    public GKController Keyboard => _keyboard;
 
     /// <summary>The live mouse controller (for teardown bookkeeping).</summary>
-    public HMController Mouse => _mouse;
+    public GKController Mouse => _mouse;
 
     /// <summary>Push the full keyboard state. <paramref name="modifiers"/> is the
     /// HID modifier bitmask (bit 0 = Left Ctrl … bit 7 = Right GUI);

@@ -9,8 +9,8 @@ using System.Text;
 using GamepadEmu.Protocol;
 using GKME.Core.Usb;
 using Google.Protobuf;
-using HIDMaestro;
-using HIDMaestro.Internal.Usbip;
+using GKMD;
+using GKMD.Internal.Usbip;
 
 namespace GKME.Core;
 
@@ -25,7 +25,7 @@ public class NetworkService : IDisposable
 
     private readonly ConcurrentDictionary<string, DiscoveredDevice> _discovered = new();
     private readonly ConcurrentDictionary<string, GamepadSession> _sessions = new();
-    private readonly HMContext _hmContext = new();
+    private readonly GKContext _gkContext = new();
 
     // ── USB/ADB transport ──
     private readonly AdbManager _adb = new();
@@ -52,7 +52,7 @@ public class NetworkService : IDisposable
         // HIDMaestro's TimeoutScale only honors [0.1, 100.0]; anything below the
         // floor is silently ignored (Factor falls back to 1.0). 0.1 is the floor
         // and shrinks every internal device-removal wait budget by 10x.
-        Environment.SetEnvironmentVariable("HIDMAESTRO_TIMEOUT_SCALE", "0.1");
+        Environment.SetEnvironmentVariable("GKMD_TIMEOUT_SCALE", "0.1");
     }
 
     private UdpClient? _udpClient;
@@ -88,19 +88,19 @@ public class NetworkService : IDisposable
             var log = Path.Combine(AppContext.BaseDirectory, "gkme_error.log");
             System.IO.File.AppendAllText(log, $"[InitHidMaestro] starting, BaseDir={AppContext.BaseDirectory}\n");
             
-            int loaded = _hmContext.LoadDefaultProfiles();
+            int loaded = _gkContext.LoadDefaultProfiles();
             if (loaded == 0)
             {
                 System.IO.File.AppendAllText(log, "[InitHidMaestro] LoadDefaultProfiles returned 0\n");
                 return false;
             }
 
-            PatchTimeoutScale(_hmContext);
+            PatchTimeoutScale(_gkContext);
 
             // Always ensure the SDK's embedded driver version is deployed.
             // InstallDriver() has a same-version fast path (~40-60 ms) and only
             // runs the full pipeline when the installed driver actually differs.
-            _hmContext.InstallDriver();
+            _gkContext.InstallDriver();
 
             HidMaestroAvailable = true;
             RebootRequired = false;
@@ -135,7 +135,7 @@ public class NetworkService : IDisposable
         }
     }
 
-    private static void PatchTimeoutScale(HMContext ctx)
+    private static void PatchTimeoutScale(GKContext ctx)
     {
         try
         {
@@ -161,7 +161,7 @@ public class NetworkService : IDisposable
         foreach (var f in t.GetFields(flags))
         {
             var val = f.GetValue(obj);
-            if (val != null && f.FieldType.IsClass && f.FieldType.Namespace?.StartsWith("HIDMaestro") == true)
+            if (val != null && f.FieldType.IsClass && f.FieldType.Namespace?.StartsWith("GKMD") == true)
                 PatchTimeoutScaleRecursive(val, flags, seen);
         }
 #pragma warning restore IL2072
@@ -248,7 +248,7 @@ public class NetworkService : IDisposable
         _recvThread = new Thread(RecvLoop)
         {
             IsBackground = true,
-            Name = "HMNetRecv",
+            Name = "GKNetRecv",
             Priority = ThreadPriority.AboveNormal,
         };
         _recvThread.Start();
@@ -257,7 +257,7 @@ public class NetworkService : IDisposable
         _sendThread = new Thread(SendLoop)
         {
             IsBackground = true,
-            Name = "HMNetSend",
+            Name = "GKNetSend",
             Priority = ThreadPriority.AboveNormal,
         };
         _sendThread.Start();
@@ -271,7 +271,7 @@ public class NetworkService : IDisposable
         _usbScanThread = new Thread(UsbScanLoop)
         {
             IsBackground = true,
-            Name = "HMUsbScan",
+            Name = "GKUsbScan",
             Priority = ThreadPriority.BelowNormal,
         };
         _usbScanThread.Start();
@@ -671,7 +671,7 @@ public class NetworkService : IDisposable
                 device,
                 msg => { EnqueueSend(phoneEp, TypeServerToClient, msg); return Task.CompletedTask; },
                 OnAudioSendStart,
-                _hmContext,
+                _gkContext,
                 HidMaestroAvailable,
                 initialMode);
             session.OnReady += s =>
@@ -793,7 +793,7 @@ public class NetworkService : IDisposable
                 liveDevice,
                 msg => usbConn.SendAsync(TypeServerToClient, msg.ToByteArray()),
                 OnAudioSendStart,
-                _hmContext,
+                _gkContext,
                 HidMaestroAvailable,
                 initialMode);
 
@@ -950,6 +950,6 @@ public class NetworkService : IDisposable
         StopDiscovery();
         DisconnectAll();
         _adb.Dispose();
-        _hmContext.Dispose();
+        _gkContext.Dispose();
     }
 }

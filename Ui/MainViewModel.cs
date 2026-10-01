@@ -9,7 +9,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
 using GamepadEmu.Protocol;
 using GKME.Core;
-using HIDMaestro.Internal.Usbip;
+using GKMD.Internal.Usbip;
 
 namespace GKME.Ui;
 
@@ -56,7 +56,7 @@ public class MainViewModel : INotifyPropertyChanged
         _driverOk = true;
         if (_network != null && !_network.HidMaestroAvailable)
         {
-            StatusText = "HIDMaestro 驱动不可用，仅支持 DS4 和 Xbox360 模式";
+            StatusText = "GKMD 驱动不可用，仅支持 DS4 和 Xbox360 模式";
         }
         _network!.SavedModeResolver = (DiscoveredDevice d) => _modeStore.Get(d.ModeKey);
         _network.OnDeviceDiscovered += OnDeviceDiscovered;
@@ -319,7 +319,7 @@ public class MainViewModel : INotifyPropertyChanged
             _modeStore.Set(card.ModeKey, actualMode);
             if (actualMode != mode)
             {
-                StatusText = "HIDMaestro 驱动不可用，已回退到 DS4 模式";
+                StatusText = "GKMD 驱动不可用，已回退到 DS4 模式";
             }
         }
         else
