@@ -409,11 +409,11 @@ public class GamepadSession : IDisposable
     {
         if (mode == ControllerMode.JoyCon)
         {
-            var left = CreateController("joycon-l-composite", mode);
+            var left = CreateController("joycon-l", mode);
             object? right = null;
             try
             {
-                right = CreateController("joycon-r-composite", mode);
+                right = CreateController("joycon-r", mode);
             }
             catch
             {
@@ -428,11 +428,11 @@ public class GamepadSession : IDisposable
         // vendor-class device, the others are HID composite personas.
         string profileId = mode switch
         {
-            ControllerMode.Xbox360 => "xbox360-composite",
-            ControllerMode.XboxOne => "xbox-one-composite",
-            ControllerMode.Dualsense => "dualsense-composite",
-            ControllerMode.SwitchPro => "switch-pro-composite",
-            _ => "dualshock-4-v2-composite",
+            ControllerMode.Xbox360 => "xbox360",
+            ControllerMode.XboxOne => "xbox-one",
+            ControllerMode.Dualsense => "dualsense",
+            ControllerMode.SwitchPro => "switch-pro",
+            _ => "dualshock-4-v2",
         };
         return new CreatedControllers(CreateController(profileId, mode), null);
     }

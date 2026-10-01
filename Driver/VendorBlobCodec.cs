@@ -5,8 +5,9 @@ namespace HIDMaestro.Internal;
 
 /// <summary>v1.3.5: generic vendor-blob HID report encoder/decoder. Walks an
 /// <see cref="ExtendedReportSpec"/> field list to translate between
-/// HMGamepadState / parsed-field dictionaries and on-wire bytes. Profile JSON
-/// is the source of truth for byte layouts; the codec is profile-agnostic.
+/// HMGamepadState / parsed-field dictionaries and on-wire bytes. The
+/// profile's field list is the source of truth for byte layouts; the codec
+/// is profile-agnostic.
 ///
 /// <para>The same codec serves both directions:</para>
 /// <list type="bullet">

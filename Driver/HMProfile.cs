@@ -55,7 +55,7 @@ public sealed class HMProfile
     // ── Connection + driver characteristics ───────────────────────────────
 
     /// <summary>Connection type: "usb", "bluetooth", or "wireless-adapter".</summary>
-    public string Connection => Inner.Connection ?? "usb";
+    public string Connection => string.IsNullOrEmpty(Inner.Connection) ? "usb" : Inner.Connection;
 
     /// <summary>Driver mode: "xinputhid" for Xbox BT controllers that bind
     /// Microsoft's xinputhid.sys, or null for standard HID profiles.</summary>
@@ -64,23 +64,6 @@ public sealed class HMProfile
     /// <summary>Trigger axis layout: "combined" (Xbox 360 shared Z axis),
     /// "separate" (independent LT/RT), or null (non-gamepad).</summary>
     public string? TriggerMode => Inner.TriggerMode;
-
-    /// <summary>Which instantiation path this profile needs: "umdf2" for
-    /// the single-HID-device path most profiles use, or "usbip" for a
-    /// composite USB persona whose audio interfaces need the bundled USB
-    /// transport (issue #39).</summary>
-    public string Backend => Inner.Backend ?? "umdf2";
-
-    /// <summary>True when this profile is a composite USB persona, which
-    /// rides the USB transport bundled inside HIDMaestro.Core.dll rather
-    /// than the UMDF2 driver.
-    ///
-    /// <para>This is NOT a "can I create it" gate: the transport deploys
-    /// itself on first use, so <see cref="HMContext.CreateController"/>
-    /// works regardless. Read it when a picker wants to mark which
-    /// entries bring controller audio, or to warn that the first such
-    /// controller triggers a one-time driver install (issue #39).</para></summary>
-    public bool RequiresUsbipBackend => Inner.RequiresUsbipBackend;
 
     // ── HID descriptor ───────────────────────────────────────────────────
 
@@ -104,8 +87,8 @@ public sealed class HMProfile
         return copy;
     }
 
-    /// <summary>The HID report descriptor as a hex string (same format as the
-    /// profile JSON's "descriptor" field). Null if no descriptor.</summary>
+    /// <summary>The HID report descriptor as a hex string (same format the
+    /// catalog uses). Null if no descriptor.</summary>
     public string? DescriptorHex => Inner.Descriptor;
 
     // ── Parsed descriptor layout ─────────────────────────────────────────
@@ -159,7 +142,7 @@ public sealed class HMProfile
     /// <summary>Bit size of each trigger axis (typically 8 or 10).</summary>
     public int TriggerBits => GetLayout()?.LeftTrigger?.BitSize ?? 0;
 
-    /// <summary>Notes from the profile JSON (descriptor provenance, quirks, etc.).</summary>
+    /// <summary>Notes for this profile (descriptor provenance, quirks, etc.).</summary>
     public string? Notes => Inner.Notes;
 
     /// <summary>Button remapping table. Maps HMButton bit positions (index) to
@@ -225,10 +208,10 @@ public sealed class HMProfile
     // ── Structured physical-design layout (v1.3.9) ──────────────────────
 
     /// <summary>v1.3.9 — structured physical-design declaration. When the
-    /// profile JSON authors a <c>layout</c> block, this returns the typed
+    /// profile carries a <c>layout</c> block, this returns the typed
     /// record (<see cref="HMGamepadLayout"/>, <see cref="HMWheelLayout"/>,
     /// <see cref="HMHotasLayout"/>, etc., one per
-    /// <see cref="HMLayoutKind"/>). When the JSON has no <c>layout</c>
+    /// <see cref="HMLayoutKind"/>). When there is no <c>layout</c>
     /// block, returns null and consumers fall back to classifier-derived
     /// views (<see cref="StickCount"/>, <see cref="TriggerCount"/>,
     /// <see cref="AvailableAxes"/>) — backward compatible with v1.3.8 and
@@ -358,7 +341,7 @@ public sealed class HMProfile
     // semantics, so GetSimpleSticks/GetSimpleTriggers saw only the raw
     // HID-usage-code heuristic. For Sony-convention controllers (Z/Rz =
     // right stick, Rx/Ry = triggers) the heuristic takes the XInput
-    // branch and classifies the axes backwards; the profile JSON's
+    // branch and classifies the axes backwards; the profile's
     // axisMap / layout that declare the truth were ignored. DualSense /
     // DualShock 4 Bluetooth profiles emitted right-stick and trigger
     // axes swapped as a result.

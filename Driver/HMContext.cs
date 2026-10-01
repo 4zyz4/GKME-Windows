@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using HIDMaestro.Internal;
 
@@ -18,8 +17,7 @@ namespace HIDMaestro;
 /// (they share the same controller-index pool).</para>
 ///
 /// <para><b>Backend:</b> every controller is presented through the bundled
-/// USB/IP transport (usbip-win2). No UMDF2 driver, INF, or PnP device node
-/// is involved.</para>
+/// USB/IP transport (usbip-win2).</para>
 ///
 /// <para><b>Admin requirement:</b> Windows requires SeLoadDriverPrivilege
 /// (admin) for the one-time USB/IP transport install and for attaching each
@@ -36,17 +34,9 @@ public sealed class HMContext : IDisposable
 
     /// <summary>Create a new SDK context. Loading profiles and creating
     /// controllers are separate steps; this constructor only allocates the
-    /// in-process state.
-    ///
-    /// <para>v1.3.0 — fires a background warm-up that pre-parses the embedded
-    /// profile catalog so the first consumer-side profile lookup is
-    /// instant.</para></summary>
+    /// in-process state.</summary>
     public HMContext()
     {
-        System.Threading.Tasks.Task.Run(() =>
-        {
-            try { _ = Internal.ProfileDatabase.LoadEmbedded(); } catch { }
-        });
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -161,36 +151,7 @@ public sealed class HMContext : IDisposable
             return _profilesById.TryGetValue(id, out var p) ? p : null;
     }
 
-    /// <summary>Load profiles from a directory containing .json files
-    /// matching the HIDMaestro profile schema. Profiles loaded from
-    /// multiple sources are merged by ID; later loads override earlier
-    /// ones. Schema files (schema.json) are ignored.</summary>
-    public int LoadProfilesFromDirectory(string profilesDir)
-    {
-        if (profilesDir == null) throw new ArgumentNullException(nameof(profilesDir));
-        ThrowIfDisposed();
-        if (!Directory.Exists(profilesDir))
-            throw new DirectoryNotFoundException($"Profiles directory not found: {profilesDir}");
-
-        var db = ProfileDatabase.Load(profilesDir);
-        int added = 0;
-        lock (_lock)
-        {
-            foreach (var inner in db.All)
-            {
-                if (_profilesById.ContainsKey(inner.Id)) continue; // skip dupes
-                var pub = new HMProfile(inner);
-                _profiles.Add(pub);
-                _profilesById[inner.Id] = pub;
-                added++;
-            }
-            _profiles.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.Ordinal));
-        }
-        return added;
-    }
-
-    /// <summary>Load the default profile catalog embedded in the SDK
-    /// assembly.</summary>
+    /// <summary>Load the built-in profile catalog.</summary>
     public int LoadDefaultProfiles()
     {
         ThrowIfDisposed();

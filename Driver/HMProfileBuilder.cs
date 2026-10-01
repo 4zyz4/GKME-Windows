@@ -99,7 +99,7 @@ public sealed class HMProfileBuilder
         return this;
     }
 
-    /// <summary>Set the HID report descriptor from a hex string (same format as profile JSON).</summary>
+    /// <summary>Set the HID report descriptor from a hex string (same format as the profile's descriptor).</summary>
     public HMProfileBuilder DescriptorHex(string hex)
     {
         _descriptorHex = hex;

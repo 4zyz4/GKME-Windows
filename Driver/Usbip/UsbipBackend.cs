@@ -11,10 +11,9 @@ namespace HIDMaestro.Internal.Usbip;
 /// detaches and tears everything down in order.
 ///
 /// <para>Composite personas just work. The usbip-win2 transport ships
-/// inside HIDMaestro.Core.dll and installs itself on the first composite
-/// create, exactly the way the UMDF2 driver does: no separate package,
-/// no second download, nothing for a user to go find. See
-/// <see cref="UsbipDriverInstaller"/>.</para></summary>
+/// inside HIDMaestro.Core.dll and installs itself on the first create:
+/// no separate package, no second download, nothing for a user to go
+/// find. See <see cref="UsbipDriverInstaller"/>.</para></summary>
 internal static class UsbipBackend
 {
     /// <summary>True when the transport is already installed and a
@@ -104,11 +103,11 @@ internal static class UsbipBackend
         {
             // Stop this process's emulated devices FIRST. Their input pump
             // threads map the shared input section directly and read it in a
-            // loop, and they take no part in the stop-event drain the UMDF2
-            // controllers use. The sweep destroys those sections moments
-            // later, so leaving a pump running here is not a leak, it is an
-            // access violation on a background thread that kills the whole
-            // process. Disposing joins the pumps before anything is unmapped.
+            // loop rather than draining a stop event. The sweep destroys
+            // those sections moments later, so leaving a pump running here is
+            // not a leak, it is an access violation on a background thread
+            // that kills the whole process. Disposing joins the pumps before
+            // anything is unmapped.
             var server = UsbipServer.Current;
             if (server != null)
             {

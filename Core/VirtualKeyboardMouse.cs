@@ -6,8 +6,8 @@ namespace GKME.Core;
 /// The virtual USB HID keyboard and mouse GKME presents through HIDMaestro's
 /// USB/IP backend.
 ///
-/// <para>Both devices are backed by the <c>keyboard-composite</c> /
-/// <c>mouse-composite</c> profiles in <c>StaticProfileRegistry</c> and are fed
+/// <para>Both devices are backed by the <c>keyboard</c> /
+/// <c>mouse</c> profiles in <c>StaticProfileRegistry</c> and are fed
 /// with complete HID input reports via <see cref="HMController.SubmitRawReport"/>
 /// — the same shared-memory contract the gamepad personas use. This replaces
 /// the old user-mode <c>SendInput</c> injection (InputDll.dll): the host now
@@ -22,8 +22,8 @@ namespace GKME.Core;
 internal sealed class VirtualKeyboardMouse : IDisposable
 {
     // Must match StaticProfileRegistry's profile IDs.
-    private const string KeyboardProfileId = "keyboard-composite";
-    private const string MouseProfileId = "mouse-composite";
+    private const string KeyboardProfileId = "keyboard";
+    private const string MouseProfileId = "mouse";
 
     // [modifiers][reserved][256-bit key bitmap].
     private const int KeyboardReportSize = 34;

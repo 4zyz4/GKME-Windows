@@ -428,7 +428,7 @@ public sealed class HidDescriptorBuilder
     /// reference descriptor (<c>hidReportDescFfb.h</c>) declares four
     /// sibling Feature reports: Create New Effect (0x11), Block Load
     /// (0x12), PID Pool (0x13), PID State (0x14). With HIDMaestro's
-    /// UMDF2 shared-section transport, the four-feature variant causes
+    /// shared-section transport, the four-feature variant causes
     /// pid.dll to AV inside <c>PID_EffectOperation+0x52</c> the first
     /// time the consumer calls CreateEffect via DirectInput8 / SharpDX
     /// (issue #16). The crash reproduces with the exact bytes vJoy

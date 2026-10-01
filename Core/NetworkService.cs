@@ -88,18 +88,6 @@ public class NetworkService : IDisposable
             var log = Path.Combine(AppContext.BaseDirectory, "gkme_error.log");
             System.IO.File.AppendAllText(log, $"[InitHidMaestro] starting, BaseDir={AppContext.BaseDirectory}\n");
             
-            // External profile override: profiles/ next to the app wins over
-            // the embedded catalog for the same profile ID (external loads
-            // register first, and LoadDefaultProfiles skips existing IDs).
-            // Lets us fix a profile's USB strings (e.g. DualSense iProduct)
-            // without rebuilding HIDMaestro.Core.
-            var overrideDir = Path.Combine(AppContext.BaseDirectory, "profiles");
-            if (Directory.Exists(overrideDir))
-            {
-                try { _hmContext.LoadProfilesFromDirectory(overrideDir); }
-                catch (Exception ex) { System.IO.File.AppendAllText(log, $"[InitHidMaestro] LoadProfilesFromDirectory failed: {ex}\n"); }
-            }
-
             int loaded = _hmContext.LoadDefaultProfiles();
             if (loaded == 0)
             {

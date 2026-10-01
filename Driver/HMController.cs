@@ -39,9 +39,7 @@ public sealed class HMController : IDisposable
 
     /// <summary>Issue #39: the audio surfaces of a composite USB persona
     /// (speaker/haptic PCM out, microphone in, volume/mute control
-    /// events). Null for HID profiles; non-null exactly when
-    /// <see cref="HMProfile.RequiresUsbipBackend"/> and the controller
-    /// was created through the USB/IP backend.</summary>
+    /// events). Null for personas with no audio streaming interface.</summary>
     public HMUsbAudio? UsbAudio { get; }
 
     // Encoder built once from the profile descriptor at construction time;
@@ -453,7 +451,7 @@ public sealed class HMController : IDisposable
             // v1.3.5 — overlay profile-declared fixed bytes (e.g. DS5 Edge
             // USB activeProfile = 0x80 at byte 49 so dualsense-tester's
             // useInNormalMode check `byte && (byte & 3) === 0` succeeds —
-            // see profiles/sony/dualsense-edge.json inputDefaults). Codec
+            // see the DS5 Edge profile's inputDefaults). Codec
             // path doesn't need this: it walks ExtendedReport.fields which
             // already lists these as uint8 entries with `initial` values,
             // so the constants participate in CRC32 computation. Legacy

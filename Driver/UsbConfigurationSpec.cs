@@ -7,16 +7,13 @@ namespace HIDMaestro.Internal;
 /// shaped after the standard descriptor set so a profile can be authored
 /// directly from a real device's descriptor dump.
 ///
-/// <para>Every UMDF2 profile leaves this null. Windows composes the
-/// configuration itself there, and the HID report descriptor is the only
-/// piece the profile owns. Only a profile whose
-/// <see cref="ControllerProfile.Backend"/> is <c>"usbip"</c> carries one,
-/// because only the USB/IP backend is in a position to present interfaces
-/// Windows did not compose.</para>
+/// <para>This is what makes a profile a USB/IP persona: a profile carries
+/// one, and only the USB/IP backend is in a position to present interfaces
+/// Windows did not compose. The HID report descriptor is authored
+/// alongside it for the interfaces that are HID.</para>
 ///
-/// <para>This is a data model, not a driver. Authoring one changes no
-/// behavior on its own: nothing instantiates it until the backend exists,
-/// and the five existing USB Sony profiles never gain one.</para></summary>
+/// <para>This is a data model, not a driver. The backend reads it at
+/// create time to serve the descriptors and to route the interfaces.</para></summary>
 public sealed class UsbConfigurationSpec
 {
     /// <summary>bConfigurationValue, the value SET_CONFIGURATION selects.

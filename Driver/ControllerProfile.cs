@@ -1,15 +1,11 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text.Json;
 using System.Text.Json.Serialization;
-using GKME;
 
 namespace HIDMaestro.Internal;
 
 /// <summary>
-/// A controller profile loaded from the profiles database.
+/// A controller profile from the built-in catalog.
 /// Contains everything needed to masquerade as a specific real controller.
 /// </summary>
 public sealed class ControllerProfile
@@ -180,34 +176,12 @@ public sealed class ControllerProfile
     [JsonPropertyName("extendedOutputReport")]
     public ExtendedReportSpec? ExtendedOutputReport { get; set; }
 
-    /// <summary>Issue #39. Which instantiation path creates this device.
-    /// Absent or <c>"umdf2"</c> is the default: one HID device via the
-    /// UMDF2 driver. <c>"usbip"</c> marks a composite USB persona, which
-    /// rides the USB transport bundled inside HIDMaestro.Core.dll and
-    /// deployed on first use.
-    ///
-    /// <para>This is a property of the DEVICE the profile describes, not
-    /// a mode switch on an existing one. A profile that presented four
-    /// interfaces on machines with the backend and one without would
-    /// name a device plus a machine state. Composite personas therefore
-    /// ship as separate profiles, and the five existing USB Sony
-    /// profiles are untouched.</para></summary>
-    [JsonPropertyName("backend")]
-    public string? Backend { get; set; }
-
-    /// <summary>Issue #39. The USB configuration this profile presents
-    /// when <see cref="Backend"/> is <c>"usbip"</c>. Null for every
-    /// UMDF2 profile, where Windows composes the configuration itself
-    /// and only the HID report descriptor is ours to author.</summary>
+    /// <summary>Issue #39. The USB configuration this profile presents.
+    /// Every profile takes the USB/IP create path and carries one; Windows
+    /// never composes the configuration itself, so this is not a mode
+    /// switch but the descriptor set the USB/IP backend serves.</summary>
     [JsonPropertyName("usbConfiguration")]
     public UsbConfigurationSpec? UsbConfiguration { get; set; }
-
-    /// <summary>True when this profile is a composite USB persona and
-    /// therefore takes the USB/IP create path rather than the UMDF2
-    /// one.</summary>
-    [JsonIgnore]
-    public bool RequiresUsbipBackend =>
-        Backend?.Equals("usbip", StringComparison.OrdinalIgnoreCase) == true;
 
     /// <summary>
     /// Whether triggers are combined into a single Z axis (true for Xbox on Windows).
@@ -352,8 +326,8 @@ public sealed class ControllerProfile
 }
 
 /// <summary>v1.3.5: vendor-blob report layout (input or output direction).
-/// Profile JSON describes the byte layout of a vendor blob; the codec walks
-/// the field list to encode/decode reports in either direction.
+/// The profile's field list describes the byte layout of a vendor blob; the
+/// codec walks it to encode/decode reports in either direction.
 ///
 /// <para>IMMUTABLE AFTER FIRST USE (issue #34): the codec compiles this
 /// spec to numeric opcodes on its first encode/decode and reuses the
@@ -499,125 +473,4 @@ public sealed class CrcScope
     public int To { get; set; }
 }
 
-/// <summary>
-/// Loads and queries controller profiles from the profiles/ directory.
-/// </summary>
-public sealed class ProfileDatabase
-{
-    private readonly List<ControllerProfile> _profiles = new();
 
-    public IReadOnlyList<ControllerProfile> All => _profiles;
-
-    /// <summary>
-    /// Loads all .json profile files from the given directory (recursively).
-    /// Skips schema.json and any files that fail to parse.
-    /// </summary>
-    public static ProfileDatabase Load(string profilesDir)
-    {
-        var db = new ProfileDatabase();
-
-        if (!Directory.Exists(profilesDir))
-            throw new DirectoryNotFoundException($"Profiles directory not found: {profilesDir}");
-
-        var options = HMLayoutJsonOptions.Default;
-
-        // v1.3.0 — parallel parse mirroring LoadEmbedded. Disk reads are
-        // serialized at the kernel level on most filesystems, but JSON
-        // parse is CPU-bound and benefits from cores. For a directory
-        // with hundreds of profiles, this matters more than the embedded
-        // case because disk-load amortization dominates.
-        var files = Directory.EnumerateFiles(profilesDir, "*.json", SearchOption.AllDirectories)
-            .Where(f => !Path.GetFileName(f).Equals("schema.json", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        var parsed = new System.Collections.Concurrent.ConcurrentBag<ControllerProfile>();
-        System.Threading.Tasks.Parallel.ForEach(files, file =>
-        {
-            try
-            {
-                var json = File.ReadAllText(file);
-                var profile = JsonSerializer.Deserialize<ControllerProfile>(json, options);
-                if (profile != null && !string.IsNullOrEmpty(profile.Id))
-                    parsed.Add(profile);
-            }
-            catch
-            {
-                // A single malformed JSON shouldn't take down the whole load
-                // pass. Caller's profile lookups will simply miss this entry.
-            }
-        });
-
-#pragma warning disable IL2026
-        db._profiles.AddRange(parsed);
-#pragma warning restore IL2026
-        db._profiles.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.Ordinal));
-        return db;
-    }
-
-    /// <summary>Loads every profile JSON embedded in the HIDMaestro.Core
-    /// assembly under the logical-name prefix "HIDMaestro.Profiles.". This
-    /// is the no-disk path used by HMContext.LoadDefaultProfiles() — the
-    /// SDK ships with the entire profile catalog baked in so consumers
-    /// don't need to ship a sibling profiles/ directory.</summary>
-    // v1.3.0 — process-wide cache. Embedded JSONs are static for the
-    // lifetime of the process; reparsing on every HMContext.LoadDefaultProfiles
-    // is wasted work. First call populates the cache (parallel parse);
-    // subsequent calls return the same instance. Multiple HMContexts share.
-    private static ProfileDatabase? s_cachedEmbedded;
-    private static readonly object s_cachedEmbeddedLock = new();
-
-    public static ProfileDatabase LoadEmbedded()
-    {
-        if (s_cachedEmbedded != null) return s_cachedEmbedded;
-        lock (s_cachedEmbeddedLock)
-        {
-            if (s_cachedEmbedded != null) return s_cachedEmbedded;
-            s_cachedEmbedded = LoadEmbeddedFresh();
-            return s_cachedEmbedded;
-        }
-    }
-
-    private static ProfileDatabase LoadEmbeddedFresh()
-    {
-        var db = new ProfileDatabase();
-        var asm = typeof(ProfileDatabase).Assembly;
-        var options = HMLayoutJsonOptions.Default;
-        const string prefix = "HIDMaestro.Profiles.";
-
-        // Collect resource names first so we can parse in parallel. The
-        // serial JSON parse over 224 profiles is the dominant fresh-launch
-        // cost in HMContext init — Parallel.ForEach across 4–16 cores
-        // drops it from 200–500 ms cold to 50–150 ms.
-        var names = asm.GetManifestResourceNames()
-            .Where(n => n.StartsWith(prefix, StringComparison.Ordinal)
-                     && n.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-
-        var parsed = new System.Collections.Concurrent.ConcurrentBag<ControllerProfile>();
-        System.Threading.Tasks.Parallel.ForEach(names, name =>
-        {
-            try
-            {
-                using var s = asm.GetManifestResourceStream(name);
-                if (s == null) return;
-                using var reader = new StreamReader(s);
-                string json = reader.ReadToEnd();
-                var profile = JsonSerializer.Deserialize<ControllerProfile>(json, options);
-                if (profile != null && !string.IsNullOrEmpty(profile.Id))
-                    parsed.Add(profile);
-            }
-            catch
-            {
-                // Silent — embedded resources should always parse, but if a
-                // future profile has bad JSON we don't want to take down
-                // every consumer.
-            }
-        });
-
-#pragma warning disable IL2026
-        db._profiles.AddRange(parsed);
-#pragma warning restore IL2026
-        db._profiles.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.Ordinal));
-        return db;
-    }
-
-}

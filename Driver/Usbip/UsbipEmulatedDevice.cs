@@ -23,7 +23,7 @@ namespace HIDMaestro.Internal.Usbip;
 /// the Global\HIDMaestroOutput&lt;N&gt; ring with driver.c's discipline
 /// (reserve Head atomically, fill the slot, fence, publish slot.SeqNo,
 /// doorbell last), so <c>HMController.OutputReceived</c> and
-/// <c>OutputDecoded</c> fire identically to the UMDF2 path.</item>
+/// <c>OutputDecoded</c> fire as before.</item>
 /// <item>Feature reads: the Sony Get_Feature table is driver.c's, byte for
 /// byte (0x05/41 and 0x02/37-41 carrying the neutral calibration, 0x09/20
 /// and 0x12/16 with the synthetic MAC for DS5 and DS4 respectively,
@@ -33,9 +33,9 @@ namespace HIDMaestro.Internal.Usbip;
 /// </list>
 ///
 /// <para>PID FFB feature serving is deliberately absent here: no usbip
-/// profile declares a PID block (they are Sony composite personas), and
-/// the UMDF2 backend remains the PID path. A future PID-over-usbip
-/// profile must port driver.c's PID Get/SetFeature handling first.</para>
+/// profile declares a PID block (they are Sony composite personas). A
+/// future PID profile must port driver.c's PID Get/SetFeature handling
+/// first.</para>
 ///
 /// <para>Isochronous endpoints route to <see cref="UsbAudioEngine"/>;
 /// completions come back on the pacing thread and are serialized onto the
@@ -1460,9 +1460,8 @@ internal sealed class UsbipEmulatedDevice : IDisposable
         SendError(cmd.Seqnum, -UsbipProtocol.EPipe);
     }
 
-    /// <summary>driver.c's Sony Get_Feature stub table
-    /// (IOCTL_UMDF_HID_GET_FEATURE handler), sized against wLength the way
-    /// the driver sizes against the IOCTL output buffer.</summary>
+    /// <summary>driver.c's Sony Get_Feature stub table, sized against
+    /// wLength the way the driver sizes its feature reads.</summary>
     private byte[]? BuildFeatureStub(byte reportId, ushort wLength)
     {
         if (Descriptors.VendorId != 0x054C) return null;
@@ -1539,10 +1538,9 @@ internal sealed class UsbipEmulatedDevice : IDisposable
 
     /// <summary>Neutral Sony motion calibration, byte-for-byte the same
     /// payload driver.c serves (g_SonyCalibration, issue #43). Written at
-    /// offset 1, after the report id. The composite lane must not diverge
-    /// from the UMDF2 lane here: a consumer reading calibration from a
-    /// composite persona has to see exactly what it sees from the plain
-    /// profile, or the two backends disagree about the same device.</summary>
+    /// offset 1, after the report id. A consumer reading calibration from
+    /// a composite persona has to see exactly what the real pad reports,
+    /// so these bytes must not diverge from driver.c's.</summary>
     private static readonly byte[] SonyCalibration =
     {
         0x00, 0x00,  // gyro_pitch_bias

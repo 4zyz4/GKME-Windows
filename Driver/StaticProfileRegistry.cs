@@ -11,23 +11,23 @@ internal static class StaticProfileRegistry
 
     static StaticProfileRegistry()
     {
-        s_profiles["xbox360-composite"] = BuildXbox360();
-        s_profiles["dualsense-composite"] = BuildDualSense();
-        s_profiles["dualshock-4-v2-composite"] = BuildDualShock4();
-        s_profiles["switch-pro-composite"] = BuildSwitchPro();
-        s_profiles["joycon-l-composite"] = BuildJoycon(
-            id: "joycon-l-composite",
+        s_profiles["xbox360"] = BuildXbox360();
+        s_profiles["dualsense"] = BuildDualSense();
+        s_profiles["dualshock-4-v2"] = BuildDualShock4();
+        s_profiles["switch-pro"] = BuildSwitchPro();
+        s_profiles["joycon-l"] = BuildJoycon(
+            id: "joycon-l",
             pid: "0x2006",
             product: "Joy-Con (L)",
             serial: "000000000001");
-        s_profiles["joycon-r-composite"] = BuildJoycon(
-            id: "joycon-r-composite",
+        s_profiles["joycon-r"] = BuildJoycon(
+            id: "joycon-r",
             pid: "0x2007",
             product: "Joy-Con (R)",
             serial: "000000000002");
-        s_profiles["keyboard-composite"] = BuildKeyboard();
-        s_profiles["mouse-composite"] = BuildMouse();
-        s_profiles["xbox-one-composite"] = BuildXboxOne();
+        s_profiles["keyboard"] = BuildKeyboard();
+        s_profiles["mouse"] = BuildMouse();
+        s_profiles["xbox-one"] = BuildXboxOne();
     }
 
     public static Dictionary<string, ControllerProfile> AllProfiles => s_profiles;
@@ -123,7 +123,7 @@ internal static class StaticProfileRegistry
 
         return new ControllerProfile
         {
-            Id = "xbox360-composite",
+            Id = "xbox360",
             Name = "Xbox 360 Controller (Wired) — Full",
             Vendor = "Microsoft",
             Vid = "0x045E",
@@ -131,10 +131,8 @@ internal static class StaticProfileRegistry
             ProductString = "Xbox 360 Controller for Windows",
             ManufacturerString = "Microsoft",
             Type = "gamepad",
-            Connection = "usb",
             InputReportSize = 20,
             Notes = "Wired Xbox 360 controller as synthesized by usbip-win. Ported from VIIPER's device/xbox360 device.go: a full-speed, vendor-class (bDeviceClass 0xFF) composite with four 0xFF interfaces, 0x21/0x41 class descriptors and a 20-byte opaque input report. No HID report descriptor; input is delivered verbatim from shared memory as 20 raw bytes (RID-less). The only control request is the 0xC1/0x01/0x0100 capability report (handled via the vendorRequests table). Rum/LED output arrives on EP0x01 OUT and is surfaced through the shared-memory output ring.",
-            Backend = "usbip",
             UsbConfiguration = uc
         };
     }
@@ -202,7 +200,7 @@ internal static class StaticProfileRegistry
 
         return new ControllerProfile
         {
-            Id = "xbox-one-composite",
+            Id = "xbox-one",
             Name = "Xbox One Controller (Model 1708)",
             Vendor = "Microsoft",
             Vid = "0x045E",
@@ -210,9 +208,7 @@ internal static class StaticProfileRegistry
             ProductString = "Controller",
             ManufacturerString = "Microsoft",
             Type = "gamepad",
-            Connection = "usb",
             InputReportSize = 18,
-            Backend = "usbip",
             Notes = "Wired Xbox One controller (Model 1708, VID 045E:02EA) as a " +
                     "genuine vendor-class GIP device. Windows binds dc1-controller.inf " +
                     "(xboxgip.sys) and the GIP attachment becomes a HID child that " +
@@ -229,7 +225,7 @@ internal static class StaticProfileRegistry
     {
         var ds = new ControllerProfile
         {
-            Id = "dualsense-composite",
+            Id = "dualsense",
             Name = "DualSense (PS5) — Full",
             Vendor = "Sony",
             Vid = "0x054C",
@@ -237,7 +233,6 @@ internal static class StaticProfileRegistry
             ProductString = "DualSense Wireless Controller",
             ManufacturerString = "Sony Interactive Entertainment",
             Type = "gamepad",
-            Connection = "usb",
             Descriptor = "05010905a1018501093009310932093509330934150026ff007508950681020600ff09209501810205010939150025073500463b016514750495018142650005091901290f150025017501950f81020600ff0921950d81020600ff0922150026ff0075089534810285020923952f9102850509339528b10285080934952fb102850909249513b102850a0925951ab10285200926953fb102852109279504b10285220940953fb10285800928953fb10285810929953fb1028582092a9509b1028583092b953fb1028584092c953fb1028585092d9502b10285a0092e9501b10285e0092f953fb10285f00930953fb10285f10931953fb10285f20932950fb10285f40935953fb10285f509369503b102c0",
             InputReportSize = 64,
             ButtonMap = new[] { 1, 2, 0, 3, 4, 5, 8, 9, 10, 11, 12, 13, -1, -1, -1, 14 },
@@ -249,8 +244,7 @@ internal static class StaticProfileRegistry
                 { "0x33", "leftTrigger" },
                 { "0x34", "rightTrigger" }
             },
-            Notes = "Issue #39: the four-interface USB composite a real DualSense presents, authored from DJm00n/ControllersInfo DescriptorDump_Wireless_Controller (DualSense Model CFI-ZCT1W): configuration wTotalLength 227, bNumInterfaces 4, self-powered, 500 mA. Interface 3 is the HID function and is byte-identical to the 'dualsense' profile, so the report descriptor, codec, buttonMap, axisMap and extendedReport blocks below are unchanged and every input that works there works here. Interfaces 0-2 are USB Audio Class: the OUT stream carries 4 channels at 48 kHz (channels 1/2 speaker, 3/4 voice-coil haptics, wChannelConfig 0x0033) and the IN stream carries the 2-channel headset microphone. Uses the USB/IP create path (backend: usbip). The transport ships inside HIDMaestro.Core.dll and deploys itself on first use, so this profile needs nothing installed by hand. 'dualsense' remains the UMDF2 single-interface profile and is unaffected.",
-            Backend = "usbip",
+            Notes = "Issue #39: the four-interface USB composite a real DualSense presents, authored from DJm00n/ControllersInfo DescriptorDump_Wireless_Controller (DualSense Model CFI-ZCT1W): configuration wTotalLength 227, bNumInterfaces 4, self-powered, 500 mA. Interface 3 is the HID function; the report descriptor, codec, buttonMap, axisMap and extendedReport blocks below describe it. Interfaces 0-2 are USB Audio Class: the OUT stream carries 4 channels at 48 kHz (channels 1/2 speaker, 3/4 voice-coil haptics, wChannelConfig 0x0033) and the IN stream carries the 2-channel headset microphone. Uses the USB/IP create path. The transport ships inside HIDMaestro.Core.dll and deploys itself on first use, so this profile needs nothing installed by hand.",
             ExtendedReport = new ExtendedReportSpec
             {
                 ReportId = "0x01",
@@ -434,7 +428,7 @@ internal static class StaticProfileRegistry
     {
         return new ControllerProfile
         {
-            Id = "dualshock-4-v2-composite",
+            Id = "dualshock-4-v2",
             Name = "DualShock 4 v2 (CUH-ZCT2) — Full",
             Vendor = "Sony",
             Vid = "0x054C",
@@ -443,7 +437,6 @@ internal static class StaticProfileRegistry
             ManufacturerString = "Sony Interactive Entertainment",
             SerialNumberString = "JDM-050",
             Type = "gamepad",
-            Connection = "usb",
             Descriptor = "05010905a10185010930093109320935150026ff007508950481020939150025073500463b016514750495018142650005091901290e150025017501950e81020600ff0920750695011500257f8102050109330934150026ff007508950281020600ff09219536810285050922951f9102850409239524b102850209249524b102850809259503b102851009269504b102851109279502b10285120602ff0921950fb102851309229516b10285140605ff09209510b10285150921952cb1020680ff858009209506b102858109219506b102858209229505b102858309239501b102858409249504b102858509259506b102858609269506b102858709279523b10285880928953fb102858909299502b102859009309505b102859109319503b102859209329503b10285930933950cb10285940934953fb10285a009409506b10285a109419501b10285a209429501b10285a309439530b10285a40944950db10285f00947953fb10285f10948953fb10285f20949950fb10285a7094a9501b10285a8094b9501b10285a9094c9508b10285aa094e9501b10285ab094f9539b10285ac09509539b10285ad0951950bb10285ae09529501b10285af09539502b10285b00954953fb10285e009579502b10285b30955953fb10285b40955953fb10285b50956953fb10285d00958953fb10285d40959953fb102c0",
             InputReportSize = 64,
             ButtonMap = new[] { 1, 2, 0, 3, 4, 5, 8, 9, 10, 11, 12, 13, -1, -1, -1, -1 },
@@ -455,8 +448,7 @@ internal static class StaticProfileRegistry
                 { "0x33", "leftTrigger" },
                 { "0x34", "rightTrigger" }
             },
-            Notes = "Issue #39: the four-interface USB composite a real DualShock 4 v2 presents, authored from DJm00n/ControllersInfo DescriptorDump_Wireless_Controller (DualShock4 Model CUH-ZCT2E) and the dualshock4.pcap wire capture: configuration wTotalLength 225, bNumInterfaces 4, self-powered, 500 mA, FULL-speed device. Interface 3 is the HID function and is byte-identical to the 'dualshock-4-v2' profile (507-byte report descriptor verified against the capture), so the codec and every input carry over unchanged. Interfaces 0-2 are USB Audio Class: both terminals are Headset (no speaker terminal, no 4-channel stream, so no haptics lane; this variant exists for fidelity and the microphone). OUT stream 2 ch / 16-bit / 32 kHz (wMaxPacketSize 132), IN stream 1 ch / 16-bit / 16 kHz (wMaxPacketSize 34). UAC control ranges are the real pad's wire values from the capture. Uses the USB/IP create path (backend: usbip). The transport ships inside HIDMaestro.Core.dll and deploys itself on first use, so this profile needs nothing installed by hand. 'dualshock-4-v2' remains the UMDF2 single-interface profile and is unaffected.",
-            Backend = "usbip",
+            Notes = "Issue #39: the four-interface USB composite a real DualShock 4 v2 presents, authored from DJm00n/ControllersInfo DescriptorDump_Wireless_Controller (DualShock4 Model CUH-ZCT2E) and the dualshock4.pcap wire capture: configuration wTotalLength 225, bNumInterfaces 4, self-powered, 500 mA, FULL-speed device. Interface 3 is the HID function (the 507-byte report descriptor below is verified against the capture), whose codec and inputs the profile carries. Interfaces 0-2 are USB Audio Class: both terminals are Headset (no speaker terminal, no 4-channel stream, so no haptics lane; this variant exists for fidelity and the microphone). OUT stream 2 ch / 16-bit / 32 kHz (wMaxPacketSize 132), IN stream 1 ch / 16-bit / 16 kHz (wMaxPacketSize 34). UAC control ranges are the real pad's wire values from the capture. Uses the USB/IP create path. The transport ships inside HIDMaestro.Core.dll and deploys itself on first use, so this profile needs nothing installed by hand.",
             ExtendedReport = new ExtendedReportSpec
             {
                 ReportId = "0x01",
@@ -698,7 +690,7 @@ internal static class StaticProfileRegistry
 
         return new ControllerProfile
         {
-            Id = "switch-pro-composite",
+            Id = "switch-pro",
             Name = "Nintendo Switch Pro Controller (USB)",
             Vendor = "Nintendo",
             Vid = "0x057E",
@@ -707,8 +699,6 @@ internal static class StaticProfileRegistry
             ManufacturerString = "Nintendo Co., Ltd.",
             SerialNumberString = "000000000001",
             Type = "gamepad",
-            Connection = "usb",
-            Backend = "usbip",
             Descriptor = nativeDescriptor,
             InputReportSize = 64,
             Notes = "Genuine USB Switch Pro persona. SDL3's HIDAPI_DriverSwitch " +
@@ -785,8 +775,6 @@ internal static class StaticProfileRegistry
             ManufacturerString = "Nintendo Co., Ltd.",
             SerialNumberString = serial,
             Type = "gamepad",
-            Connection = "usb",
-            Backend = "usbip",
             Descriptor = SwitchUsbReportDescriptor,
             InputReportSize = 64,
             Notes = "Genuine USB Joy-Con persona. SDL3's HIDAPI_DriverJoyCons " +
@@ -888,7 +876,7 @@ internal static class StaticProfileRegistry
 
         return new ControllerProfile
         {
-            Id = "keyboard-composite",
+            Id = "keyboard",
             Name = "HID Keyboard (USB)",
             Vendor = "GKME",
             Vid = "0x2E8A",
@@ -897,8 +885,6 @@ internal static class StaticProfileRegistry
             ManufacturerString = "GKME",
             SerialNumberString = "1337",
             Type = "keyboard",
-            Connection = "usb",
-            Backend = "usbip",
             Descriptor = KeyboardUsbReportDescriptor,
             InputReportSize = 34,
             Notes = "Full N-key-rollover USB HID keyboard on the USB/IP backend. " +
@@ -944,7 +930,7 @@ internal static class StaticProfileRegistry
 
         return new ControllerProfile
         {
-            Id = "mouse-composite",
+            Id = "mouse",
             Name = "HID Mouse (USB)",
             Vendor = "GKME",
             Vid = "0x2E8A",
@@ -953,8 +939,6 @@ internal static class StaticProfileRegistry
             ManufacturerString = "GKME",
             SerialNumberString = "1337",
             Type = "mouse",
-            Connection = "usb",
-            Backend = "usbip",
             Descriptor = MouseUsbReportDescriptor,
             InputReportSize = 9,
             Notes = "8-button USB HID mouse with 16-bit relative X/Y and high-" +

@@ -11,7 +11,7 @@ namespace HIDMaestro;
 /// <para>Used by consumers that drive a real device from synthesized state
 /// (audio-reactive rumble, user-configured trigger effects, lightbar mood
 /// modes) without reimplementing byte-layout knowledge that the SDK
-/// already has via the profile JSON. PadForge's DualSense effect pipeline
+/// already has. PadForge's DualSense effect pipeline
 /// uses this to replace ~1,400 lines of inline byte packing.</para>
 ///
 /// <para>Per-controller rolling-counter state lives on

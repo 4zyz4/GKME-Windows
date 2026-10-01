@@ -12,10 +12,9 @@ namespace HIDMaestro.Internal.Usbip;
 ///
 /// <para>Composite USB personas need a driver-backed USB device for their
 /// audio endpoints, which no user-mode API can create. HIDMaestro ships
-/// the transport inside HIDMaestro.Core.dll and installs it itself, the
-/// same way it ships and installs its own UMDF2 driver: the consumer
-/// calls <see cref="HIDMaestro.HMContext.CreateController"/> with a
-/// composite profile and it works. There is no separate download, no
+/// the transport inside HIDMaestro.Core.dll and installs it itself: the
+/// consumer calls <see cref="HIDMaestro.HMContext.CreateController"/> with
+/// a composite profile and it works. There is no separate download, no
 /// second package, and nothing for a user to go find.</para>
 ///
 /// <para>The embedded binary is the upstream release asset, unmodified,
@@ -378,12 +377,11 @@ internal static class UsbipDriverInstaller
     /// <para>A composite persona is byte-for-byte a real Sony pad at every
     /// level a filter can inspect, which is required for the UAC class
     /// driver to bind and must not change. That leaves a host with nothing
-    /// of its own to match on: the standard HIDMAESTRO token every UMDF2
-    /// virtual carries in its hardware IDs is absent from the whole chain,
-    /// so a consumer filtering its own virtual pads out of enumeration
-    /// picks the persona up as a second controller. On hardware that
-    /// showed up as SDL assigning player index 1 and lighting a lone pad
-    /// red.</para>
+    /// of its own to match on: no HIDMAESTRO token is present anywhere in
+    /// the chain, so a consumer filtering its own virtual pads out of
+    /// enumeration picks the persona up as a second controller. On hardware
+    /// that showed up as SDL assigning player index 1 and lighting a lone
+    /// pad red.</para>
     ///
     /// <para>The token goes on the host controller, the one node
     /// HIDMaestro brings to the tree, and never on the persona. It is

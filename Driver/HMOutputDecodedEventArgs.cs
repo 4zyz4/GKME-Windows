@@ -14,7 +14,7 @@ public sealed class HMOutputDecodedEventArgs : EventArgs
     public byte ReportId { get; init; }
 
     /// <summary>Parsed field values keyed by the <c>semantic</c> name from
-    /// the profile JSON's <c>extendedOutputReport.fields</c>. Field types
+    /// the profile's <c>extendedOutputReport.fields</c>. Field types
     /// map to runtime types like this:
     /// <list type="bullet">
     /// <item><description><c>uint8</c> / <c>uint8-rolling</c> → <c>byte</c></description></item>

@@ -8,7 +8,7 @@ namespace HIDMaestro;
 
 /// <summary>The audio surfaces of a composite USB controller (issue #39).
 /// Non-null on <see cref="HMController.UsbAudio"/> only when the profile
-/// runs on the USB/IP backend; every UMDF2 controller leaves it null.
+/// declares an audio streaming interface.
 ///
 /// <para>Two directions, shaped like the existing state surfaces:
 /// <see cref="Output"/> is host-to-consumer (the game renders to the
