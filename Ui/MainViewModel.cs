@@ -119,13 +119,17 @@ public class MainViewModel : INotifyPropertyChanged
                 // restarting GKME.
                 try { _network?.InitializeHidMaestro(); } catch { }
                 StatusText = "USBip 已安装";
-                dlg.SetCompleted("安装完成，请重新连接手机。");
+                dlg.Close();
             }
             else if (result == UsbipInstallResult.RebootRequired)
             {
                 applied = true;
+                // Close the install dialog first, then raise a fresh reboot
+                // prompt. Mark the service so every later connection is
+                // refused until the machine restarts.
                 dlg.Close();
-                ShowRebootRequiredDialog();
+                _network?.MarkRebootRequired();
+                OnRebootRequired();
             }
             else
             {
@@ -243,6 +247,17 @@ public class MainViewModel : INotifyPropertyChanged
     public async Task ConnectEndpointAsync(DeviceEndpointViewModel ep)
     {
         if (_network == null) return;
+
+        // A reboot is pending: the USB transport cannot be used until Windows
+        // reloads it, so refuse the connection and re-surface the prompt
+        // instead of letting it half-establish.
+        if (_network.RebootRequired)
+        {
+            StatusText = "需要重启电脑后才能连接";
+            OnRebootRequired();
+            return;
+        }
+
         var device = ep.Device;
         var ip = device.IpString;
         if (_sessionMap.ContainsKey(ip)) return;
@@ -348,6 +363,15 @@ public class MainViewModel : INotifyPropertyChanged
 
     public async Task ConnectByIpAsync()
     {
+        // Reject before a manual card is created so a refused connect leaves
+        // no phantom entry behind.
+        if (_network?.RebootRequired == true)
+        {
+            StatusText = "需要重启电脑后才能连接";
+            OnRebootRequired();
+            return;
+        }
+
         var ip = ManualIp?.Trim();
         if (string.IsNullOrEmpty(ip) || _network == null)
         {

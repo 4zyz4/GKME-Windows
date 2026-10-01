@@ -220,6 +220,12 @@ public class NetworkService : IDisposable
     /// view model re-checks it once the window exists.</summary>
     public bool RebootRequired { get; private set; }
 
+    /// <summary>Set the sticky reboot-required flag when a transport change
+    /// applied outside initialization (the install dialog ran an installer
+    /// that asked for a reboot). While set, every new connection is refused;
+    /// the caller raises its own reboot prompt.</summary>
+    public void MarkRebootRequired() => RebootRequired = true;
+
     /// <summary>Raised when usbip-win2 must be installed or upgraded. The
     /// UI shows the install prompt.</summary>
     public event Action? OnUsbipInstallRequired;
@@ -634,6 +640,11 @@ public class NetworkService : IDisposable
 
     public async Task<GamepadSession?> ConnectAsync(DiscoveredDevice device, int connectTimeoutMs = 5000)
     {
+        // Reboot pending: Windows will not load the transport until the next
+        // boot, so refuse every new connection instead of letting it half-
+        // establish and then fail while creating a controller.
+        if (RebootRequired) return null;
+
         if (device.IsUsb) return await ConnectUsbAsync(device, connectTimeoutMs);
 
         var key = device.Key;
@@ -687,7 +698,7 @@ public class NetworkService : IDisposable
             {
                 OnDeviceInfoUpdated?.Invoke(s.Device);
             };
-            session.OnRebootRequired += _ => OnRebootRequired?.Invoke();
+            session.OnRebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
             session.OnUsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
             session.OnDisconnected += s =>
             {
@@ -733,6 +744,8 @@ public class NetworkService : IDisposable
     /// phone accepts it in its USB TCP server.</summary>
     private async Task<GamepadSession?> ConnectUsbAsync(DiscoveredDevice device, int connectTimeoutMs)
     {
+        if (RebootRequired) return null;
+
         var key = device.Key;
         GamepadSession? oldSession = null;
 
@@ -799,7 +812,7 @@ public class NetworkService : IDisposable
             session.OnReady += s => OnSessionStarted?.Invoke(s);
             session.OnConnectionLost += s => OnSessionConnectionLost?.Invoke(s.Device.IpString);
             session.OnDeviceInfoUpdated += s => OnDeviceInfoUpdated?.Invoke(s.Device);
-            session.OnRebootRequired += _ => OnRebootRequired?.Invoke();
+            session.OnRebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
             session.OnUsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
             session.OnDisconnected += s =>
             {

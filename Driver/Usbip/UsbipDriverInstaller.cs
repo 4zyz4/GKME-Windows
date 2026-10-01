@@ -62,9 +62,16 @@ internal static class UsbipDriverInstaller
     /// one-time install/upgrade, which briefly re-enumerates USB.</param>
     public static bool EnsureInstalled(Action<string>? progress = null)
     {
+        // An install/upgrade already ran this boot and Windows will not load
+        // the new transport until the next restart. The old image may still
+        // answer IOCTLs, so a presence probe is not proof the transport is
+        // usable: keep the reboot requirement sticky and refuse to build a
+        // controller against a half-loaded driver.
+        if (NeedsRebootThisBoot())
+            throw new UsbipRebootRequiredException(RebootRequiredMessage());
+
         if (IsInstalled && VhciClient.IsCurrentAbi())
         {
-            ClearUpgradeNeedsRebootMarker();
             s_verifiedThisProcess = true;
             StampOwnerHardwareId();
             return true;
@@ -74,7 +81,6 @@ internal static class UsbipDriverInstaller
         {
             if (IsInstalled && VhciClient.IsCurrentAbi())
             {
-                ClearUpgradeNeedsRebootMarker();
                 return true;
             }
 
@@ -83,7 +89,7 @@ internal static class UsbipDriverInstaller
             // exceptions below into an install or reboot prompt.
             if (IsInstalled)
             {
-                if (UpgradeNeedsRebootThisBoot())
+                if (NeedsRebootThisBoot())
                     throw new UsbipRebootRequiredException(RebootRequiredMessage());
 
                 throw new UsbipInstallRequiredException(true, UpgradeRequiredMessage());
@@ -100,7 +106,7 @@ internal static class UsbipDriverInstaller
                 progress?.Invoke("Repairing the existing USB audio transport...");
                 if (TryRestartHostController(progress) && VhciClient.IsCurrentAbi()) return true;
 
-                if (UpgradeNeedsRebootThisBoot())
+                if (NeedsRebootThisBoot())
                     throw new UsbipRebootRequiredException(RebootRequiredMessage());
 
                 throw new UsbipInstallRequiredException(true, UpgradeRequiredMessage());
@@ -115,18 +121,24 @@ internal static class UsbipDriverInstaller
     /// the user clicks install; never runs on its own.
     ///
     /// <para><paramref name="interactive"/> shows the installer's normal UI
-    /// (the manual path). Windows keeps an already-loaded kernel service
-    /// image until the next boot, so an upgrade that applies but does not
-    /// take effect returns <see cref="UsbipInstallResult.RebootRequired"/>
+    /// (the manual path). A run that Windows reports as reboot-pending,
+    /// either because the installer itself asked for one (Inno exit code
+    /// 3010) or because an upgrade applied while the running image stayed at
+    /// the old ABI, returns <see cref="UsbipInstallResult.RebootRequired"/>
     /// and is recorded once per boot so later calls ask for the reboot
     /// instead of reinstalling in a loop.</para></summary>
     public static UsbipInstallResult Install(Action<string>? progress = null, bool interactive = true)
     {
         lock (s_lock)
         {
+            // Already installed this boot; a second run cannot load the new
+            // image. Report the pending reboot instead of reinstalling.
+            if (NeedsRebootThisBoot())
+                return UsbipInstallResult.RebootRequired;
+
             if (IsInstalled && VhciClient.IsCurrentAbi())
             {
-                ClearUpgradeNeedsRebootMarker();
+                ClearNeedsRebootMarker();
                 StampOwnerHardwareId();
                 return UsbipInstallResult.Success;
             }
@@ -136,30 +148,43 @@ internal static class UsbipDriverInstaller
                 : $"Installing USB transport (usbip-win2 {Version})...");
 
             string exe = ExtractInstaller();
-            if (!RunInstaller(exe, interactive))
+            InstallerOutcome outcome = RunInstaller(exe, interactive);
+            if (outcome == InstallerOutcome.Failed)
             {
                 progress?.Invoke("安装未完成。");
                 return UsbipInstallResult.Cancelled;
             }
 
+            // The installer itself reported success-with-reboot-pending
+            // (Inno exit code 3010). That verdict is authoritative even if
+            // the vhci interface happens to answer immediately: the root-hub
+            // extension it installs is not re-enumerated until the next boot,
+            // so imported devices do not enumerate correctly before then and
+            // the UI must ask for a reboot rather than claim success.
+            if (outcome == InstallerOutcome.RebootRequired)
+            {
+                MarkNeedsReboot();
+                progress?.Invoke("安装完成，需要重启电脑。");
+                return UsbipInstallResult.RebootRequired;
+            }
+
             progress?.Invoke("正在检查 USBip 驱动...");
             if (WaitForCurrentAbi(progress, 60_000))
             {
-                ClearUpgradeNeedsRebootMarker();
+                ClearNeedsRebootMarker();
                 StampOwnerHardwareId();
                 progress?.Invoke("USB audio transport ready.");
                 return UsbipInstallResult.Success;
             }
 
-            MarkUpgradeNeedsReboot();
+            MarkNeedsReboot();
             return UsbipInstallResult.RebootRequired;
         }
     }
 
     private static string RebootRequiredMessage() =>
-        $"usbip-win2 {Version} was installed, but Windows kept the previous driver image loaded " +
-        "and did not pick up the new interface without a restart. Reboot, then create the " +
-        "controller again.";
+        $"usbip-win2 {Version} was installed, but Windows will not finish loading the new " +
+        "USB transport until the next boot. Reboot, then create the controller again.";
 
     private static string InstallRequiredMessage() =>
         $"The usbip-win2 {Version} USB transport is not installed. Install it to create composite " +
@@ -169,8 +194,8 @@ internal static class UsbipDriverInstaller
         "An older usbip-win2 is installed and cannot be used by this build. Upgrade it to " +
         $"{Version} to create composite controllers.";
 
-    private static string UpgradeMarkerPath =>
-        Path.Combine(Path.GetTempPath(), $"HIDMaestro_usbip_upgrade_needs_reboot_{Version}");
+    private static string NeedsRebootMarkerPath =>
+        Path.Combine(Path.GetTempPath(), $"HIDMaestro_usbip_needs_reboot_{Version}");
 
     /// <summary>Approximate UTC instant of the current boot, from the same
     /// system-wide tick origin every process shares.</summary>
@@ -180,16 +205,18 @@ internal static class UsbipDriverInstaller
         catch { return DateTime.MinValue; }
     }
 
-    /// <summary>True when an in-place upgrade already ran this boot,
-    /// replaced the driver package, and the running image stayed at the old
-    /// ABI: a reboot, not another install, is what is needed. Compared on
-    /// the boot instant, so the marker self-clears after a restart.</summary>
-    private static bool UpgradeNeedsRebootThisBoot()
+    /// <summary>True when an install or in-place upgrade already ran this
+    /// boot and Windows will not finish loading the new transport until the
+    /// next restart (the installer asked for it, or the running image stayed
+    /// at the old ABI): a reboot, not another install, is what is needed.
+    /// Compared on the boot instant, so the marker self-clears after a
+    /// restart.</summary>
+    private static bool NeedsRebootThisBoot()
     {
         try
         {
-            if (!File.Exists(UpgradeMarkerPath)) return false;
-            string text = File.ReadAllText(UpgradeMarkerPath);
+            if (!File.Exists(NeedsRebootMarkerPath)) return false;
+            string text = File.ReadAllText(NeedsRebootMarkerPath);
             if (!DateTime.TryParse(text, CultureInfo.InvariantCulture,
                     DateTimeStyles.RoundtripKind, out DateTime marked))
                 return false;
@@ -198,19 +225,19 @@ internal static class UsbipDriverInstaller
         catch { return false; }
     }
 
-    private static void MarkUpgradeNeedsReboot()
+    private static void MarkNeedsReboot()
     {
         try
         {
-            File.WriteAllText(UpgradeMarkerPath,
+            File.WriteAllText(NeedsRebootMarkerPath,
                 CurrentBootTimeUtc().ToString("o", CultureInfo.InvariantCulture));
         }
         catch { }
     }
 
-    private static void ClearUpgradeNeedsRebootMarker()
+    private static void ClearNeedsRebootMarker()
     {
-        try { if (File.Exists(UpgradeMarkerPath)) File.Delete(UpgradeMarkerPath); } catch { }
+        try { if (File.Exists(NeedsRebootMarkerPath)) File.Delete(NeedsRebootMarkerPath); } catch { }
     }
 
     /// <summary>Poll, bounded, until the vhci host controller is present
@@ -581,12 +608,23 @@ internal static class UsbipDriverInstaller
         catch { return false; }
     }
 
+    /// <summary>Outcome of one installer run, mapping Inno Setup's exit
+    /// codes: 0 is plain success, 3010 (ERROR_SUCCESS_REBOOT_REQUIRED) is
+    /// success-with-reboot-pending, and anything else is a failure or a user
+    /// cancellation.</summary>
+    private enum InstallerOutcome
+    {
+        Success,
+        RebootRequired,
+        Failed,
+    }
+
     /// <summary>Run the Inno Setup installer and wait for it to exit.
     /// <paramref name="interactive"/> shows the upstream wizard; otherwise it
-    /// runs silently (the SDK path). Returns true when the installer reported
-    /// success (Inno: 0, or 3010 for success-with-reboot-pending); false when
-    /// the user cancelled or it failed.</summary>
-    private static bool RunInstaller(string exePath, bool interactive)
+    /// runs silently (the SDK path). Distinguishes plain success from
+    /// success-with-reboot-pending so the caller can honour the installer's
+    /// own reboot verdict.</summary>
+    private static InstallerOutcome RunInstaller(string exePath, bool interactive)
     {
         var psi = new ProcessStartInfo
         {
@@ -609,6 +647,11 @@ internal static class UsbipDriverInstaller
             throw new InvalidOperationException(
                 "The usbip-win2 installer did not finish within the timeout.");
 
-        return p.ExitCode == 0 || p.ExitCode == 3010;
+        return p.ExitCode switch
+        {
+            0 => InstallerOutcome.Success,
+            3010 => InstallerOutcome.RebootRequired, // ERROR_SUCCESS_REBOOT_REQUIRED
+            _ => InstallerOutcome.Failed,
+        };
     }
 }
