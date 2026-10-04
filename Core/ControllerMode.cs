@@ -13,4 +13,8 @@ public enum ControllerMode
     /// GIP (Gaming Input Protocol) USB 设备呈现；Windows 由
     /// xboxgip.sys + xinputhid.sys 原生识别为 XInput 设备。</summary>
     XboxOne = 5,
+    /// <summary>Xbox Series X|S 手柄（Model 1914，VID 045E:0B12），同样是
+    /// 厂商类 GIP 设备，但元数据包含 ConsoleFunctionMap / DynamicLatency 接口，
+    /// 输入报文 40 字节并带 Share（分享）键；Windows 同样以 XInput 呈现。</summary>
+    XboxSeries = 6,
 }

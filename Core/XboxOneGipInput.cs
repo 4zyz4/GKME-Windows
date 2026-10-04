@@ -28,9 +28,30 @@ internal static class XboxOneGipInput
 {
     public const int PayloadSize = 14;
 
+    /// <summary>Series payload: the 14-byte GIP gamepad body plus one trailing
+    /// console-function-map byte whose bit 0 carries the Share key.</summary>
+    public const int SeriesPayloadSize = PayloadSize + 1;
+
+    /// <summary>Phone <c>buttons</c> bit for the Xbox Series Share key. The
+    /// Android app encodes the touchpad press (the on-screen 触摸板按下 /
+    /// double-tap and the physical pad's touchpad click) as
+    /// <c>GamepadState.TOUCHPAD_CLICK</c> = bit 17, so that bit is what becomes
+    /// the Series Share button on the wire.</summary>
+    public const uint ShareButton = 1u << 17;
+
     /// <summary>Buttons bit 0: the internal Guide marker. Cleared by the
     /// responder before transmission and turned into a 0x07 report.</summary>
     public const ushort GuideMarker = 0x0001;
+
+    /// <summary>Packs the Series payload: <see cref="BuildPayload"/>'s 14-byte
+    /// body, then the console-function-map byte (bit 0 = Share). The USB/IP
+    /// backend's GipResponder expands this into the 40-byte Series input report.</summary>
+    public static void BuildSeriesPayload(GamepadInput input, Span<byte> dst)
+    {
+        if (dst.Length < SeriesPayloadSize) return;
+        BuildPayload(input, dst);
+        dst[PayloadSize] = (input.Buttons & ShareButton) != 0 ? (byte)0x01 : (byte)0x00;
+    }
 
     public static void BuildPayload(GamepadInput input, Span<byte> dst)
     {

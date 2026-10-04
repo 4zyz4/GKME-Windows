@@ -108,6 +108,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.Dualsense,
         ControllerMode.Xbox360,
         ControllerMode.XboxOne,
+        ControllerMode.XboxSeries,
         ControllerMode.SwitchPro,
         ControllerMode.JoyCon,
     };
@@ -120,6 +121,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.SwitchPro => "Switch Pro",
         ControllerMode.JoyCon => "双 Joy-Con",
         ControllerMode.XboxOne => "Xbox One",
+        ControllerMode.XboxSeries => "Xbox Series X|S",
         _ => "?",
     };
 

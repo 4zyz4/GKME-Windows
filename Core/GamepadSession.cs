@@ -114,9 +114,9 @@ public class GamepadSession : IDisposable
     public bool IsConnected => !_disposed;
     public bool IsReady => Controller != null;
     /// <summary>True when the emulated controller reports trigger rumble instead of
-    /// adaptive-trigger effects (currently Xbox One), so compact frames carry the
+    /// adaptive-trigger effects (currently Xbox One / Series), so compact frames carry the
     /// trigger-rumble fields rather than the DualSense effect blocks.</summary>
-    private bool SendsTriggerRumble => Mode == ControllerMode.XboxOne;
+    private bool SendsTriggerRumble => Mode == ControllerMode.XboxOne || Mode == ControllerMode.XboxSeries;
     public bool HasBeenReady => _readyFired;
 
     public event Action<GamepadSession>? OnReady;
@@ -239,6 +239,9 @@ public class GamepadSession : IDisposable
                             break;
                         case ControllerMode.XboxOne:
                             SubmitXboxOneReport(input);
+                            break;
+                        case ControllerMode.XboxSeries:
+                            SubmitXboxSeriesReport(input);
                             break;
                         default:
                             SubmitXbox360Report(input);
@@ -438,6 +441,7 @@ public class GamepadSession : IDisposable
         {
             ControllerMode.Xbox360 => "xbox360",
             ControllerMode.XboxOne => "xbox-one",
+            ControllerMode.XboxSeries => "xbox-series",
             ControllerMode.Dualsense => "dualsense",
             ControllerMode.SwitchPro => "switch-pro",
             _ => "dualshock-4-v2",
@@ -534,7 +538,8 @@ public class GamepadSession : IDisposable
     /// has no LED, so it always reports #000000 / no player indicator.</summary>
     private async Task SendLedStateAsync()
     {
-        bool noLed = Mode == ControllerMode.Xbox360 || Mode == ControllerMode.XboxOne;
+        bool noLed = Mode == ControllerMode.Xbox360 || Mode == ControllerMode.XboxOne
+            || Mode == ControllerMode.XboxSeries;
         int color = noLed ? 0 : _lastLedColor;
         int player = noLed ? 0 : _lastPlayerLed;
         await SendAsync(new ServerToClient
@@ -796,7 +801,8 @@ public class GamepadSession : IDisposable
             return;
         }
 
-        if (Mode == ControllerMode.XboxOne && packet.Source == GKOutputSource.HidOutput)
+        if ((Mode == ControllerMode.XboxOne || Mode == ControllerMode.XboxSeries)
+            && packet.Source == GKOutputSource.HidOutput)
         {
             // GIP rumble payload (gip_gamepad_pkt_rumble, 9 bytes):
             // [0] unknown, [1] motor mask, [2] left trigger, [3] right trigger,
@@ -1177,6 +1183,19 @@ public class GamepadSession : IDisposable
         var ctrl = (GKController)Controller!;
         Span<byte> payload = stackalloc byte[XboxOneGipInput.PayloadSize];
         XboxOneGipInput.BuildPayload(input, payload);
+        ctrl.SubmitRawReport(payload);
+        SubmitMouseAndTouchpad(input);
+    }
+
+    /// <summary>Packs the 15-byte Series GIP payload: the shared 14-byte body
+    /// plus a trailing console-function-map byte carrying the Share key (phone
+    /// bit 17). The backend's GipResponder frames it as a 40-byte GIP_CMD_INPUT
+    /// (0x20) report with the 18-byte map and an 8-byte dynamic-latency block.</summary>
+    private void SubmitXboxSeriesReport(GamepadInput input)
+    {
+        var ctrl = (GKController)Controller!;
+        Span<byte> payload = stackalloc byte[XboxOneGipInput.SeriesPayloadSize];
+        XboxOneGipInput.BuildSeriesPayload(input, payload);
         ctrl.SubmitRawReport(payload);
         SubmitMouseAndTouchpad(input);
     }
@@ -1871,6 +1890,9 @@ public class GamepadSession : IDisposable
                     break;
                 case ControllerMode.XboxOne:
                     SubmitXboxOneReport(neutral);
+                    break;
+                case ControllerMode.XboxSeries:
+                    SubmitXboxSeriesReport(neutral);
                     break;
                 default:
                     SubmitDs4Report(neutral);
