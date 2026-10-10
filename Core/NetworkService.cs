@@ -32,6 +32,10 @@ public class NetworkService : IDisposable
     private readonly object _usbLock = new();
     private readonly Dictionary<string, DiscoveredDevice> _usbDiscovered = new();
     private readonly Dictionary<string, UsbConnection> _usbConnections = new();
+    // adb-forward local port currently bound to each USB session key. Tracked
+    // separately from the connection so it can be swapped when the transport
+    // is re-attached after a dropped link (the assigned port changes).
+    private readonly Dictionary<string, int> _usbForwardPorts = new();
     private Thread? _usbScanThread;
 
     public bool HidMaestroAvailable { get; private set; }
@@ -315,6 +319,7 @@ public class NetworkService : IDisposable
                     var key = $"usb:{d.Serial}";
                     seen.Add(key);
                     DiscoveredDevice? publish = null;
+                    DiscoveredDevice current;
                     lock (_usbLock)
                     {
                         if (!_usbDiscovered.TryGetValue(key, out var dev))
@@ -339,9 +344,18 @@ public class NetworkService : IDisposable
                             if (!string.IsNullOrWhiteSpace(probe.AndroidId))
                                 dev.MacAddress = probe.AndroidId!;
                         }
+                        current = dev;
                     }
                     if (publish != null)
                         OnDeviceDiscovered?.Invoke(publish);
+
+                    // The phone is reachable again but its session's transport may
+                    // have dropped (cable replugged, service restarted). The virtual
+                    // controller survived that loss; re-open the link so the same
+                    // session resumes — the USB equivalent of a phone resuming its
+                    // WiFi broadcast after a brief dropout.
+                    if (_sessions.ContainsKey(key))
+                        TryReattachUsbSession(key, current);
                 }
 
                 List<DiscoveredDevice>? lost = null;
@@ -740,15 +754,14 @@ public class NetworkService : IDisposable
         lock (_connectLock)
         {
             if (_connecting.Contains(key)) return null;
+            // A live session already owns this device: its transport is either up
+            // or being re-attached by the scan loop, so just hand it back.
             if (_sessions.TryGetValue(key, out var existing) && existing.IsConnected)
                 return existing;
             _sessions.TryRemove(key, out oldSession);
             _connecting.Add(key);
         }
 
-        TcpClient? client = null;
-        int? localPort = null;
-        UsbConnection? usbConn = null;
         try
         {
             if (oldSession != null)
@@ -759,30 +772,13 @@ public class NetworkService : IDisposable
             await DrainRetiredAsync(key);
 
             if (string.IsNullOrEmpty(device.AdbSerial)) return null;
-            if (!_adb.Available && !_adb.TryInitialize()) return null;
-            _adb.EnsureServer();
 
-            localPort = _adb.AddForward(device.AdbSerial, AdbManager.DevicePort);
-            if (localPort == null) return null;
-
-            client = new TcpClient();
-            var connectTask = client.ConnectAsync(IPAddress.Loopback, localPort.Value);
-            var completed = await Task.WhenAny(connectTask, Task.Delay(connectTimeoutMs));
-            if (completed != connectTask)
-                return null;
-            await connectTask;
-            client.NoDelay = true;
-
-            usbConn = new UsbConnection(client);
-
-            // The live device carries the assigned local port so the forward can
-            // be removed again on disconnect.
             var liveDevice = new DiscoveredDevice
             {
                 DeviceName = device.DeviceName,
                 MacAddress = device.MacAddress,
                 IpAddress = IPAddress.Loopback,
-                Port = localPort.Value,
+                Port = AdbManager.DevicePort,
                 IsUsb = true,
                 AdbSerial = device.AdbSerial,
                 AdbState = device.AdbState,
@@ -791,7 +787,9 @@ public class NetworkService : IDisposable
             var initialMode = SavedModeResolver?.Invoke(liveDevice) ?? ControllerMode.Ds4;
             var session = new GamepadSession(
                 liveDevice,
-                msg => usbConn.SendAsync(TypeServerToClient, msg.ToByteArray()),
+                // Resolve the live transport per send so a re-attached link keeps
+                // flowing through the same session without re-creating it.
+                msg => SendUsbAsync(key, msg),
                 OnAudioSendStart,
                 _gkContext,
                 HidMaestroAvailable,
@@ -809,56 +807,194 @@ public class NetworkService : IDisposable
                 OnSessionEnded?.Invoke(s);
             };
 
-            usbConn.OnClientToServer += cts => session.HandleClientToServer(cts);
-            usbConn.OnGamepadInput += input => session.ReportGamepadInput(input);
-            usbConn.OnClosed += () =>
-            {
-                UsbConnection? removed = null;
-                lock (_usbLock)
-                {
-                    if (_usbConnections.TryGetValue(key, out var c) && ReferenceEquals(c, usbConn))
-                    {
-                        _usbConnections.Remove(key);
-                        removed = c;
-                    }
-                }
-                removed?.Dispose();
-                if (!string.IsNullOrEmpty(device.AdbSerial) && localPort != null)
-                    _adb.RemoveForward(device.AdbSerial, localPort.Value);
-                try { session.Disconnect(); } catch { }
-            };
-
             lock (_connectLock)
             {
                 if (_sessions.TryGetValue(key, out var current))
                 {
                     session.Disconnect();
-                    usbConn.Dispose();
-                    _adb.RemoveForward(device.AdbSerial, localPort.Value);
                     return current;
                 }
                 _sessions[key] = session;
             }
-            lock (_usbLock) _usbConnections[key] = usbConn;
 
             session.Start();
-            _ = usbConn.StartReceiveLoopAsync();
-            await usbConn.SendAsync(TypeServerToClient, BuildServerHello().ToByteArray());
+
+            if (!await OpenUsbTransportAsync(key, liveDevice, session, connectTimeoutMs))
+            {
+                // Could not open the link — roll the just-registered session back
+                // so the UI does not show a connected device with no transport.
+                lock (_connectLock) _sessions.TryRemove(key, out _);
+                session.Disconnect();
+                return null;
+            }
 
             return session;
         }
         catch
         {
-            usbConn?.Dispose();
-            try { client?.Dispose(); } catch { }
-            if (localPort != null && !string.IsNullOrEmpty(device.AdbSerial))
-                _adb.RemoveForward(device.AdbSerial, localPort.Value);
             return null;
         }
         finally
         {
             lock (_connectLock) _connecting.Remove(key);
         }
+    }
+
+    /// <summary>Sends a message to the phone over the USB link currently bound to
+    /// <paramref name="key"/>, or drops it when no link is up. Resolving the
+    /// connection lazily lets a session survive a transport swap.</summary>
+    private Task SendUsbAsync(string key, IMessage msg)
+    {
+        var conn = GetUsbConnection(key);
+        return conn == null
+            ? Task.CompletedTask
+            : conn.SendAsync(TypeServerToClient, msg.ToByteArray());
+    }
+
+    private UsbConnection? GetUsbConnection(string key)
+    {
+        lock (_usbLock)
+        {
+            return _usbConnections.TryGetValue(key, out var c) ? c : null;
+        }
+    }
+
+    private (UsbConnection? conn, int? port) RemoveUsbConnection(string key)
+    {
+        UsbConnection? conn = null;
+        int? port = null;
+        lock (_usbLock)
+        {
+            if (_usbConnections.TryGetValue(key, out var c)) { _usbConnections.Remove(key); conn = c; }
+            if (_usbForwardPorts.TryGetValue(key, out var p)) { _usbForwardPorts.Remove(key); port = p; }
+        }
+        return (conn, port);
+    }
+
+    /// <summary>Opens (or re-opens) the adb forward + TCP link for an existing
+    /// session. Binds the new <see cref="UsbConnection"/>'s events to the live
+    /// session and records the assigned forward port so it can be removed again.</summary>
+    private async Task<bool> OpenUsbTransportAsync(string key, DiscoveredDevice device, GamepadSession session, int connectTimeoutMs)
+    {
+        if (string.IsNullOrEmpty(device.AdbSerial)) return false;
+        if (!_adb.Available && !_adb.TryInitialize()) return false;
+        _adb.EnsureServer();
+
+        var localPort = _adb.AddForward(device.AdbSerial, AdbManager.DevicePort);
+        if (localPort == null) return false;
+
+        TcpClient? client = null;
+        UsbConnection? usbConn = null;
+        try
+        {
+            client = new TcpClient();
+            var connectTask = client.ConnectAsync(IPAddress.Loopback, localPort.Value);
+            var completed = await Task.WhenAny(connectTask, Task.Delay(connectTimeoutMs));
+            if (completed != connectTask)
+            {
+                try { client.Dispose(); } catch { }
+                _adb.RemoveForward(device.AdbSerial, localPort.Value);
+                return false;
+            }
+            await connectTask;
+            client.NoDelay = true;
+
+            usbConn = new UsbConnection(client);
+            var conn = usbConn;
+            var port = localPort.Value;
+            var serial = device.AdbSerial;
+
+            conn.OnClientToServer += cts => session.HandleClientToServer(cts);
+            conn.OnGamepadInput += input => session.ReportGamepadInput(input);
+            conn.OnClosed += () => OnUsbConnectionClosed(key, conn, serial, port);
+
+            lock (_usbLock)
+            {
+                _usbConnections[key] = conn;
+                _usbForwardPorts[key] = port;
+            }
+
+            _ = conn.StartReceiveLoopAsync();
+            await conn.SendAsync(TypeServerToClient, BuildServerHello().ToByteArray());
+            return true;
+        }
+        catch
+        {
+            usbConn?.Dispose();
+            try { client?.Dispose(); } catch { }
+            _adb.RemoveForward(device.AdbSerial, localPort.Value);
+            return false;
+        }
+    }
+
+    /// <summary>Called when a USB link drops. Cleans up the transport but does NOT
+    /// tear the session down: exactly like a phone that stops broadcasting over
+    /// WiFi, the emulated controller is kept (the session watchdog neutralises its
+    /// inputs) and the scan loop re-attaches the link when the device returns.</summary>
+    private void OnUsbConnectionClosed(string key, UsbConnection conn, string? serial, int port)
+    {
+        bool removedMine = false;
+        UsbConnection? toDispose = null;
+        lock (_usbLock)
+        {
+            if (_usbConnections.TryGetValue(key, out var c) && ReferenceEquals(c, conn))
+            {
+                _usbConnections.Remove(key);
+                removedMine = true;
+                toDispose = c;
+            }
+        }
+        toDispose?.Dispose();
+
+        if (!removedMine) return;
+
+        int? forwardPort = null;
+        lock (_usbLock)
+        {
+            if (_usbForwardPorts.TryGetValue(key, out var p)) { _usbForwardPorts.Remove(key); forwardPort = p; }
+        }
+        if (!string.IsNullOrEmpty(serial) && forwardPort != null)
+            _adb.RemoveForward(serial, forwardPort.Value);
+    }
+
+    /// <summary>Re-attaches the USB transport for a session whose link dropped,
+    /// without destroying its emulated controller. Runs off the scan loop; guarded
+    /// so it never races a manual connect or a second re-attach.</summary>
+    private void TryReattachUsbSession(string key, DiscoveredDevice device)
+    {
+        _ = Task.Run(async () =>
+        {
+            GamepadSession? session;
+            lock (_connectLock)
+            {
+                if (_connecting.Contains(key)) return;
+                if (!_sessions.TryGetValue(key, out session) || !session.IsConnected) return;
+                if (GetUsbConnection(key) != null) return; // link already live
+                _connecting.Add(key);
+            }
+            try
+            {
+                if (!await OpenUsbTransportAsync(key, device, session, 5000)) return;
+
+                // The session may have been disconnected while we opened the link
+                // (user pressed disconnect); don't leave an orphan transport.
+                lock (_connectLock)
+                {
+                    if (!_sessions.TryGetValue(key, out var cur) || !ReferenceEquals(cur, session))
+                    {
+                        var (c, p) = RemoveUsbConnection(key);
+                        c?.Dispose();
+                        if (p != null && !string.IsNullOrEmpty(device.AdbSerial))
+                            _adb.RemoveForward(device.AdbSerial, p.Value);
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
+                lock (_connectLock) _connecting.Remove(key);
+            }
+        });
     }
 
     public async Task SendToPhoneAsync(IPEndPoint ep, byte type, IMessage msg)
@@ -879,14 +1015,10 @@ public class NetworkService : IDisposable
         if (device.IsUsb)
         {
             await session.SendAsync(packet);
-            UsbConnection? conn = null;
-            lock (_usbLock)
-            {
-                if (_usbConnections.TryGetValue(key, out var c)) { _usbConnections.Remove(key); conn = c; }
-            }
+            var (conn, port) = RemoveUsbConnection(key);
             conn?.Dispose();
-            if (!string.IsNullOrEmpty(device.AdbSerial))
-                _adb.RemoveForward(device.AdbSerial, device.Port);
+            if (!string.IsNullOrEmpty(device.AdbSerial) && port != null)
+                _adb.RemoveForward(device.AdbSerial, port.Value);
         }
         else
         {
@@ -921,18 +1053,10 @@ public class NetworkService : IDisposable
     private void CleanupUsbConnection(GamepadSession session)
     {
         if (!session.Device.IsUsb) return;
-        UsbConnection? conn = null;
-        lock (_usbLock)
-        {
-            if (_usbConnections.TryGetValue(session.Device.Key, out var c))
-            {
-                _usbConnections.Remove(session.Device.Key);
-                conn = c;
-            }
-        }
+        var (conn, port) = RemoveUsbConnection(session.Device.Key);
         conn?.Dispose();
-        if (!string.IsNullOrEmpty(session.Device.AdbSerial))
-            _adb.RemoveForward(session.Device.AdbSerial, session.Device.Port);
+        if (!string.IsNullOrEmpty(session.Device.AdbSerial) && port != null)
+            _adb.RemoveForward(session.Device.AdbSerial, port.Value);
     }
 
     public void Refresh()
