@@ -76,8 +76,9 @@ public class GamepadSession : IDisposable
     private byte _nextTrackingId;
     private byte _ds5SequenceCounter;
     private Task? _cleanupTask;
-    // Virtual USB HID keyboard + mouse (USB/IP backend). Created on first use
-    // and kept for the session's lifetime so mode switches never tear them down.
+    // Virtual USB HID keyboard + mouse (USB/IP backend). Created when the
+    // session connects and kept for the session's lifetime so mode switches
+    // never tear them down.
     private readonly object _kbMouseLock = new();
     private VirtualKeyboardMouse? _kbMouse;
     private bool _kbMouseCreating;
@@ -395,6 +396,11 @@ public class GamepadSession : IDisposable
                 }
             }
         }
+
+        // Create the virtual keyboard/mouse as part of bringing the session up
+        // (rather than lazily on the first mouse/keyboard frame), so the USB/IP
+        // devices are attached and ready before the user interacts.
+        _ = EnsureKeyboardMouse();
 
         if (!_readyFired)
         {
@@ -1442,8 +1448,8 @@ public class GamepadSession : IDisposable
     }
 
     /// <summary>Forwards the frame's mouse movement / scroll / buttons to the
-    /// virtual USB HID mouse on the USB/IP backend. The device is created
-    /// lazily on the first frame that actually carries mouse activity.</summary>
+    /// virtual USB HID mouse on the USB/IP backend. The device is created when
+    /// the session connects, so it is already live by the time frames arrive.</summary>
     private void SubmitMouseAndTouchpad(GamepadInput input)
     {
         bool active = input.MouseDx != 0 || input.MouseDy != 0
@@ -1473,11 +1479,11 @@ public class GamepadSession : IDisposable
         kbMouse.SubmitKeyboard(input.KeyboardModifiers, input.PressedScanCodes);
     }
 
-    /// <summary>Lazily creates the virtual USB HID keyboard/mouse pair. The
-    /// first call starts a background create (a USB/IP attach is slow enough
-    /// that doing it inline would stall the report loop); callers that arrive
-    /// before it finishes simply drop that frame. Returns the live device, or
-    /// null while the create is still in flight (or after it failed).</summary>
+    /// <summary>Creates the virtual USB HID keyboard/mouse pair. It is invoked
+    /// when the session connects so the devices are ready up front; the create
+    /// runs in the background because a USB/IP attach is slow enough that doing
+    /// it inline would stall the report loop. Returns the live device, or null
+    /// while the create is still in flight (or after it failed).</summary>
     private VirtualKeyboardMouse? EnsureKeyboardMouse()
     {
         if (!_hidMaestroAvailable) return null;
