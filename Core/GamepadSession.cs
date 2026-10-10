@@ -45,7 +45,8 @@ public class GamepadSession : IDisposable
     private volatile int _lastPlayerLed;
     private byte[]? _lastLeftTriggerEffect;
     private byte[]? _lastRightTriggerEffect;
-    // Xbox One impulse-trigger rumble amplitudes (0-255). Forwarded to the phone
+    // Xbox One impulse-trigger rumble amplitudes, normalized to 0-255 for the
+    // phone's rumble lane (the GIP wire value is a 0-100 percentage). Forwarded
     // in the TriggerEffects message (separate from the DualSense effect blocks).
     private byte _lastLeftTriggerRumble;
     private byte _lastRightTriggerRumble;
@@ -810,20 +811,23 @@ public class GamepadSession : IDisposable
         if ((Mode == ControllerMode.XboxOne || Mode == ControllerMode.XboxSeries)
             && packet.Source == GKOutputSource.HidOutput)
         {
-            // GIP rumble payload (gip_gamepad_pkt_rumble, 9 bytes):
-            // [0] unknown, [1] motor mask, [2] left trigger, [3] right trigger,
-            // [4] left (strong) motor, [5] right (weak) motor, [6] duration,
-            // [7] delay, [8] repeat.
+            // GIP Direct Motor Command payload ([MS-GIPUSB] Table 56), the body
+            // after the frame header: [0]=command 0x00, [1]=motor bitmap,
+            // [2]=left impulse, [3]=right impulse, [4]=left (strong) motor,
+            // [5]=right (weak) motor, [6]=duration, [7]=delay, [8]=repeat.
+            // Every level is a percentage (0-100); normalize to the 0-255 range
+            // the phone's rumble lane (and the DualSense / Xbox 360 paths) use,
+            // otherwise full rumble only reaches ~39% and feels far too faint.
             if (d.Length >= 6)
             {
-                _lastLargeMotor = d[4];
-                _lastSmallMotor = d[5];
+                _lastLargeMotor = ScaleGipLevel(d[4]);
+                _lastSmallMotor = ScaleGipLevel(d[5]);
 
-                // Xbox One impulse-trigger rumble (0-255 per side), forwarded to
+                // Xbox One impulse-trigger rumble (0-100 per side), forwarded to
                 // the phone as a separate TriggerEffects field so its adaptive
                 // trigger handler can render it unconditionally.
-                byte leftRumble = d[2];
-                byte rightRumble = d[3];
+                byte leftRumble = ScaleGipLevel(d[2]);
+                byte rightRumble = ScaleGipLevel(d[3]);
                 if (leftRumble != _lastLeftTriggerRumble || rightRumble != _lastRightTriggerRumble)
                 {
                     _lastLeftTriggerRumble = leftRumble;
@@ -848,6 +852,12 @@ public class GamepadSession : IDisposable
         _lastLargeMotor = d[2];
         _lastSmallMotor = d[3];
     }
+
+    /// <summary>GIP Direct Motor Command levels are percentages (0-100). The
+    /// phone's rumble lane expects the 0-255 range used by the DualSense and
+    /// Xbox 360 paths, so scale up (clamping in case a level exceeds 100).</summary>
+    private static byte ScaleGipLevel(byte level)
+        => (byte)Math.Min(255, level * 255 / 100);
 
     private void HandleDualsenseTestCommand(ReadOnlySpan<byte> d)
     {
