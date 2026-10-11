@@ -22,7 +22,6 @@ public class MainViewModel : INotifyPropertyChanged
     private bool _driverOk;
     private string _manualIp = "";
     private string _webUrl = "";
-    private string _webHttpUrl = "";
     private readonly Dictionary<string, GamepadSession> _sessionMap = new();
     private readonly HashSet<string> _initialConnecting = new();
     private int _rebootPromptShown;
@@ -33,7 +32,7 @@ public class MainViewModel : INotifyPropertyChanged
 
     public bool HasActiveSession => Sessions.Count > 0;
 
-    /// <summary>LAN URL of the embedded web controller (HTTPS).</summary>
+    /// <summary>LAN URL of the embedded web controller (HTTP).</summary>
     public string WebUrl
     {
         get => _webUrl;
@@ -45,18 +44,11 @@ public class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    /// <summary>Plain-HTTP URL (useful on the host machine / trusted networks).</summary>
-    public string WebHttpUrl
-    {
-        get => _webHttpUrl;
-        set { _webHttpUrl = value; OnPropertyChanged(); OnPropertyChanged(nameof(HasWebUrl)); }
-    }
-
     public bool HasWebUrl => !string.IsNullOrEmpty(_webUrl);
 
     public void OpenWeb()
     {
-        var url = string.IsNullOrEmpty(_webUrl) ? _webHttpUrl : _webUrl;
+        var url = _webUrl;
         if (string.IsNullOrEmpty(url)) return;
         try
         {
@@ -67,7 +59,7 @@ public class MainViewModel : INotifyPropertyChanged
 
     public void CopyWebUrl()
     {
-        var url = string.IsNullOrEmpty(_webUrl) ? _webHttpUrl : _webUrl;
+        var url = _webUrl;
         if (string.IsNullOrEmpty(url)) return;
         try
         {

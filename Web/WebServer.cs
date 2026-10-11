@@ -2,11 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
-using System.Net.Security;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,7 +15,7 @@ using Google.Protobuf;
 namespace GKME.Web;
 
 /// <summary>
-/// Embedded HTTP(S) + WebSocket server that hosts the GKME-Web controller app
+/// Embedded HTTP + WebSocket server that hosts the GKME-Web controller app
 /// and bridges browser input to a <see cref="GamepadSession"/>.
 ///
 /// <para>The browser speaks the exact same protobuf protocol as the Android
@@ -26,28 +24,21 @@ namespace GKME.Web;
 /// UDP transport (<see cref="NetworkService.TypeClientToServer"/> /
 /// <see cref="NetworkService.TypeGamepadInput"/> uplink,
 /// <see cref="NetworkService.TypeServerToClient"/> downlink).</para>
-///
-/// <para>A self-signed certificate is generated at startup so phones on the LAN
-/// get a secure context (required for DeviceMotion / Vibration). Browsers will
-/// warn about the untrusted certificate; accepting it once is enough.</para>
 /// </summary>
 public sealed class WebServer : IDisposable
 {
     public const int HttpPort = 37285;
-    public const int HttpsPort = 37286;
 
     private readonly NetworkService _service;
     private readonly CancellationTokenSource _cts = new();
     private TcpListener? _httpListener;
-    private TcpListener? _httpsListener;
-    private X509Certificate2? _cert;
     private bool _disposed;
 
     public string? WebRoot { get; private set; }
     public bool Running { get; private set; }
     public string LastError { get; private set; } = "";
 
-    /// <summary>Raised with the primary LAN URL (https) once the server is up.</summary>
+    /// <summary>Raised with the primary LAN URL (http) once the server is up.</summary>
     public event Action<string>? OnStarted;
 
     public WebServer(NetworkService service)
@@ -61,7 +52,6 @@ public sealed class WebServer : IDisposable
         try
         {
             WebRoot = ResolveWebRoot() ?? throw new DirectoryNotFoundException("GKME-Web 文件夹未找到");
-            _cert = LoadOrCreateCertificate();
         }
         catch (Exception ex)
         {
@@ -71,30 +61,17 @@ public sealed class WebServer : IDisposable
 
         try
         {
-            _httpsListener = new TcpListener(IPAddress.Any, HttpsPort);
-            _httpsListener.Start();
-            _ = Task.Run(() => AcceptLoopAsync(_httpsListener, tls: true));
-        }
-        catch (Exception ex)
-        {
-            LastError = "HTTPS 端口 " + HttpsPort + " 不可用: " + ex.Message;
-            _httpsListener = null;
-        }
-
-        try
-        {
             _httpListener = new TcpListener(IPAddress.Any, HttpPort);
             _httpListener.Start();
-            _ = Task.Run(() => AcceptLoopAsync(_httpListener, tls: false));
+            _ = Task.Run(() => AcceptLoopAsync(_httpListener));
         }
         catch (Exception ex)
         {
-            if (LastError.Length == 0)
-                LastError = "HTTP 端口 " + HttpPort + " 不可用: " + ex.Message;
+            LastError = "HTTP 端口 " + HttpPort + " 不可用: " + ex.Message;
             _httpListener = null;
         }
 
-        Running = _httpsListener != null || _httpListener != null;
+        Running = _httpListener != null;
         if (Running)
             OnStarted?.Invoke(PrimaryUrl());
     }
@@ -102,10 +79,10 @@ public sealed class WebServer : IDisposable
     public string PrimaryUrl()
     {
         var ip = GetPrimaryLanAddress();
-        return $"https://{ip}:{HttpsPort}/";
+        return $"http://{ip}:{HttpPort}/";
     }
 
-    private async Task AcceptLoopAsync(TcpListener listener, bool tls)
+    private async Task AcceptLoopAsync(TcpListener listener)
     {
         while (!_cts.IsCancellationRequested)
         {
@@ -118,25 +95,17 @@ public sealed class WebServer : IDisposable
             catch (ObjectDisposedException) { break; }
             catch { continue; }
 
-            _ = Task.Run(() => HandleClientAsync(client, tls));
+            _ = Task.Run(() => HandleClientAsync(client));
         }
     }
 
-    private async Task HandleClientAsync(TcpClient client, bool tls)
+    private async Task HandleClientAsync(TcpClient client)
     {
         Stream? stream = null;
         try
         {
             client.NoDelay = true;
             stream = client.GetStream();
-
-            if (tls)
-            {
-                var ssl = new SslStream(stream, leaveInnerStreamOpen: false);
-                await ssl.AuthenticateAsServerAsync(_cert!, clientCertificateRequired: false,
-                    checkCertificateRevocation: false);
-                stream = ssl;
-            }
 
             // HTTP/1.1 keep-alive: serve requests on the same socket until the
             // peer closes or upgrades to a WebSocket.
@@ -500,53 +469,6 @@ public sealed class WebServer : IDisposable
         return null;
     }
 
-    private static X509Certificate2 LoadOrCreateCertificate()
-    {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GKME");
-        Directory.CreateDirectory(dir);
-        var pfxPath = Path.Combine(dir, "web-cert.pfx");
-
-        using var rsa = RSA.Create(2048);
-        var req = new CertificateRequest("CN=GKME Web", rsa,
-            HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-
-        var san = new SubjectAlternativeNameBuilder();
-        san.AddDnsName("localhost");
-        san.AddDnsName(Environment.MachineName);
-        san.AddIpAddress(IPAddress.Loopback);
-        foreach (var ip in GetAllLocalAddresses())
-            san.AddIpAddress(ip);
-        req.CertificateExtensions.Add(san.Build());
-        req.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
-        req.CertificateExtensions.Add(new X509KeyUsageExtension(
-            X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
-        req.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
-            new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, false));
-
-        using var cert = req.CreateSelfSigned(
-            DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(10));
-
-        // SslStream on Windows needs a persisted private key container; an
-        // ephemeral key fails the credential handoff. Persist to a PFX next to
-        // the user's local app data and load it back with a real key store.
-        try
-        {
-            var pfx = cert.Export(X509ContentType.Pfx, "gkme");
-            File.WriteAllBytes(pfxPath, pfx);
-            return X509CertificateLoader.LoadPkcs12(pfx, "gkme",
-                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
-        }
-        catch
-        {
-            // Persisting failed (locked / read-only profile): fall back to an
-            // in-memory exportable key.
-            var pfx = cert.Export(X509ContentType.Pfx, "gkme");
-            return X509CertificateLoader.LoadPkcs12(pfx, "gkme",
-                X509KeyStorageFlags.Exportable);
-        }
-    }
-
     public static IEnumerable<IPAddress> GetAllLocalAddresses()
     {
         IPAddress[] addrs = Array.Empty<IPAddress>();
@@ -577,8 +499,6 @@ public sealed class WebServer : IDisposable
         _disposed = true;
         try { _cts.Cancel(); } catch { }
         try { _httpListener?.Stop(); } catch { }
-        try { _httpsListener?.Stop(); } catch { }
-        try { _cert?.Dispose(); } catch { }
         try { _cts.Dispose(); } catch { }
     }
 }

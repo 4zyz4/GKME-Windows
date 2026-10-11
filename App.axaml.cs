@@ -157,7 +157,6 @@ public partial class App : Application
             if (_webServer.Running)
             {
                 vm.WebUrl = _webServer.PrimaryUrl();
-                vm.WebHttpUrl = $"http://{WebServer.GetPrimaryLanAddress()}:{WebServer.HttpPort}/";
             }
             else
             {
