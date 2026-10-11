@@ -32,10 +32,9 @@ public class DiscoveredDevice
         : IsUsb ? $"USB:{AdbSerial}" : IpAddress.ToString();
 
     /// <summary>Address shown in the UI. USB devices show their serial rather
-    /// than the meaningless loopback address.</summary>
-    public string DisplayAddress => IsWeb
-        ? $"网页 {DeviceName}"
-        : IsUsb ? $"USB {AdbSerial}" : IpAddress.ToString();
+    /// than the meaningless loopback address; web clients show the browser's
+    /// real peer address.</summary>
+    public string DisplayAddress => IsUsb ? $"USB {AdbSerial}" : IpAddress.ToString();
 
     // Endpoint identity: unique per transport endpoint.
     public string Key => IsWeb

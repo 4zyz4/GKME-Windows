@@ -127,6 +127,8 @@ public sealed class WebServer : IDisposable
     private async Task HandleClientAsync(TcpClient client)
     {
         Stream? stream = null;
+        var clientAddress = (client.Client.RemoteEndPoint as IPEndPoint)?.Address
+            ?? IPAddress.Loopback;
         try
         {
             client.NoDelay = true;
@@ -149,7 +151,7 @@ public sealed class WebServer : IDisposable
 
                 if (string.Equals(req.Path, "/ws", StringComparison.OrdinalIgnoreCase))
                 {
-                    await HandleWebSocketAsync(stream, req);
+                    await HandleWebSocketAsync(stream, req, clientAddress);
                     return; // the stream now belongs to the WebSocket
                 }
 
@@ -179,7 +181,7 @@ public sealed class WebServer : IDisposable
 
     // ────────────────────────── WebSocket bridge ──────────────────────────
 
-    private async Task HandleWebSocketAsync(Stream stream, HttpRequest req)
+    private async Task HandleWebSocketAsync(Stream stream, HttpRequest req, IPAddress clientAddress)
     {
         if (!req.Headers.TryGetValue("sec-websocket-key", out var key) || string.IsNullOrEmpty(key))
         {
@@ -212,7 +214,7 @@ public sealed class WebServer : IDisposable
         {
             DeviceName = clientName!,
             MacAddress = clientId!,
-            IpAddress = IPAddress.Loopback,
+            IpAddress = clientAddress,
             IsWeb = true,
         };
 
