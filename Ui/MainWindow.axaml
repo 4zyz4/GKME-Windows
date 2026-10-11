@@ -78,6 +78,7 @@
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -88,7 +89,6 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
@@ -103,19 +103,45 @@
                 <Button Grid.Column="3" Content="刷新" Width="60" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnRefreshClick" />
-                <Button Grid.Column="4" Content="网页手柄" Width="80" Height="30" Margin="8,0,0,0"
-                        Classes="action"
-                        IsVisible="{Binding HasWebUrl}"
-                        ToolTip.Tip="{Binding WebUrl}"
-                        Click="OnWebClick" />
-                <Button Grid.Column="5" Content="关于" Width="50" Height="30" Margin="8,0,0,0"
+                <Button Grid.Column="4" Content="关于" Width="50" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnAboutClick" />
             </Grid>
         </Border>
 
+        <!-- Web controller card: NIC selection, current address and QR code -->
+        <Border Grid.Row="1" Classes="card" IsVisible="{Binding HasWebUrl}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="网页手柄" FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock Text="选择网卡" FontSize="11" Foreground="#9D9D9D" Margin="0,8,0,2" />
+                    <ComboBox Width="240" Height="28" FontSize="12" VerticalContentAlignment="Center"
+                              HorizontalAlignment="Left"
+                              ItemsSource="{Binding WebInterfaces}"
+                              SelectedItem="{Binding SelectedWebInterface}"
+                              Classes="dark">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Display}" Foreground="#E0E0E0" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBlock Text="{Binding WebHost}" FontSize="13" FontFamily="Consolas" Margin="0,8,0,0" />
+                </StackPanel>
+
+                <Image Grid.Column="1" Source="{Binding WebQrCode}" Width="120" Height="120"
+                       Margin="14,0,0,0" VerticalAlignment="Center"
+                       RenderOptions.BitmapInterpolationMode="None" />
+            </Grid>
+        </Border>
+
         <!-- Device card list -->
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
             <ItemsControl ItemsSource="{Binding DeviceCards}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
@@ -215,6 +241,6 @@
         </ScrollViewer>
 
         <!-- Spacer for footer space -->
-        <Border Grid.Row="2" />
+        <Border Grid.Row="3" />
     </Grid>
 </Window>

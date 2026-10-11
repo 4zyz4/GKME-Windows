@@ -93,11 +93,6 @@ public partial class MainWindow : Window
         _vm.Refresh();
     }
 
-    private void OnWebClick(object? sender, RoutedEventArgs e)
-    {
-        _vm.OpenWeb();
-    }
-
     private async void OnModeChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (e.AddedItems.Count == 0 || e.AddedItems[0] is not ControllerMode mode) return;

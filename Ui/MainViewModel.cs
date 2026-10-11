@@ -1,15 +1,16 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Globalization;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using GamepadEmu.Protocol;
 using GKME.Core;
+using GKME.Web;
 using GKMD.Internal.Usbip;
 
 namespace GKME.Ui;
@@ -22,6 +23,9 @@ public class MainViewModel : INotifyPropertyChanged
     private bool _driverOk;
     private string _manualIp = "";
     private string _webUrl = "";
+    private string _webHost = "";
+    private Bitmap? _webQrCode;
+    private LanInterfaceInfo? _selectedWebInterface;
     private readonly Dictionary<string, GamepadSession> _sessionMap = new();
     private readonly HashSet<string> _initialConnecting = new();
     private int _rebootPromptShown;
@@ -32,11 +36,27 @@ public class MainViewModel : INotifyPropertyChanged
 
     public bool HasActiveSession => Sessions.Count > 0;
 
+    /// <summary>List of usable LAN interfaces for the web controller.</summary>
+    public ObservableCollection<LanInterfaceInfo> WebInterfaces { get; } = new();
+
+    /// <summary>Selected interface; drives the advertised URL and QR code.</summary>
+    public LanInterfaceInfo? SelectedWebInterface
+    {
+        get => _selectedWebInterface;
+        set
+        {
+            if (ReferenceEquals(_selectedWebInterface, value)) return;
+            _selectedWebInterface = value;
+            OnPropertyChanged();
+            UpdateWebFromSelection();
+        }
+    }
+
     /// <summary>LAN URL of the embedded web controller (HTTP).</summary>
     public string WebUrl
     {
         get => _webUrl;
-        set
+        private set
         {
             _webUrl = value;
             OnPropertyChanged();
@@ -44,17 +64,53 @@ public class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>Current advertised host, e.g. "192.168.1.5:37285".</summary>
+    public string WebHost
+    {
+        get => _webHost;
+        private set { _webHost = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>QR code pointing at <see cref="WebUrl"/>.</summary>
+    public Bitmap? WebQrCode
+    {
+        get => _webQrCode;
+        private set { _webQrCode = value; OnPropertyChanged(); }
+    }
+
     public bool HasWebUrl => !string.IsNullOrEmpty(_webUrl);
 
-    public void OpenWeb()
+    /// <summary>Populates the interface list and selects a sensible default.
+    /// Called once the embedded web server is up.</summary>
+    public void ConfigureWeb()
     {
-        var url = _webUrl;
-        if (string.IsNullOrEmpty(url)) return;
-        try
+        WebInterfaces.Clear();
+        foreach (var nic in WebServer.EnumerateLanInterfaces())
+            WebInterfaces.Add(nic);
+
+        var primary = WebServer.GetPrimaryLanAddress();
+        _selectedWebInterface = WebInterfaces.FirstOrDefault(i => i.Address == primary)
+            ?? WebInterfaces.FirstOrDefault();
+        OnPropertyChanged(nameof(SelectedWebInterface));
+        UpdateWebFromSelection();
+    }
+
+    private void UpdateWebFromSelection()
+    {
+        var address = _selectedWebInterface?.Address;
+        if (string.IsNullOrEmpty(address))
         {
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            WebUrl = "";
+            WebHost = "";
+            WebQrCode = null;
+            return;
         }
-        catch { }
+
+        var url = WebServer.BuildUrl(address);
+        WebUrl = url;
+        WebHost = $"{address}:{WebServer.HttpPort}";
+        try { WebQrCode = QrCodeImage.Render(url); }
+        catch { WebQrCode = null; }
     }
 
     public void CopyWebUrl()

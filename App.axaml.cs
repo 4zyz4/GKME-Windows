@@ -156,11 +156,10 @@ public partial class App : Application
             _webServer.Start();
             if (_webServer.Running)
             {
-                vm.WebUrl = _webServer.PrimaryUrl();
+                vm.ConfigureWeb();
             }
             else
             {
-                vm.WebUrl = "";
                 vm.StatusText = string.IsNullOrEmpty(_webServer.LastError)
                     ? vm.StatusText
                     : "网页服务未启动: " + _webServer.LastError;

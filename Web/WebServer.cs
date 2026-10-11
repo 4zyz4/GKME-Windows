@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
@@ -76,10 +77,34 @@ public sealed class WebServer : IDisposable
             OnStarted?.Invoke(PrimaryUrl());
     }
 
-    public string PrimaryUrl()
+    public string PrimaryUrl() => BuildUrl(GetPrimaryLanAddress());
+
+    /// <summary>Builds the controller URL for a specific interface address.</summary>
+    public static string BuildUrl(string address) => $"http://{address}:{HttpPort}/";
+
+    /// <summary>Lists usable IPv4 LAN interfaces (skipping loopback and
+    /// link-local addresses) so the user can pick which one to advertise.</summary>
+    public static IReadOnlyList<LanInterfaceInfo> EnumerateLanInterfaces()
     {
-        var ip = GetPrimaryLanAddress();
-        return $"http://{ip}:{HttpPort}/";
+        var list = new List<LanInterfaceInfo>();
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (ua.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                    var address = ua.Address.ToString();
+                    if (address.StartsWith("169.254.")) continue;
+                    list.Add(new LanInterfaceInfo { Name = ni.Name, Address = address });
+                }
+            }
+        }
+        catch { }
+        return list;
     }
 
     private async Task AcceptLoopAsync(TcpListener listener)
