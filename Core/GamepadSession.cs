@@ -61,7 +61,10 @@ public class GamepadSession : IDisposable
     private float _swLastHiFreqR, _swLastHiAmpR, _swLastLoFreqR, _swLastLoAmpR;
 
     private readonly ManualResetEventSlim _inputReceived = new(false, 1);
-    private volatile GamepadInput? _pendingInput;
+    // A queue (not a single overwritten slot) so that a fast press+release in
+    // the same processing window is never collapsed to just the last state —
+    // which would drop the press entirely.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<GamepadInput> _inputQueue = new();
 
     private volatile bool _switchingMode;
     // Tracks the background teardown of the controllers a previous switch
@@ -216,13 +219,11 @@ public class GamepadSession : IDisposable
                 continue;
             }
 
-            // Input arrived — drain ALL pending inputs immediately, no rate limit.
-            while (_pendingInput != null && Controller != null)
+            // Input arrived — drain ALL queued inputs immediately, in order,
+            // with no rate limit and no dropped transitions.
+            _inputReceived.Reset();
+            while (Controller != null && _inputQueue.TryDequeue(out var input))
             {
-                var input = _pendingInput;
-                _pendingInput = null;
-                _inputReceived.Reset();
-
                 try
                 {
                     switch (Mode)
@@ -253,9 +254,6 @@ public class GamepadSession : IDisposable
                 catch { }
 
                 try { SubmitKeyboardInput(input); } catch { }
-
-                // Check for more pending input without waiting.
-                if (_pendingInput == null && !_inputReceived.IsSet) break;
             }
 
             // Send compact frame on every input wake.
@@ -314,16 +312,16 @@ public class GamepadSession : IDisposable
     {
         _lastReceiveTime = DateTime.UtcNow;
         if (!IsReady) return;
-        _pendingInput = input;
+        _inputQueue.Enqueue(input);
         _inputReceived.Set();
     }
 
-    /// <summary>收包线程直调入口（无队列，收到即上报）。</summary>
+    /// <summary>收包线程直调入口（无速率限制，入队后立即唤醒上报线程）。</summary>
     public void ReportGamepadInput(GamepadInput input)
     {
         _lastReceiveTime = DateTime.UtcNow;
         if (!IsReady) return;
-        _pendingInput = input;
+        _inputQueue.Enqueue(input);
         _inputReceived.Set();
     }
 
