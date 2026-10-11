@@ -64,7 +64,7 @@ public class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    /// <summary>Current advertised host, e.g. "192.168.1.5:37285".</summary>
+    /// <summary>Current advertised host, e.g. "http://192.168.1.5:37285".</summary>
     public string WebHost
     {
         get => _webHost;
@@ -108,7 +108,7 @@ public class MainViewModel : INotifyPropertyChanged
 
         var url = WebServer.BuildUrl(address);
         WebUrl = url;
-        WebHost = $"{address}:{WebServer.HttpPort}";
+        WebHost = $"http://{address}:{WebServer.HttpPort}";
         try { WebQrCode = QrCodeImage.Render(url); }
         catch { WebQrCode = null; }
     }
