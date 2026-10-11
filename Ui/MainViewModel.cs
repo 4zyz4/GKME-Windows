@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
@@ -20,6 +21,8 @@ public class MainViewModel : INotifyPropertyChanged
     private string _statusText = "就绪";
     private bool _driverOk;
     private string _manualIp = "";
+    private string _webUrl = "";
+    private string _webHttpUrl = "";
     private readonly Dictionary<string, GamepadSession> _sessionMap = new();
     private readonly HashSet<string> _initialConnecting = new();
     private int _rebootPromptShown;
@@ -29,6 +32,51 @@ public class MainViewModel : INotifyPropertyChanged
     public ObservableCollection<GamepadSession> Sessions { get; } = new();
 
     public bool HasActiveSession => Sessions.Count > 0;
+
+    /// <summary>LAN URL of the embedded web controller (HTTPS).</summary>
+    public string WebUrl
+    {
+        get => _webUrl;
+        set
+        {
+            _webUrl = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasWebUrl));
+        }
+    }
+
+    /// <summary>Plain-HTTP URL (useful on the host machine / trusted networks).</summary>
+    public string WebHttpUrl
+    {
+        get => _webHttpUrl;
+        set { _webHttpUrl = value; OnPropertyChanged(); OnPropertyChanged(nameof(HasWebUrl)); }
+    }
+
+    public bool HasWebUrl => !string.IsNullOrEmpty(_webUrl);
+
+    public void OpenWeb()
+    {
+        var url = string.IsNullOrEmpty(_webUrl) ? _webHttpUrl : _webUrl;
+        if (string.IsNullOrEmpty(url)) return;
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch { }
+    }
+
+    public void CopyWebUrl()
+    {
+        var url = string.IsNullOrEmpty(_webUrl) ? _webHttpUrl : _webUrl;
+        if (string.IsNullOrEmpty(url)) return;
+        try
+        {
+            var owner = MainWindow.Instance;
+            if (owner != null)
+                owner.Clipboard?.SetTextAsync(url);
+        }
+        catch { }
+    }
 
     public string ManualIp
     {

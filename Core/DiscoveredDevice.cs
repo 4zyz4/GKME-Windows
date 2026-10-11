@@ -15,28 +15,42 @@ public class DiscoveredDevice
     /// <see cref="Port"/> holds the adb-assigned local forward port.</summary>
     public bool IsUsb { get; init; }
 
+    /// <summary>True when this device is a web browser client served by the
+    /// embedded GKME-Web server. Its input arrives over the WebSocket bridge
+    /// instead of UDP/USB; <see cref="MacAddress"/> holds the browser's stable
+    /// client id.</summary>
+    public bool IsWeb { get; init; }
+
     /// <summary>adb device serial; stable identity for a USB device.</summary>
     public string? AdbSerial { get; init; }
 
     /// <summary>Raw adb state (device / unauthorized / offline).</summary>
     public string? AdbState { get; set; }
 
-    public string IpString => IsUsb ? $"USB:{AdbSerial}" : IpAddress.ToString();
+    public string IpString => IsWeb
+        ? $"WEB:{MacAddress}"
+        : IsUsb ? $"USB:{AdbSerial}" : IpAddress.ToString();
 
     /// <summary>Address shown in the UI. USB devices show their serial rather
     /// than the meaningless loopback address.</summary>
-    public string DisplayAddress => IsUsb ? $"USB {AdbSerial}" : IpAddress.ToString();
+    public string DisplayAddress => IsWeb
+        ? $"网页 {DeviceName}"
+        : IsUsb ? $"USB {AdbSerial}" : IpAddress.ToString();
 
     // Endpoint identity: unique per transport endpoint.
-    public string Key => IsUsb ? $"usb:{AdbSerial}" : $"{IpAddress}:{Port}";
+    public string Key => IsWeb
+        ? $"web:{MacAddress}"
+        : IsUsb ? $"usb:{AdbSerial}" : $"{IpAddress}:{Port}";
 
     // Identity key: the MAC when known (stable across IP changes), otherwise the
     // IP. Used to group multiple endpoints that belong to the same physical
     // phone. USB devices use their adb serial so the card stays stable even
     // after the Hello handshake fills in the phone's ANDROID_ID.
-    public string GroupKey => IsUsb
-        ? $"usb:{AdbSerial}"
-        : (string.IsNullOrWhiteSpace(MacAddress) ? IpString : MacAddress);
+    public string GroupKey => IsWeb
+        ? $"web:{MacAddress}"
+        : IsUsb
+            ? $"usb:{AdbSerial}"
+            : (string.IsNullOrWhiteSpace(MacAddress) ? IpString : MacAddress);
 
     // Persisted-mode key. The emulated controller type is stored per physical
     // device, so it follows the MAC rather than the (volatile) IP.

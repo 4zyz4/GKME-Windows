@@ -16,6 +16,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using GKME.Core;
 using GKME.Ui;
+using GKME.Web;
 
 #pragma warning disable AVL1006
 
@@ -24,6 +25,7 @@ namespace GKME;
 public partial class App : Application
 {
     private NetworkService? _service;
+    private WebServer? _webServer;
     private Window? _mainWindow;
     private bool _showingWindow;
 
@@ -74,6 +76,7 @@ public partial class App : Application
             TryInitializeService();
 
             var vm = new MainViewModel(_service);
+            StartWebServer(vm);
             var window = new MainWindow(vm);
             _mainWindow = window;
                 
@@ -142,6 +145,35 @@ public partial class App : Application
         }
     }
 
+    /// <summary>Starts the embedded GKME-Web server that hosts the browser-based
+    /// controller and bridges it to a virtual gamepad session.</summary>
+    private void StartWebServer(MainViewModel vm)
+    {
+        if (_service == null) return;
+        try
+        {
+            _webServer = new WebServer(_service);
+            _webServer.Start();
+            if (_webServer.Running)
+            {
+                vm.WebUrl = _webServer.PrimaryUrl();
+                vm.WebHttpUrl = $"http://{WebServer.GetPrimaryLanAddress()}:{WebServer.HttpPort}/";
+            }
+            else
+            {
+                vm.WebUrl = "";
+                vm.StatusText = string.IsNullOrEmpty(_webServer.LastError)
+                    ? vm.StatusText
+                    : "网页服务未启动: " + _webServer.LastError;
+            }
+        }
+        catch
+        {
+            _webServer?.Dispose();
+            _webServer = null;
+        }
+    }
+
     private void ShowDuplicateWarning()
     {
         try
@@ -186,6 +218,9 @@ public partial class App : Application
 
     private async Task SafeExitAsync()
     {
+        try { _webServer?.Dispose(); } catch { }
+        _webServer = null;
+
         if (_mainWindow is MainWindow mw)
         {
             await mw.SafeCloseAsync();

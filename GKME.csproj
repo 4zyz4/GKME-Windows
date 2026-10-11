@@ -89,9 +89,20 @@
   <!-- Bundled adb (USB mode fallback). Put the Android SDK platform-tools
        contents into `platform-tools\` next to this project; they are copied to
        the output/publish folder and shipped by the installer. The build still
-       succeeds when absent (an adb on PATH or in the Android SDK is used). -->
-  <ItemGroup Condition="Exists('platform-tools')">
+       succeeds when absent (an adb on PATH or in the Android SDK is used). -->  <ItemGroup Condition="Exists('platform-tools')">
     <Content Include="platform-tools\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- The browser-based controller app (GKME-Web) is bundled into the output
+       under `web\` and served by the embedded WebServer. It lives in a sibling
+       repository directory. -->
+  <ItemGroup Condition="Exists('..\GKME-Web\index.html')">
+    <Content Include="..\GKME-Web\**\*"
+             Exclude="..\GKME-Web\**\*.md;..\GKME-Web\**\*.md">
+      <Link>web\%(RecursiveDir)%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>

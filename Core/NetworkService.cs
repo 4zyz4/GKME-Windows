@@ -741,6 +741,88 @@ public class NetworkService : IDisposable
         }
     }
 
+    /// <summary>Creates a session for a browser client served by the embedded
+    /// GKME-Web server. Mirrors the WiFi connect path, but the transport is a
+    /// WebSocket bridge instead of UDP: <paramref name="sendToBrowser"/> is the
+    /// session's downlink (ServerToClient messages), while the caller feeds the
+    /// browser's Hello / GamepadInput into the returned session.</summary>
+    public async Task<GamepadSession?> ConnectWebAsync(DiscoveredDevice device, Func<IMessage, Task> sendToBrowser)
+    {
+        if (RebootRequired) return null;
+
+        var key = device.Key;
+        GamepadSession? oldSession = null;
+
+        lock (_connectLock)
+        {
+            if (_connecting.Contains(key)) return null;
+            if (_sessions.TryGetValue(key, out var existing) && existing.IsConnected)
+                return existing;
+            _sessions.TryRemove(key, out oldSession);
+            _connecting.Add(key);
+        }
+
+        try
+        {
+            if (oldSession != null)
+            {
+                oldSession.Disconnect();
+                await oldSession.WaitForCleanupAsync();
+            }
+            await DrainRetiredAsync(key);
+
+            var initialMode = SavedModeResolver?.Invoke(device) ?? ControllerMode.Ds4;
+            var session = new GamepadSession(
+                device,
+                sendToBrowser,
+                OnAudioSendStart,
+                _gkContext,
+                HidMaestroAvailable,
+                initialMode);
+
+            session.OnReady += s => OnSessionStarted?.Invoke(s);
+            session.OnConnectionLost += s => OnSessionConnectionLost?.Invoke(s.Device.IpString);
+            session.OnDeviceInfoUpdated += s => OnDeviceInfoUpdated?.Invoke(s.Device);
+            session.OnRebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
+            session.OnUsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
+            session.OnDisconnected += s =>
+            {
+                _sessions.TryRemove(s.Device.Key, out _);
+                Retire(s);
+                OnSessionEnded?.Invoke(s);
+            };
+
+            lock (_connectLock)
+            {
+                if (_sessions.TryGetValue(key, out var current))
+                {
+                    session.Disconnect();
+                    return current;
+                }
+                _sessions[key] = session;
+            }
+
+            session.Start();
+            await session.SendAsync(BuildServerHello());
+            return session;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            lock (_connectLock) _connecting.Remove(key);
+        }
+    }
+
+    /// <summary>Publishes a web client as a discovered device so the desktop UI
+    /// shows a card for it (the browser is never seen via UDP broadcast).</summary>
+    public void AnnounceDevice(DiscoveredDevice device) => OnDeviceDiscovered?.Invoke(device);
+
+    /// <summary>Marks a web client as gone so its card is dropped.</summary>
+    public void AnnounceDeviceLost(DiscoveredDevice device) => OnDeviceLost?.Invoke(device);
+
     /// <summary>Connects to a phone over USB/ADB. Sets up a `tcp:0 -> tcp:37284`
     /// forward and opens a TCP connection to the assigned loopback port; the
     /// phone accepts it in its USB TCP server.</summary>
@@ -1012,7 +1094,12 @@ public class NetworkService : IDisposable
         {
             Disconnect = new Disconnect { Reason = "User disconnected" }
         };
-        if (device.IsUsb)
+        if (device.IsWeb)
+        {
+            await session.SendAsync(packet);
+            session.Disconnect();
+        }
+        else if (device.IsUsb)
         {
             await session.SendAsync(packet);
             var (conn, port) = RemoveUsbConnection(key);

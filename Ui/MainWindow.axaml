@@ -91,6 +91,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="IP 地址" VerticalAlignment="Center" FontSize="13" Margin="0,0,8,0" />
                 <TextBox Grid.Column="1" Text="{Binding ManualIp, UpdateSourceTrigger=PropertyChanged}"
@@ -102,7 +103,12 @@
                 <Button Grid.Column="3" Content="刷新" Width="60" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnRefreshClick" />
-                <Button Grid.Column="4" Content="关于" Width="50" Height="30" Margin="8,0,0,0"
+                <Button Grid.Column="4" Content="网页手柄" Width="80" Height="30" Margin="8,0,0,0"
+                        Classes="action"
+                        IsVisible="{Binding HasWebUrl}"
+                        ToolTip.Tip="{Binding WebUrl}"
+                        Click="OnWebClick" />
+                <Button Grid.Column="5" Content="关于" Width="50" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnAboutClick" />
             </Grid>
