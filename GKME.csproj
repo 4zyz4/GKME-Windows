@@ -95,7 +95,7 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
     <Content Include="..\GKMD\Resources\THIRD-PARTY-NOTICES.txt">
-      <Link>licenses\THIRD-PARTY-NOTICES.txt</Link>
+      <Link>licenses\USBIP-WIN2-LICENSE.txt</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
