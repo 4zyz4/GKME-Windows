@@ -22,7 +22,7 @@
     <IlcOptimize>true</IlcOptimize>
     <IlcFoldIdenticalBehavior>true</IlcFoldIdenticalBehavior>
     <StripSymbols>true</StripSymbols>
-    <Version>4.6.0.0</Version>
+    <Version>4.6.1.0</Version>
     <VersionString>$(Version)</VersionString>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
