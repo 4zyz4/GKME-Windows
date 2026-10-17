@@ -85,6 +85,23 @@
     <ProjectReference Include="..\GKMD\GKMD.csproj" />
   </ItemGroup>
 
+  <!-- Ship the licenses of the components bundled with GKME: GKMD's MIT
+       license and the third-party notices for the embedded usbip-win2. They
+       are copied into the publish folder and installed under `licenses\`. -->
+  <ItemGroup>
+    <Content Include="..\GKMD\LICENSE">
+      <Link>licenses\GKMD-LICENSE.txt</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\GKMD\Resources\THIRD-PARTY-NOTICES.txt">
+      <Link>licenses\THIRD-PARTY-NOTICES.txt</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+
 
   <!-- Bundled adb (USB mode fallback). Put the Android SDK platform-tools
        contents into `platform-tools\` next to this project; they are copied to
