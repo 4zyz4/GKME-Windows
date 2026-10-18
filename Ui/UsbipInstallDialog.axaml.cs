@@ -1,5 +1,6 @@
 using System;
 using Avalonia.Controls;
+using GKME.Localization;
 
 namespace GKME.Ui;
 
@@ -35,6 +36,6 @@ public partial class UsbipInstallDialog : Window
         StatusText.Text = text;
         InstallButton.IsEnabled = false;
         CancelButton.IsEnabled = true;
-        CancelButton.Content = "关闭";
+        CancelButton.Content = Localizer.Instance.Get("Close");
     }
 }

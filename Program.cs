@@ -2,6 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
+using GKME.Localization;
 
 namespace GKME;
 
@@ -21,8 +22,9 @@ class Program
                 GKME.Core.ExceptionLogger.Record(ex, "AppDomain.CurrentDomain.UnhandledException");
             }
 
-            var text = "程序遇到未处理的异常。\n\n" + (ex?.ToString() ?? "未知错误");
-            MessageBoxW(IntPtr.Zero, text, "程序错误", 0x00000010 | 0x00000000);
+            var text = Localizer.Instance.Get("Error_UnhandledException") + "\n\n"
+                + (ex?.ToString() ?? Localizer.Instance.Get("Error_Unknown"));
+            MessageBoxW(IntPtr.Zero, text, Localizer.Instance.Get("Error_Title"), 0x00000010 | 0x00000000);
 
             var lifetime = Avalonia.Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
             lifetime?.Shutdown(-1);
@@ -36,8 +38,9 @@ class Program
         TaskScheduler.UnobservedTaskException += (_, e) =>
         {
             GKME.Core.ExceptionLogger.Record(e.Exception, "UnobservedTaskException");
-            var text = "未观察到的任务异常。\n\n" + (e.Exception.ToString() ?? "未知错误");
-            MessageBoxW(IntPtr.Zero, text, "程序错误", 0x00000010 | 0x00000000);
+            var text = Localizer.Instance.Get("Error_UnobservedTask") + "\n\n"
+                + (e.Exception.ToString() ?? Localizer.Instance.Get("Error_Unknown"));
+            MessageBoxW(IntPtr.Zero, text, Localizer.Instance.Get("Error_Title"), 0x00000010 | 0x00000000);
             e.SetObserved();
 
             try

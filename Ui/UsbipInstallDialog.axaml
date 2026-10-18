@@ -1,6 +1,6 @@
 <Window x:Class="GKME.Ui.UsbipInstallDialog" xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="需要安装 USBip"
+        Title="{DynamicResource Usbip_Title}"
         Width="480" Height="270"
         WindowStartupLocation="CenterOwner"
         CanResize="False"
@@ -33,15 +33,15 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Spacing="10">
-            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#E0E0E0" Text="需要安装 USBip 驱动" />
+            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#E0E0E0" Text="{DynamicResource Usbip_Heading}" />
             <TextBlock x:Name="MessageText" FontSize="13" Foreground="#B0B0B0" TextWrapping="Wrap"
-                       Text="创建虚拟手柄需要 USBip 驱动，但未检测到。点击“安装”将释放并启动安装程序。" />
+                       Text="{DynamicResource Usbip_Message}" />
             <TextBlock x:Name="StatusText" FontSize="12" Foreground="#7FB3D5" TextWrapping="Wrap" Text="" />
         </StackPanel>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="12">
-            <Button x:Name="CancelButton" Content="取消" />
-            <Button x:Name="InstallButton" Classes="primary" Content="安装" />
+            <Button x:Name="CancelButton" Content="{DynamicResource Cancel}" />
+            <Button x:Name="InstallButton" Classes="primary" Content="{DynamicResource Install}" />
         </StackPanel>
     </Grid>
 </Window>

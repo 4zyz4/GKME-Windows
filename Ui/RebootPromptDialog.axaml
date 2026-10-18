@@ -1,6 +1,6 @@
 <Window x:Class="GKME.Ui.RebootPromptDialog" xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="需要重启"
+        Title="{DynamicResource Reboot_Title}"
         Width="460" Height="240"
         WindowStartupLocation="CenterOwner"
         CanResize="False"
@@ -33,14 +33,14 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Spacing="10">
-            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#E0E0E0" Text="需要重启电脑" />
+            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#E0E0E0" Text="{DynamicResource Reboot_Heading}" />
             <TextBlock FontSize="13" Foreground="#B0B0B0" TextWrapping="Wrap"
-                       Text="USBip 驱动已更新，但 Windows 需要重启后才能加载新驱动，本次运行无法再创建手柄。&#10;重启后 GKME 会自动使用新驱动，无需手动安装。" />
+                       Text="{DynamicResource Reboot_Body}" />
         </StackPanel>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="12">
-            <Button x:Name="LaterButton" Content="稍后" />
-            <Button x:Name="RebootButton" Classes="primary" Content="立即重启" />
+            <Button x:Name="LaterButton" Content="{DynamicResource Later}" />
+            <Button x:Name="RebootButton" Classes="primary" Content="{DynamicResource RebootNow}" />
         </StackPanel>
     </Grid>
 </Window>

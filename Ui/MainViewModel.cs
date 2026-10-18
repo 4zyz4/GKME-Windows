@@ -10,6 +10,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using GamepadEmu.Protocol;
 using GKME.Core;
+using GKME.Localization;
 using GKME.Web;
 using GKMD.Internal.Usbip;
 
@@ -19,7 +20,9 @@ public class MainViewModel : INotifyPropertyChanged
 {
     private readonly NetworkService? _network;
     private readonly DeviceModeStore _modeStore = null!;
-    private string _statusText = "就绪";
+    private string _statusText = "";
+    private string? _statusKey = "Status_Ready";
+    private object[] _statusArgs = System.Array.Empty<object>();
     private bool _driverOk;
     private string _manualIp = "";
     private string _webUrl = "";
@@ -135,24 +138,48 @@ public class MainViewModel : INotifyPropertyChanged
     public string StatusText
     {
         get => _statusText;
-        set { _statusText = value; OnPropertyChanged(); }
+        private set { _statusText = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Updates the status line and remembers the localization key so
+    /// the text can be rebuilt when the language changes.</summary>
+    private void SetStatus(string key, params object[] args)
+    {
+        _statusKey = key;
+        _statusArgs = args;
+        StatusText = Localizer.Instance.Format(key, args);
+    }
+
+    /// <summary>Called by <see cref="App"/> when the embedded web server fails.</summary>
+    public void SetWebServerError(string error) => SetStatus("Status_WebServerNotStarted", error);
+
+    /// <summary>Re-raises every localized UI string after a language change.</summary>
+    public void RefreshLocalization()
+    {
+        if (_statusKey != null)
+            StatusText = Localizer.Instance.Format(_statusKey, _statusArgs);
+
+        foreach (var card in DeviceCards)
+            card.RefreshLocalization();
     }
 
     public MainViewModel(NetworkService? network)
     {
         _network = network;
         _modeStore = new DeviceModeStore();
+        SetStatus("Status_Ready");
+
         if (_network == null)
         {
             _driverOk = false;
-            StatusText = "驱动错误: 无法创建服务";
+            SetStatus("Status_DriverCreateFailed");
             return;
         }
 
         _driverOk = true;
-        if (_network != null && !_network.HidMaestroAvailable)
+        if (!_network.HidMaestroAvailable)
         {
-            StatusText = "GKMD 驱动不可用，仅支持 DS4 和 Xbox360 模式";
+            SetStatus("Status_HidMaestroUnavailable");
         }
         _network!.SavedModeResolver = (DiscoveredDevice d) => _modeStore.Get(d.ModeKey);
         _network.OnDeviceDiscovered += OnDeviceDiscovered;
@@ -193,7 +220,7 @@ public class MainViewModel : INotifyPropertyChanged
         dlg.InstallRequested += async () =>
         {
             dlg.SetBusy();
-            dlg.SetStatus("正在释放并启动 USBip 安装程序...");
+            dlg.SetStatus(Localizer.Instance.Get("Status_UsbipExtracting"));
 
             UsbipInstallResult result;
             try
@@ -204,7 +231,7 @@ public class MainViewModel : INotifyPropertyChanged
             }
             catch (Exception ex)
             {
-                dlg.SetCompleted("安装失败：" + ex.Message);
+                dlg.SetCompleted(Localizer.Instance.Format("Status_InstallFailed", ex.Message));
                 return;
             }
 
@@ -214,7 +241,7 @@ public class MainViewModel : INotifyPropertyChanged
                 // Refresh availability so controllers can be created without
                 // restarting GKME.
                 try { _network?.InitializeHidMaestro(); } catch { }
-                StatusText = "USBip 已安装";
+                SetStatus("Status_UsbipInstalled");
                 dlg.Close();
             }
             else if (result == UsbipInstallResult.RebootRequired)
@@ -229,7 +256,7 @@ public class MainViewModel : INotifyPropertyChanged
             }
             else
             {
-                dlg.SetCompleted("安装未完成，可稍后重试。");
+                dlg.SetCompleted(Localizer.Instance.Get("Status_InstallIncomplete"));
             }
         };
 
@@ -241,7 +268,7 @@ public class MainViewModel : INotifyPropertyChanged
 
     private void ShowRebootRequiredDialog()
     {
-        StatusText = "需要重启电脑以完成 USBip 驱动更新";
+        SetStatus("Status_RebootForDriver");
         var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
         var owner = MainWindow.Instance ?? (lifetime?.MainWindow as Window);
 
@@ -274,12 +301,12 @@ public class MainViewModel : INotifyPropertyChanged
         if (!_driverOk || _network == null) return;
         try
         {
-            StatusText = "正在扫描...";
+            SetStatus("Status_Scanning");
             _network.StartDiscovery();
         }
         catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse || ex.NativeErrorCode == 10048)
         {
-            StatusText = "GKME 已在运行中";
+            SetStatus("Status_AlreadyRunning");
             Dispatcher.UIThread.Post(() => ShowAlreadyRunningDialog(), DispatcherPriority.Background);
         }
     }
@@ -295,7 +322,7 @@ public class MainViewModel : INotifyPropertyChanged
 
         var textBlock = new TextBlock
         {
-            Text = "GKME 已在运行中。\n不能同时启动多个实例。",
+            Text = Localizer.Instance.Get("Dialog_AlreadyRunning"),
             Margin = new Thickness(20),
             HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
             VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
@@ -304,7 +331,7 @@ public class MainViewModel : INotifyPropertyChanged
         };
         var btn = new Button
         {
-            Content = "确定",
+            Content = Localizer.Instance.Get("Ok"),
             Margin = new Thickness(10),
             Background = new Avalonia.Media.SolidColorBrush(btnColor),
             Foreground = Avalonia.Media.Brushes.White,
@@ -349,7 +376,7 @@ public class MainViewModel : INotifyPropertyChanged
         // instead of letting it half-establish.
         if (_network.RebootRequired)
         {
-            StatusText = "需要重启电脑后才能连接";
+            SetStatus("Status_RebootRequiredToConnect");
             OnRebootRequired();
             return;
         }
@@ -360,18 +387,18 @@ public class MainViewModel : INotifyPropertyChanged
 
         _initialConnecting.Add(ip);
         ep.IsConnecting = true;
-        StatusText = $"正在连接到 {ip}...";
+        SetStatus("Status_ConnectingTo", ip);
         var session = await _network.ConnectAsync(device);
         if (session != null)
         {
             _sessionMap[ip] = session;
-            StatusText = $"已连接: {ip}";
+            SetStatus("Status_ConnectedTo", ip);
         }
         else
         {
             _initialConnecting.Remove(ip);
             ep.IsConnecting = false;
-            StatusText = $"连接失败: {ip}";
+            SetStatus("Status_ConnectFailed", ip);
         }
     }
 
@@ -402,6 +429,29 @@ public class MainViewModel : INotifyPropertyChanged
         ep.IsReconnecting = false;
     }
 
+    public async Task DisconnectAllAsync()
+    {
+        if (_network != null)
+            await _network.DisconnectAllAsync();
+
+        Sessions.Clear();
+        _sessionMap.Clear();
+        _initialConnecting.Clear();
+        OnPropertyChanged(nameof(HasActiveSession));
+
+        foreach (var card in DeviceCards)
+        {
+            foreach (var ep in card.Endpoints)
+            {
+                ep.IsConnected = false;
+                ep.IsConnecting = false;
+                ep.IsReconnecting = false;
+            }
+        }
+
+        SetStatus("Status_AllDisconnected");
+    }
+
     public async Task SetModeAsync(DeviceCardViewModel card, ControllerMode mode)
     {
         var ep = card.ActiveEndpoint;
@@ -415,7 +465,7 @@ public class MainViewModel : INotifyPropertyChanged
             _modeStore.Set(card.ModeKey, actualMode);
             if (actualMode != mode)
             {
-                StatusText = "GKMD 驱动不可用，已回退到 DS4 模式";
+                SetStatus("Status_ModeFallback");
             }
         }
         else
@@ -428,7 +478,7 @@ public class MainViewModel : INotifyPropertyChanged
     public void Refresh()
     {
         if (_network == null) return;
-        StatusText = "正在刷新...";
+        SetStatus("Status_Refreshing");
         _network.Refresh();
 
         DeviceCards.Clear();
@@ -454,7 +504,7 @@ public class MainViewModel : INotifyPropertyChanged
         }
 
         OnPropertyChanged(nameof(HasActiveSession));
-        StatusText = "正在扫描...";
+        SetStatus("Status_Scanning");
     }
 
     public async Task ConnectByIpAsync()
@@ -463,7 +513,7 @@ public class MainViewModel : INotifyPropertyChanged
         // no phantom entry behind.
         if (_network?.RebootRequired == true)
         {
-            StatusText = "需要重启电脑后才能连接";
+            SetStatus("Status_RebootRequiredToConnect");
             OnRebootRequired();
             return;
         }
@@ -471,19 +521,19 @@ public class MainViewModel : INotifyPropertyChanged
         var ip = ManualIp?.Trim();
         if (string.IsNullOrEmpty(ip) || _network == null)
         {
-            StatusText = "请输入有效的 IP 地址";
+            SetStatus("Status_EnterValidIp");
             return;
         }
 
         if (!System.Net.IPAddress.TryParse(ip, out var addr))
         {
-            StatusText = "IP 地址格式无效";
+            SetStatus("Status_InvalidIp");
             return;
         }
 
         if (_sessionMap.ContainsKey(ip))
         {
-            StatusText = $"已连接到 {ip}";
+            SetStatus("Status_AlreadyConnectedTo", ip);
             return;
         }
 
@@ -551,7 +601,7 @@ public class MainViewModel : INotifyPropertyChanged
             var existed = DeviceCards.Any(c => c.GroupKey == device.GroupKey && c.FindEndpoint(device.IpString) != null);
             AddOrUpdateCard(device);
             if (!existed)
-                StatusText = $"发现设备: {device.IpString}";
+                SetStatus("Status_DeviceFound", device.IpString);
         });
     }
 
@@ -671,7 +721,7 @@ public class MainViewModel : INotifyPropertyChanged
             {
                 card.SetModeRestored(ControllerMode.Ds4);
             }
-            StatusText = $"已断开: {ip}";
+            SetStatus("Status_DisconnectedFrom", ip);
         });
     }
 
@@ -686,7 +736,7 @@ public class MainViewModel : INotifyPropertyChanged
                 ep.IsConnected = false;
                 ep.IsReconnecting = true;
             }
-            StatusText = $"连接丢失: {ip}";
+            SetStatus("Status_ConnectionLost", ip);
         });
     }
 

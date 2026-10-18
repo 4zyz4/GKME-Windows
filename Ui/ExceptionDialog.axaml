@@ -1,6 +1,6 @@
 <Window x:Class="GKME.Ui.ExceptionDialog" xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="程序发生错误"
+        Title="{DynamicResource Exception_Title}"
         Width="600" Height="450"
         WindowStartupLocation="CenterScreen"
         Background="#1E1E1E"
@@ -35,7 +35,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="程序遇到未处理的异常，即将退出。" 
+        <TextBlock Grid.Row="0" Text="{DynamicResource Exception_Heading}" 
                    FontSize="14" FontWeight="SemiBold" Foreground="#F48761"
                    TextWrapping="Wrap" Margin="0,0,0,12"/>
 
@@ -45,12 +45,12 @@
 
         <Border Grid.Row="2" Background="#252525" Padding="14" CornerRadius="6" Margin="0,0,0,12">
             <StackPanel Orientation="Horizontal">
-                <Button Content="复制所有信息" Width="140" Margin="0,0,10,0" Click="OnCopyAll"
-                        ToolTip.Tip="将完整错误信息复制到剪贴板"/>
+                <Button Content="{DynamicResource Exception_CopyAll}" Width="140" Margin="0,0,10,0" Click="OnCopyAll"
+                        ToolTip.Tip="{DynamicResource Exception_CopyAllTip}"/>
             </StackPanel>
         </Border>
 
-        <TextBlock Grid.Row="3" Text="关闭此窗口将退出程序" 
+        <TextBlock Grid.Row="3" Text="{DynamicResource Exception_CloseExits}" 
                    FontSize="11" Foreground="#888888" TextAlignment="Center"/>
     </Grid>
 </Window>

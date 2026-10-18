@@ -6,6 +6,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using GKME.Core;
+using GKME.Localization;
 
 namespace GKME.Ui;
 
@@ -29,6 +30,49 @@ public partial class MainWindow : Window
         
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
         Title = $"GKME {version}";
+
+        UpdateLanguageChecks();
+        Localizer.Instance.LanguageChanged += OnLanguageChanged;
+    }
+
+    private void OnLanguageChanged(object? sender, System.EventArgs e)
+    {
+        UpdateLanguageChecks();
+        _vm.RefreshLocalization();
+    }
+
+    private void UpdateLanguageChecks()
+    {
+        var selected = Localizer.Instance.SelectedLanguage;
+        FollowSystemItem.IsChecked = selected == AppLanguage.FollowSystem;
+        EnglishItem.IsChecked = selected == AppLanguage.English;
+        SimplifiedChineseItem.IsChecked = selected == AppLanguage.SimplifiedChinese;
+        TraditionalChineseHongKongItem.IsChecked = selected == AppLanguage.TraditionalChineseHongKong;
+        TraditionalChineseTaiwanItem.IsChecked = selected == AppLanguage.TraditionalChineseTaiwan;
+    }
+
+    private void OnLanguageMenuClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem item || item.Tag is not string tag) return;
+
+        switch (tag)
+        {
+            case nameof(AppLanguage.FollowSystem):
+                Localizer.Instance.SetLanguage(AppLanguage.FollowSystem);
+                break;
+            case nameof(AppLanguage.English):
+                Localizer.Instance.SetLanguage(AppLanguage.English);
+                break;
+            case nameof(AppLanguage.SimplifiedChinese):
+                Localizer.Instance.SetLanguage(AppLanguage.SimplifiedChinese);
+                break;
+            case nameof(AppLanguage.TraditionalChineseHongKong):
+                Localizer.Instance.SetLanguage(AppLanguage.TraditionalChineseHongKong);
+                break;
+            case nameof(AppLanguage.TraditionalChineseTaiwan):
+                Localizer.Instance.SetLanguage(AppLanguage.TraditionalChineseTaiwan);
+                break;
+        }
     }
 
     private void OnClosing(object? sender, CancelEventArgs e)
@@ -58,6 +102,21 @@ public partial class MainWindow : Window
     private async void OnManualConnectClick(object? sender, RoutedEventArgs e)
     {
         await _vm.ConnectByIpAsync();
+    }
+
+    private async void OnMenuManualConnectClick(object? sender, RoutedEventArgs e)
+    {
+        await _vm.ConnectByIpAsync();
+    }
+
+    private void OnMenuRefreshClick(object? sender, RoutedEventArgs e)
+    {
+        _vm.Refresh();
+    }
+
+    private async void OnMenuDisconnectAllClick(object? sender, RoutedEventArgs e)
+    {
+        await _vm.DisconnectAllAsync();
     }
 
     private async void OnCardConnectClick(object? sender, RoutedEventArgs e)
@@ -95,10 +154,10 @@ public partial class MainWindow : Window
 
     private async void OnModeChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (e.AddedItems.Count == 0 || e.AddedItems[0] is not ControllerMode mode) return;
+        if (e.AddedItems.Count == 0 || e.AddedItems[0] is not ControllerModeOption option) return;
         var card = (sender as Control)?.DataContext as DeviceCardViewModel;
         if (card == null || card.IsRestoringMode) return;
-        await _vm.SetModeAsync(card, mode);
+        await _vm.SetModeAsync(card, option.Mode);
     }
 
     private async void OnAboutClick(object? sender, RoutedEventArgs e)

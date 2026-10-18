@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using GamepadEmu.Protocol;
 using GKME.Core;
+using GKME.Localization;
 
 namespace GKME.Ui;
 
@@ -70,14 +71,27 @@ public class DeviceCardViewModel : INotifyPropertyChanged
     public string Title => string.IsNullOrWhiteSpace(DeviceName) ? ActiveIpAddress : DeviceName;
 
     public string Subtitle => IsExpanded
-        ? $"{Endpoints.Count} 个可用连接"
+        ? Localizer.Instance.Format("AvailableConnections", Endpoints.Count)
         : string.IsNullOrWhiteSpace(DeviceName) ? "" : ActiveIpAddress;
     public bool HasSubtitle => !string.IsNullOrEmpty(Subtitle);
 
     public bool ShowConnect => ActiveEndpoint?.ShowConnect ?? false;
     public bool ShowControls => ActiveEndpoint?.ShowControls ?? false;
     public bool ShowReconnecting => ActiveEndpoint?.ShowReconnecting ?? false;
-    public string StatusText => ActiveEndpoint?.StatusText ?? "可连接";
+    public string StatusText => ActiveEndpoint?.StatusText ?? Localizer.Instance.Get("Status_Available");
+
+    /// <summary>Re-raises localized text after a language change.</summary>
+    public void RefreshLocalization()
+    {
+        foreach (var option in AllModes)
+            option.Refresh();
+        OnPropertyChanged(nameof(Subtitle));
+        OnPropertyChanged(nameof(HasSubtitle));
+        OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(SelectedMode));
+        foreach (var ep in Endpoints)
+            ep.RefreshLocalization();
+    }
 
     public ControllerMode Mode
     {
@@ -87,6 +101,17 @@ public class DeviceCardViewModel : INotifyPropertyChanged
             if (_mode == value) return;
             _mode = value;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(SelectedMode));
+        }
+    }
+
+    public ControllerModeOption? SelectedMode
+    {
+        get => AllModes.FirstOrDefault(option => option.Mode == _mode);
+        set
+        {
+            if (value != null)
+                Mode = value.Mode;
         }
     }
 
@@ -102,15 +127,15 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         finally { _isRestoringMode = false; }
     }
 
-    public static List<ControllerMode> AllModes { get; } = new()
+    public static IReadOnlyList<ControllerModeOption> AllModes { get; } = new List<ControllerModeOption>
     {
-        ControllerMode.Ds4,
-        ControllerMode.Dualsense,
-        ControllerMode.Xbox360,
-        ControllerMode.XboxOne,
-        ControllerMode.XboxSeries,
-        ControllerMode.SwitchPro,
-        ControllerMode.JoyCon,
+        new(ControllerMode.Ds4),
+        new(ControllerMode.Dualsense),
+        new(ControllerMode.Xbox360),
+        new(ControllerMode.XboxOne),
+        new(ControllerMode.XboxSeries),
+        new(ControllerMode.SwitchPro),
+        new(ControllerMode.JoyCon),
     };
 
     public static string DisplayName(ControllerMode mode) => mode switch
@@ -119,7 +144,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         ControllerMode.Xbox360 => "Xbox 360",
         ControllerMode.Dualsense => "DualSense",
         ControllerMode.SwitchPro => "Switch Pro",
-        ControllerMode.JoyCon => "双 Joy-Con",
+        ControllerMode.JoyCon => Localizer.Instance.Get("Mode_DualJoyCon"),
         ControllerMode.XboxOne => "Xbox One",
         ControllerMode.XboxSeries => "Xbox Series X|S",
         _ => "?",
@@ -183,4 +208,21 @@ public class DeviceCardViewModel : INotifyPropertyChanged
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
+}
+
+/// <summary>A controller mode together with its localized label. The static
+/// option instances are shared by every card, so a language change only has to
+/// notify these objects once for all combo boxes to refresh.</summary>
+public sealed class ControllerModeOption : INotifyPropertyChanged
+{
+    public ControllerModeOption(ControllerMode mode) => Mode = mode;
+
+    public ControllerMode Mode { get; }
+
+    public string Display => DeviceCardViewModel.DisplayName(Mode);
+
+    internal void Refresh() =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Display)));
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }

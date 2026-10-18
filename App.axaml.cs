@@ -15,6 +15,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using GKME.Core;
+using GKME.Localization;
 using GKME.Ui;
 using GKME.Web;
 
@@ -28,6 +29,8 @@ public partial class App : Application
     private WebServer? _webServer;
     private Window? _mainWindow;
     private bool _showingWindow;
+    private NativeMenuItem? _trayShowItem;
+    private NativeMenuItem? _trayExitItem;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr hWnd, string lpText, string lpCaption, uint uType);
@@ -59,6 +62,21 @@ public partial class App : Application
 
     public override void Initialize()
     {
+        Resources.MergedDictionaries.Add(Localizer.Instance.BuildResourceDictionary());
+        Localizer.Instance.LanguageChanged += OnLanguageChanged;
+    }
+
+    private void OnLanguageChanged(object? sender, EventArgs e)
+    {
+        if (Resources.MergedDictionaries.Count > 0)
+            Resources.MergedDictionaries[0] = Localizer.Instance.BuildResourceDictionary();
+        else
+            Resources.MergedDictionaries.Add(Localizer.Instance.BuildResourceDictionary());
+
+        if (_trayShowItem != null)
+            _trayShowItem.Header = Localizer.Instance.Get("Tray_ShowWindow");
+        if (_trayExitItem != null)
+            _trayExitItem.Header = Localizer.Instance.Get("Tray_Exit");
     }
 
     public override void OnFrameworkInitializationCompleted()
@@ -94,6 +112,17 @@ public partial class App : Application
         var iconPath = Path.Combine(AppContext.BaseDirectory, "icon.ico");
         var bitmap = new Bitmap(iconPath);
         
+        _trayShowItem = new NativeMenuItem
+        {
+            Header = Localizer.Instance.Get("Tray_ShowWindow"),
+            Command = ShowWindowCommand
+        };
+        _trayExitItem = new NativeMenuItem
+        {
+            Header = Localizer.Instance.Get("Tray_Exit"),
+            Command = QuitCommand
+        };
+
         var trayIcon = new TrayIcon
         {
             Icon = new WindowIcon(bitmap),
@@ -102,9 +131,9 @@ public partial class App : Application
             {
                 Items =
                 {
-                    new NativeMenuItem { Header = "显示窗口", Command = ShowWindowCommand },
+                    _trayShowItem,
                     new NativeMenuItemSeparator(),
-                    new NativeMenuItem { Header = "退出", Command = QuitCommand }
+                    _trayExitItem
                 }
             },
             Command = ShowWindowCommand
@@ -160,9 +189,8 @@ public partial class App : Application
             }
             else
             {
-                vm.StatusText = string.IsNullOrEmpty(_webServer.LastError)
-                    ? vm.StatusText
-                    : "网页服务未启动: " + _webServer.LastError;
+                if (!string.IsNullOrEmpty(_webServer.LastError))
+                    vm.SetWebServerError(_webServer.LastError);
             }
         }
         catch
@@ -178,11 +206,11 @@ public partial class App : Application
         {
             var textBlock = new TextBlock
             {
-                Text = "GKME 已在运行中。\n不能同时启动多个实例。",
+                Text = Localizer.Instance.Get("Dialog_AlreadyRunning"),
                 Margin = new Thickness(20)
             };
             
-            var btn = new Button { Content = "确定", Margin = new Thickness(10) };
+            var btn = new Button { Content = Localizer.Instance.Get("Ok"), Margin = new Thickness(10) };
             var dlg = new Window
             {
                 Content = textBlock,

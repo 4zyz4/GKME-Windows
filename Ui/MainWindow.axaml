@@ -1,11 +1,21 @@
 <Window x:Class="GKME.Ui.MainWindow" xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:GKME.Ui"
-        Width="580" Height="500"
+        Width="580" Height="540"
         WindowStartupLocation="CenterScreen"
         Background="#1E1E1E"
         Foreground="#E0E0E0">
     <Window.Styles>
+        <Style Selector="Menu">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+
+        <Style Selector="Menu > MenuItem">
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
+
         <Style Selector="Border.card">
             <Setter Property="Background" Value="#2D2D2D" />
             <Setter Property="BorderBrush" Value="#3E3E3E" />
@@ -79,38 +89,63 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
+        <!-- Menu bar -->
+        <Menu Grid.Row="0" HorizontalAlignment="Left" Margin="0,0,0,10">
+            <MenuItem Header="{DynamicResource Menu_Connection}">
+                <MenuItem Header="{DynamicResource Menu_ManualConnect}" Click="OnMenuManualConnectClick" />
+                <MenuItem Header="{DynamicResource Menu_Refresh}" Click="OnMenuRefreshClick" />
+                <Separator />
+                <MenuItem Header="{DynamicResource Menu_DisconnectAll}" Click="OnMenuDisconnectAllClick" />
+            </MenuItem>
+            <MenuItem Header="{DynamicResource Menu_Language}">
+                <MenuItem x:Name="FollowSystemItem" Header="{DynamicResource Lang_FollowSystem}"
+                          ToggleType="Radio" GroupName="Language" Tag="FollowSystem"
+                          Click="OnLanguageMenuClick" />
+                <MenuItem x:Name="EnglishItem" Header="{DynamicResource Lang_English}"
+                          ToggleType="Radio" GroupName="Language" Tag="English"
+                          Click="OnLanguageMenuClick" />
+                <MenuItem x:Name="SimplifiedChineseItem" Header="{DynamicResource Lang_SimplifiedChinese}"
+                          ToggleType="Radio" GroupName="Language" Tag="SimplifiedChinese"
+                          Click="OnLanguageMenuClick" />
+                <MenuItem x:Name="TraditionalChineseHongKongItem" Header="{DynamicResource Lang_TraditionalChineseHongKong}"
+                          ToggleType="Radio" GroupName="Language" Tag="TraditionalChineseHongKong"
+                          Click="OnLanguageMenuClick" />
+                <MenuItem x:Name="TraditionalChineseTaiwanItem" Header="{DynamicResource Lang_TraditionalChineseTaiwan}"
+                          ToggleType="Radio" GroupName="Language" Tag="TraditionalChineseTaiwan"
+                          Click="OnLanguageMenuClick" />
+            </MenuItem>
+            <MenuItem Header="{DynamicResource Menu_About}" Click="OnAboutClick" />
+        </Menu>
+
         <!-- Manual IP input -->
-        <Border Grid.Row="0" Classes="card" Padding="12">
+        <Border Grid.Row="1" Classes="card" Padding="12">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="IP 地址" VerticalAlignment="Center" FontSize="13" Margin="0,0,8,0" />
+                <TextBlock Grid.Column="0" Text="{DynamicResource IpAddress}" VerticalAlignment="Center" FontSize="13" Margin="0,0,8,0" />
                 <TextBox Grid.Column="1" Text="{Binding ManualIp, UpdateSourceTrigger=PropertyChanged}"
                          VerticalContentAlignment="Center" Height="30" FontSize="13"
                          Classes="input" />
-                <Button Grid.Column="2" Content="手动连接" Width="80" Height="30" Margin="8,0,0,0"
+                <Button Grid.Column="2" Content="{DynamicResource ManualConnect}" Width="80" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnManualConnectClick" />
-                <Button Grid.Column="3" Content="刷新" Width="60" Height="30" Margin="8,0,0,0"
+                <Button Grid.Column="3" Content="{DynamicResource Refresh}" Width="60" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnRefreshClick" />
-                <Button Grid.Column="4" Content="关于" Width="50" Height="30" Margin="8,0,0,0"
-                        Classes="action"
-                        Click="OnAboutClick" />
             </Grid>
         </Border>
 
         <!-- Web controller card: NIC selection, current address and QR code -->
-        <Border Grid.Row="1" Classes="card" IsVisible="{Binding HasWebUrl}">
+        <Border Grid.Row="2" Classes="card" IsVisible="{Binding HasWebUrl}">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -118,8 +153,8 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                    <TextBlock Text="网页手柄" FontSize="14" FontWeight="SemiBold" />
-                    <TextBlock Text="选择网卡" FontSize="11" Foreground="#9D9D9D" Margin="0,8,0,2" />
+                    <TextBlock Text="{DynamicResource WebController}" FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock Text="{DynamicResource SelectInterface}" FontSize="11" Foreground="#9D9D9D" Margin="0,8,0,2" />
                     <ComboBox Width="240" Height="28" FontSize="12" VerticalContentAlignment="Center"
                               HorizontalAlignment="Left"
                               ItemsSource="{Binding WebInterfaces}"
@@ -141,7 +176,7 @@
         </Border>
 
         <!-- Device card list -->
-        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
             <ItemsControl ItemsSource="{Binding DeviceCards}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
@@ -164,14 +199,14 @@
                                                 </Grid.ColumnDefinitions>
                                                 <TextBlock Grid.Column="0" Text="{Binding IpAddress}" FontSize="13"
                                                            VerticalAlignment="Center" />
-                                                <Button Grid.Column="1" Content="连接" Width="70" Height="28"
+                                                <Button Grid.Column="1" Content="{DynamicResource Connect}" Width="70" Height="28"
                                                         Classes="action"
                                                         IsVisible="{Binding ShowConnect}"
                                                         Click="OnEndpointConnectClick" />
-                                                <Button Grid.Column="1" Content="连接中..." Width="70" Height="28"
+                                                <Button Grid.Column="1" Content="{DynamicResource Connecting}" Width="70" Height="28"
                                                         Classes="action"
                                                         IsVisible="{Binding IsConnecting}" />
-                                                <Button Grid.Column="1" Content="断开" Width="70" Height="28"
+                                                <Button Grid.Column="1" Content="{DynamicResource Disconnect}" Width="70" Height="28"
                                                         Classes="danger"
                                                         IsVisible="{Binding ShowReconnecting}"
                                                         Click="OnEndpointDisconnectClick" />
@@ -197,13 +232,13 @@
                                 </StackPanel>
 
                                 <!-- Connect button -->
-                                <Button Grid.Column="1" Content="连接" Width="70" Height="30"
+                                <Button Grid.Column="1" Content="{DynamicResource Connect}" Width="70" Height="30"
                                         Classes="action"
                                         IsVisible="{Binding ShowConnect}"
                                         Click="OnCardConnectClick" />
 
                                 <!-- Reconnecting indicator -->
-                                <Button Grid.Column="1" Content="断开" Width="50" Height="30"
+                                <Button Grid.Column="1" Content="{DynamicResource Disconnect}" Width="50" Height="30"
                                         Classes="danger"
                                         IsVisible="{Binding ShowReconnecting}"
                                         Click="OnCardDisconnectClick" />
@@ -213,17 +248,17 @@
                                             IsVisible="{Binding ShowControls}">
                                     <ComboBox Width="140" Height="28" FontSize="12" VerticalContentAlignment="Center"
                                               ItemsSource="{x:Static ui:DeviceCardViewModel.AllModes}"
-                                              SelectedItem="{Binding Mode}"
+                                              SelectedItem="{Binding SelectedMode}"
                                               SelectionChanged="OnModeChanged"
                                               Classes="dark">
                                         <ComboBox.ItemTemplate>
                                             <DataTemplate>
-                                                <TextBlock Text="{Binding Converter={x:Static ui:ControllerModeConverter.Instance}}"
+                                                <TextBlock Text="{Binding Display}"
                                                            Foreground="#E0E0E0" />
                                             </DataTemplate>
                                         </ComboBox.ItemTemplate>
                                     </ComboBox>
-                                    <Button Content="断开" Width="50" Height="28" Margin="6,0,0,0"
+                                    <Button Content="{DynamicResource Disconnect}" Width="50" Height="28" Margin="6,0,0,0"
                                             Classes="danger"
                                             Click="OnCardDisconnectClick" />
                                 </StackPanel>
@@ -241,6 +276,6 @@
         </ScrollViewer>
 
         <!-- Spacer for footer space -->
-        <Border Grid.Row="3" />
+        <Border Grid.Row="4" />
     </Grid>
 </Window>

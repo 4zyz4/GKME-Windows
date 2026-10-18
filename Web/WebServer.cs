@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using GamepadEmu.Protocol;
 using GKME.Core;
+using GKME.Localization;
 using Google.Protobuf;
 
 namespace GKME.Web;
@@ -52,7 +53,7 @@ public sealed class WebServer : IDisposable
         if (Running) return;
         try
         {
-            WebRoot = ResolveWebRoot() ?? throw new DirectoryNotFoundException("GKME-Web 文件夹未找到");
+            WebRoot = ResolveWebRoot() ?? throw new DirectoryNotFoundException(Localizer.Instance.Get("Web_FolderNotFound"));
         }
         catch (Exception ex)
         {
@@ -68,7 +69,7 @@ public sealed class WebServer : IDisposable
         }
         catch (Exception ex)
         {
-            LastError = "HTTP 端口 " + HttpPort + " 不可用: " + ex.Message;
+            LastError = Localizer.Instance.Format("Web_PortUnavailable", HttpPort, ex.Message);
             _httpListener = null;
         }
 
@@ -208,7 +209,7 @@ public sealed class WebServer : IDisposable
         req.Query.TryGetValue("id", out var clientId);
         req.Query.TryGetValue("name", out var clientName);
         if (string.IsNullOrWhiteSpace(clientId)) clientId = Guid.NewGuid().ToString("N");
-        if (string.IsNullOrWhiteSpace(clientName)) clientName = "Web 浏览器";
+        if (string.IsNullOrWhiteSpace(clientName)) clientName = Localizer.Instance.Get("Web_ClientName");
 
         var device = new DiscoveredDevice
         {

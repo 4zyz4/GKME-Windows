@@ -6,6 +6,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Platform;
 using GKME.Core;
+using GKME.Localization;
 
 namespace GKME.Ui;
 
@@ -52,7 +53,7 @@ public partial class ExceptionDialog : Window
         try
         {
             var owner = GetOwner();
-            var textBlock = new TextBlock { Text = "已复制到剪贴板", Margin = new Thickness(20) };
+            var textBlock = new TextBlock { Text = Localizer.Instance.Get("Exception_Copied"), Margin = new Thickness(20) };
             var dlg = new Window
             {
                 Content = textBlock,
@@ -75,7 +76,7 @@ public partial class ExceptionDialog : Window
         }
         catch
         {
-            var textBlock = new TextBlock { Text = "复制到剪贴板失败", Margin = new Thickness(20) };
+            var textBlock = new TextBlock { Text = Localizer.Instance.Get("Exception_CopyFailed"), Margin = new Thickness(20) };
             var dlg = new Window
             {
                 Content = textBlock,

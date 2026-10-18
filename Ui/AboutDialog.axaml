@@ -1,6 +1,6 @@
 <Window x:Class="GKME.Ui.AboutDialog" xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="关于"
+        Title="{DynamicResource About_Title}"
         Width="420" Height="300"
         WindowStartupLocation="CenterOwner"
         CanResize="False"
@@ -33,13 +33,18 @@
         </StackPanel>
 
         <!-- Info text -->
-        <TextBlock Grid.Row="1" FontSize="12" Foreground="#888888" TextWrapping="Wrap"
-                   TextAlignment="Center" Margin="0,0,0,24" HorizontalAlignment="Center">
-            <Run Text="作者：4zyz4" /><LineBreak />
-            <Run Text="软件Q群：639317971" /><LineBreak /><LineBreak />
-            <Run Text="开源地址：" /><LineBreak />
-            <TextBlock Classes="link" Text="https://github.com/4zyz4/GKME" HorizontalAlignment="Center" /><LineBreak /><LineBreak />
-            <Run Text="注意：本软件不是Emotion，请进入Q群1045923515以下载正版Emotion" />
-        </TextBlock>
+        <StackPanel Grid.Row="1" HorizontalAlignment="Center" Spacing="3" Margin="0,0,0,16">
+            <TextBlock FontSize="12" Foreground="#888888" TextAlignment="Center"
+                       Text="{DynamicResource About_Author}" />
+            <TextBlock FontSize="12" Foreground="#888888" TextAlignment="Center"
+                       Text="{DynamicResource About_QQGroup}" />
+            <TextBlock FontSize="12" Foreground="#888888" TextAlignment="Center" Margin="0,8,0,0"
+                       Text="{DynamicResource About_OpenSource}" />
+            <TextBlock Classes="link" FontSize="12" Text="https://github.com/4zyz4/GKME"
+                       HorizontalAlignment="Center" />
+            <TextBlock FontSize="12" Foreground="#888888" TextWrapping="Wrap" TextAlignment="Center"
+                       MaxWidth="340" Margin="0,12,0,0"
+                       Text="{DynamicResource About_Note}" />
+        </StackPanel>
     </Grid>
 </Window>

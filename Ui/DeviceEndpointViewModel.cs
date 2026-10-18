@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using GKME.Core;
+using GKME.Localization;
 
 namespace GKME.Ui;
 
@@ -60,7 +61,13 @@ public class DeviceEndpointViewModel : INotifyPropertyChanged
     public bool ShowReconnecting => IsReconnecting;
     public bool IsBusy => IsConnected || IsConnecting || IsReconnecting;
 
-    public string StatusText => IsConnected ? "已连接" : IsReconnecting || IsConnecting ? "尝试连接" : "可连接";
+    public string StatusText => IsConnected
+        ? Localizer.Instance.Get("Status_Connected")
+        : IsReconnecting || IsConnecting
+            ? Localizer.Instance.Get("Status_Attempting")
+            : Localizer.Instance.Get("Status_Available");
+
+    public void RefreshLocalization() => OnPropertyChanged(nameof(StatusText));
 
     private void RaiseStateChanged()
     {
