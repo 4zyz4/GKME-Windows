@@ -49,6 +49,8 @@ public partial class MainWindow : Window
         SimplifiedChineseItem.IsChecked = selected == AppLanguage.SimplifiedChinese;
         TraditionalChineseHongKongItem.IsChecked = selected == AppLanguage.TraditionalChineseHongKong;
         TraditionalChineseTaiwanItem.IsChecked = selected == AppLanguage.TraditionalChineseTaiwan;
+        RussianItem.IsChecked = selected == AppLanguage.Russian;
+        FrenchItem.IsChecked = selected == AppLanguage.French;
     }
 
     private void OnLanguageMenuClick(object? sender, RoutedEventArgs e)
@@ -71,6 +73,12 @@ public partial class MainWindow : Window
                 break;
             case nameof(AppLanguage.TraditionalChineseTaiwan):
                 Localizer.Instance.SetLanguage(AppLanguage.TraditionalChineseTaiwan);
+                break;
+            case nameof(AppLanguage.Russian):
+                Localizer.Instance.SetLanguage(AppLanguage.Russian);
+                break;
+            case nameof(AppLanguage.French):
+                Localizer.Instance.SetLanguage(AppLanguage.French);
                 break;
         }
     }

@@ -14,6 +14,8 @@ public enum AppLanguage
     SimplifiedChinese,
     TraditionalChineseHongKong,
     TraditionalChineseTaiwan,
+    Russian,
+    French,
 }
 
 /// <summary>Single source of truth for UI strings. XAML consumes the current
@@ -84,6 +86,8 @@ public sealed class Localizer : INotifyPropertyChanged
         "zh-CN" => AppLanguage.SimplifiedChinese,
         "zh-HK" => AppLanguage.TraditionalChineseHongKong,
         "zh-TW" => AppLanguage.TraditionalChineseTaiwan,
+        "ru" => AppLanguage.Russian,
+        "fr" => AppLanguage.French,
         _ => AppLanguage.FollowSystem,
     };
 
@@ -93,6 +97,8 @@ public sealed class Localizer : INotifyPropertyChanged
         AppLanguage.SimplifiedChinese => "zh-CN",
         AppLanguage.TraditionalChineseHongKong => "zh-HK",
         AppLanguage.TraditionalChineseTaiwan => "zh-TW",
+        AppLanguage.Russian => "ru",
+        AppLanguage.French => "fr",
         _ => "system",
     };
 
@@ -115,9 +121,13 @@ public sealed class Localizer : INotifyPropertyChanged
                 0x0404 or 0x7C04 => AppLanguage.TraditionalChineseTaiwan,
                 0x0C04 or 0x1404 => AppLanguage.TraditionalChineseHongKong,
                 0x0804 or 0x1004 => AppLanguage.SimplifiedChinese,
-                _ => (languageId & 0x3FF) == 0x04
-                    ? AppLanguage.SimplifiedChinese
-                    : AppLanguage.English,
+                _ => (languageId & 0x3FF) switch
+                {
+                    0x04 => AppLanguage.SimplifiedChinese,
+                    0x19 => AppLanguage.Russian,
+                    0x0C => AppLanguage.French,
+                    _ => AppLanguage.English,
+                },
             };
         }
         catch

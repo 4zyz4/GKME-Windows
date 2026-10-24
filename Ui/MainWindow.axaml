@@ -118,6 +118,12 @@
                 <MenuItem x:Name="TraditionalChineseTaiwanItem" Header="{DynamicResource Lang_TraditionalChineseTaiwan}"
                           ToggleType="Radio" GroupName="Language" Tag="TraditionalChineseTaiwan"
                           Click="OnLanguageMenuClick" />
+                <MenuItem x:Name="RussianItem" Header="{DynamicResource Lang_Russian}"
+                          ToggleType="Radio" GroupName="Language" Tag="Russian"
+                          Click="OnLanguageMenuClick" />
+                <MenuItem x:Name="FrenchItem" Header="{DynamicResource Lang_French}"
+                          ToggleType="Radio" GroupName="Language" Tag="French"
+                          Click="OnLanguageMenuClick" />
             </MenuItem>
             <MenuItem Header="{DynamicResource Menu_About}" Click="OnAboutClick" />
         </Menu>
@@ -135,10 +141,10 @@
                 <TextBox Grid.Column="1" Text="{Binding ManualIp, UpdateSourceTrigger=PropertyChanged}"
                          VerticalContentAlignment="Center" Height="30" FontSize="13"
                          Classes="input" />
-                <Button Grid.Column="2" Content="{DynamicResource ManualConnect}" Width="80" Height="30" Margin="8,0,0,0"
+                <Button Grid.Column="2" Content="{DynamicResource ManualConnect}" MinWidth="80" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnManualConnectClick" />
-                <Button Grid.Column="3" Content="{DynamicResource Refresh}" Width="60" Height="30" Margin="8,0,0,0"
+                <Button Grid.Column="3" Content="{DynamicResource Refresh}" MinWidth="60" Height="30" Margin="8,0,0,0"
                         Classes="action"
                         Click="OnRefreshClick" />
             </Grid>
@@ -199,14 +205,14 @@
                                                 </Grid.ColumnDefinitions>
                                                 <TextBlock Grid.Column="0" Text="{Binding IpAddress}" FontSize="13"
                                                            VerticalAlignment="Center" />
-                                                <Button Grid.Column="1" Content="{DynamicResource Connect}" Width="70" Height="28"
+                                                <Button Grid.Column="1" Content="{DynamicResource Connect}" MinWidth="70" Height="28"
                                                         Classes="action"
                                                         IsVisible="{Binding ShowConnect}"
                                                         Click="OnEndpointConnectClick" />
-                                                <Button Grid.Column="1" Content="{DynamicResource Connecting}" Width="70" Height="28"
+                                                <Button Grid.Column="1" Content="{DynamicResource Connecting}" MinWidth="70" Height="28"
                                                         Classes="action"
                                                         IsVisible="{Binding IsConnecting}" />
-                                                <Button Grid.Column="1" Content="{DynamicResource Disconnect}" Width="70" Height="28"
+                                                <Button Grid.Column="1" Content="{DynamicResource Disconnect}" MinWidth="70" Height="28"
                                                         Classes="danger"
                                                         IsVisible="{Binding ShowReconnecting}"
                                                         Click="OnEndpointDisconnectClick" />
@@ -232,13 +238,13 @@
                                 </StackPanel>
 
                                 <!-- Connect button -->
-                                <Button Grid.Column="1" Content="{DynamicResource Connect}" Width="70" Height="30"
+                                <Button Grid.Column="1" Content="{DynamicResource Connect}" MinWidth="70" Height="30"
                                         Classes="action"
                                         IsVisible="{Binding ShowConnect}"
                                         Click="OnCardConnectClick" />
 
                                 <!-- Reconnecting indicator -->
-                                <Button Grid.Column="1" Content="{DynamicResource Disconnect}" Width="50" Height="30"
+                                <Button Grid.Column="1" Content="{DynamicResource Disconnect}" MinWidth="50" Height="30"
                                         Classes="danger"
                                         IsVisible="{Binding ShowReconnecting}"
                                         Click="OnCardDisconnectClick" />
@@ -258,7 +264,7 @@
                                             </DataTemplate>
                                         </ComboBox.ItemTemplate>
                                     </ComboBox>
-                                    <Button Content="{DynamicResource Disconnect}" Width="50" Height="28" Margin="6,0,0,0"
+                                    <Button Content="{DynamicResource Disconnect}" MinWidth="50" Height="28" Margin="6,0,0,0"
                                             Classes="danger"
                                             Click="OnCardDisconnectClick" />
                                 </StackPanel>
