@@ -7,27 +7,13 @@ using GamepadEmu.Protocol;
 using Google.Protobuf;
 using GKMD;
 using GKMD.Internal.Usbip;
+using GKME.Core.Personas;
 
 namespace GKME.Core;
 
 public class GamepadSession : IDisposable
 {
     private const int ConnectionTimeoutMs = 3000;
-
-    // DS4 gyro soft-knee: keep full sensitivity below the knee, then taper the
-    // gain linearly so the report never hits the ±32767/±32768 full-scale value
-    // (2000 deg/s) that some games treat as a sensor fault.
-    private const float Ds4GyroScale = 940f;
-    private const float Ds4GyroKnee = 30f;
-    private const float Ds4GyroMaxInput = 40f;
-    private const float Ds4GyroMaxOutput = 32760f;
-
-    // DS4 accel soft-knee (same idea; phone sends up to ~15g while the DS4's
-    // full-scale accel range is only ±4g).
-    private const float Ds4AccelScale = 835f;
-    private const float Ds4AccelKnee = 35f;
-    private const float Ds4AccelMaxInput = 160f;
-    private const float Ds4AccelMaxOutput = 32760f;
 
     private readonly Func<IMessage, Task> _sendToPhone;
     private readonly Action _onAudioSendStart;
@@ -51,15 +37,6 @@ public class GamepadSession : IDisposable
     private byte _lastLeftTriggerRumble;
     private byte _lastRightTriggerRumble;
 
-    // Switch Pro HD rumble -> decoded band parameters for the phone, which
-    // synthesises the LRA waveform locally. Only low-rate parameter updates
-    // cross the network, so a stutter delays an update instead of tearing a
-    // hole in the PCM stream (which the phone hears as a pop). The last-sent
-    // copy is kept to suppress redundant packets and to pace a keep-alive.
-    private readonly object _switchHapticLock = new();
-    private float _swLastHiFreqL, _swLastHiAmpL, _swLastLoFreqL, _swLastLoAmpL;
-    private float _swLastHiFreqR, _swLastHiAmpR, _swLastLoFreqR, _swLastLoAmpR;
-
     private readonly ManualResetEventSlim _inputReceived = new(false, 1);
     // A queue (not a single overwritten slot) so that a fast press+release in
     // the same processing window is never collapsed to just the last state —
@@ -72,13 +49,7 @@ public class GamepadSession : IDisposable
     // new USB/IP persona never plugs in while the old one is still being
     // removed (otherwise Windows can carry the old audio function over).
     private Task? _pendingDestroy;
-    private byte _previousTouchCounter;
-    private int _ds4TouchCounter;
-    private readonly System.Diagnostics.Stopwatch _ds4Timestamp = System.Diagnostics.Stopwatch.StartNew();
-    private readonly byte[] _touchIds = new byte[2];
-    private readonly bool[] _prevTouchActive = new bool[2];
-    private byte _nextTrackingId;
-    private byte _ds5SequenceCounter;
+    private readonly Stopwatch _reportClock = Stopwatch.StartNew();
     private Task? _cleanupTask;
     // Virtual USB HID keyboard + mouse (USB/IP backend). Created when the
     // session connects and kept for the session's lifetime so mode switches
@@ -118,10 +89,17 @@ public class GamepadSession : IDisposable
     public object? SecondaryController => _controllerSecondary;
     public bool IsConnected => !_disposed;
     public bool IsReady => Controller != null;
+
+    // The wire format currently spoken. Replaced together with Mode and the
+    // controllers on a mode switch; every persona-specific branch in the
+    // session goes through it.
+    private volatile IControllerPersona _persona;
+    private readonly PersonaHost _personaHost;
+
     /// <summary>True when the emulated controller reports trigger rumble instead of
     /// adaptive-trigger effects (currently Xbox One / Series), so compact frames carry the
     /// trigger-rumble fields rather than the DualSense effect blocks.</summary>
-    private bool SendsTriggerRumble => Mode == ControllerMode.XboxOne || Mode == ControllerMode.XboxSeries;
+    private bool SendsTriggerRumble => _persona.SendsTriggerRumble;
     public bool HasBeenReady => _readyFired;
 
     public event Action<GamepadSession>? OnReady;
@@ -148,6 +126,8 @@ public class GamepadSession : IDisposable
         _gkContext = gkContext;
         _hidMaestroAvailable = hidMaestroAvailable;
         Mode = initialMode;
+        _persona = PersonaCatalog.Create(initialMode);
+        _personaHost = new PersonaHost(this);
     }
 
     public void Start()
@@ -226,30 +206,8 @@ public class GamepadSession : IDisposable
             {
                 try
                 {
-                    switch (Mode)
-                    {
-                        case ControllerMode.Ds4:
-                            SubmitDs4Report(input);
-                            break;
-                        case ControllerMode.Dualsense:
-                            SubmitDualsenseReport(input);
-                            break;
-                        case ControllerMode.SwitchPro:
-                            SubmitSwitchReport(input);
-                            break;
-                        case ControllerMode.JoyCon:
-                            SubmitJoyConReport(input);
-                            break;
-                        case ControllerMode.XboxOne:
-                            SubmitXboxOneReport(input);
-                            break;
-                        case ControllerMode.XboxSeries:
-                            SubmitXboxSeriesReport(input);
-                            break;
-                        default:
-                            SubmitXbox360Report(input);
-                            break;
-                    }
+                    _persona.WriteInput(input, _personaHost);
+                    SubmitMouseAndTouchpad(input);
                 }
                 catch { }
 
@@ -368,7 +326,7 @@ public class GamepadSession : IDisposable
                 {
                     try
                     {
-                        var created = CreateControllers(Mode);
+                        var created = CreateControllers(_persona);
                         _controller = created.Primary;
                         _controllerSecondary = created.Secondary;
                     }
@@ -417,54 +375,38 @@ public class GamepadSession : IDisposable
 
     private readonly record struct CreatedControllers(object Primary, object? Secondary);
 
-    /// <summary>Creates the controller(s) a mode needs. Every mode is a single
-    /// USB/IP composite device except dual Joy-Con, which presents a real
+    /// <summary>Creates the controller(s) a persona needs. Every persona is a
+    /// single USB/IP composite device except dual Joy-Con, which presents a real
     /// left (057E:2006) and right (057E:2007) half as two independent USB
     /// devices so eden/SDL sees a genuine pair.</summary>
-    private CreatedControllers CreateControllers(ControllerMode mode)
+    private CreatedControllers CreateControllers(IControllerPersona persona)
     {
-        if (mode == ControllerMode.JoyCon)
-        {
-            var left = CreateController("joycon-l", mode);
-            object? right = null;
-            try
-            {
-                right = CreateController("joycon-r", mode);
-            }
-            catch
-            {
-                DestroyController(left);
-                throw;
-            }
-            return new CreatedControllers(left, right);
-        }
+        var primary = CreateController(persona.PrimaryProfileId, persona);
+        if (persona.SecondaryProfileId is not { } secondaryProfileId)
+            return new CreatedControllers(primary, null);
 
-        // All controllers are presented through the USB/IP backend. Pick the
-        // matching composite profile; the Xbox 360 wired persona is a
-        // vendor-class device, the others are HID composite personas.
-        string profileId = mode switch
+        try
         {
-            ControllerMode.Xbox360 => "xbox360",
-            ControllerMode.XboxOne => "xbox-one",
-            ControllerMode.XboxSeries => "xbox-series",
-            ControllerMode.Dualsense => "dualsense",
-            ControllerMode.SwitchPro => "switch-pro",
-            _ => "dualshock-4-v2",
-        };
-        return new CreatedControllers(CreateController(profileId, mode), null);
+            return new CreatedControllers(primary, CreateController(secondaryProfileId, persona));
+        }
+        catch
+        {
+            DestroyController(primary);
+            throw;
+        }
     }
 
-    private object CreateController(string profileId, ControllerMode mode)
+    private object CreateController(string profileId, IControllerPersona persona)
     {
         var profile = _gkContext.GetProfile(profileId)
-            ?? throw new InvalidOperationException($"No GKMD profile found for mode {mode} (profile '{profileId}').");
+            ?? throw new InvalidOperationException($"No GKMD profile found for mode {persona.Mode} (profile '{profileId}').");
 
         var ctrl = _gkContext.CreateController(profile);
         ctrl.OutputDecoded += OnGkOutputDecoded;
         ctrl.OutputReceived += OnGkOutputReceived;
-        if (mode == ControllerMode.Dualsense)
+        if (persona.AudioLayout == PersonaAudioLayout.DualsenseFourChannel)
             AttachDualsenseAudio(ctrl);
-        else if (mode == ControllerMode.Ds4)
+        else if (persona.AudioLayout == PersonaAudioLayout.Ds4Stereo)
             AttachDs4Audio(ctrl);
         return ctrl;
     }
@@ -539,12 +481,11 @@ public class GamepadSession : IDisposable
         }
     }
 
-    /// <summary>Forwards the emulated controller's LED state to the phone. Xbox 360
-    /// has no LED, so it always reports #000000 / no player indicator.</summary>
+    /// <summary>Forwards the emulated controller's LED state to the phone. Personas
+    /// without an LED (Xbox) always report #000000 / no player indicator.</summary>
     private async Task SendLedStateAsync()
     {
-        bool noLed = Mode == ControllerMode.Xbox360 || Mode == ControllerMode.XboxOne
-            || Mode == ControllerMode.XboxSeries;
+        bool noLed = !_persona.HasLed;
         int color = noLed ? 0 : _lastLedColor;
         int player = noLed ? 0 : _lastPlayerLed;
         await SendAsync(new ServerToClient
@@ -629,104 +570,12 @@ public class GamepadSession : IDisposable
         });
     }
 
-    /// <summary>Decode one HD rumble block ([hf, hfAmp|hfHi, lf|lfAmpHi, lfAmpLo],
-    /// SDL/dekuNukem encoding). Frequency: 10 * 2^(index/32); high index =
-    /// hf/4 + 0x60, low index = lf + 0x40. Amplitude: table index / 100.</summary>
-    private static void DecodeHdRumble(ReadOnlySpan<byte> b,
-        out float hiFreqHz, out float hiAmp, out float loFreqHz, out float loAmp)
-    {
-        int encHiF = b[0] | ((b[1] & 0x01) << 8);
-        int hiCode = b[1] & 0xFE;
-        int encLoF = b[2] & 0x7F;
-        int loMsb = (b[2] & 0x80) != 0 ? 1 : 0;
-        int loLow = b[3];
-
-        int hiIndex = encHiF / 4 + 0x60;
-        hiFreqHz = 10.0f * MathF.Pow(2.0f, hiIndex / 32.0f);
-        hiAmp = Math.Clamp((hiCode / 2) / 100.0f, 0f, 1f);
-
-        int loIndex = encLoF + 0x40;
-        loFreqHz = 10.0f * MathF.Pow(2.0f, loIndex / 32.0f);
-        int loAmpIdx = loLow >= 0x40 ? (loLow - 0x40) * 2 + loMsb : 0;
-        loAmp = Math.Clamp(loAmpIdx / 100.0f, 0f, 1f);
-    }
-
-    /// <summary>Switch Pro HD rumble, decoded and forwarded to the phone.
-    /// Output reports 0x01 and 0x10 carry one 4-byte HD rumble block per side
-    /// at payload [1..4] / [5..8] (after the packet-number byte). The phone
-    /// synthesises the LRA waveform from (frequency, amplitude), so only these
-    /// parameters cross the network. A state change is sent immediately for low
-    /// latency; <see cref="SwitchHapticPumpAsync"/> keeps a 50 ms keep-alive
-    /// flowing so the phone's synth thread stays warm — its output device must
-    /// not stop between rumbles, or the next onset clicks.</summary>
-    private void HandleSwitchRumbleOutput(GKOutputPacket packet)
-    {
-        if (packet.Source != GKOutputSource.HidOutput) return;
-        if (packet.ReportId != 0x01 && packet.ReportId != 0x10) return;
-        var d = packet.Data.Span;
-        if (d.Length < 9) return;
-
-        DecodeHdRumble(d.Slice(1, 4), out float lHiF, out float lHiA, out float lLoF, out float lLoA);
-        DecodeHdRumble(d.Slice(5, 4), out float rHiF, out float rHiA, out float rLoF, out float rLoA);
-
-        lock (_switchHapticLock)
-        {
-            bool changed =
-                MathF.Abs(lHiF - _swLastHiFreqL) > 0.5f || MathF.Abs(lLoF - _swLastLoFreqL) > 0.5f ||
-                MathF.Abs(rHiF - _swLastHiFreqR) > 0.5f || MathF.Abs(rLoF - _swLastLoFreqR) > 0.5f ||
-                MathF.Abs(lHiA - _swLastHiAmpL) > 0.002f || MathF.Abs(lLoA - _swLastLoAmpL) > 0.002f ||
-                MathF.Abs(rHiA - _swLastHiAmpR) > 0.002f || MathF.Abs(rLoA - _swLastLoAmpR) > 0.002f;
-
-            _swLastHiFreqL = lHiF; _swLastHiAmpL = lHiA; _swLastLoFreqL = lLoF; _swLastLoAmpL = lLoA;
-            _swLastHiFreqR = rHiF; _swLastHiAmpR = rHiA; _swLastLoFreqR = rLoF; _swLastLoAmpR = rLoA;
-            if (!changed) return;
-        }
-
-        SendHdRumble(lHiF, lHiA, lLoF, lLoA, rHiF, rHiA, rLoF, rLoA);
-    }
-
-    /// <summary>Joy-Con HD rumble. A single Joy-Con has one LRA and reports
-    /// one effective accent per output 0x01/0x10; decode it and drive the
-    /// phone lane matching the half that produced it (left device → left
-    /// lane, right device → right lane), keeping the other lane's last value.</summary>
-    private void HandleJoyconRumbleOutput(GKOutputPacket packet, bool left)
-    {
-        if (packet.Source != GKOutputSource.HidOutput) return;
-        if (packet.ReportId != 0x01 && packet.ReportId != 0x10) return;
-        var d = packet.Data.Span;
-        if (d.Length < 5) return;
-
-        DecodeHdRumble(d.Slice(1, 4), out float hiF, out float hiA, out float loF, out float loA);
-
-        lock (_switchHapticLock)
-        {
-            bool changed;
-            if (left)
-            {
-                changed =
-                    MathF.Abs(hiF - _swLastHiFreqL) > 0.5f || MathF.Abs(loF - _swLastLoFreqL) > 0.5f ||
-                    MathF.Abs(hiA - _swLastHiAmpL) > 0.002f || MathF.Abs(loA - _swLastLoAmpL) > 0.002f;
-                _swLastHiFreqL = hiF; _swLastHiAmpL = hiA; _swLastLoFreqL = loF; _swLastLoAmpL = loA;
-            }
-            else
-            {
-                changed =
-                    MathF.Abs(hiF - _swLastHiFreqR) > 0.5f || MathF.Abs(loF - _swLastLoFreqR) > 0.5f ||
-                    MathF.Abs(hiA - _swLastHiAmpR) > 0.002f || MathF.Abs(loA - _swLastLoAmpR) > 0.002f;
-                _swLastHiFreqR = hiF; _swLastHiAmpR = hiA; _swLastLoFreqR = loF; _swLastLoAmpR = loA;
-            }
-            if (!changed) return;
-
-            SendHdRumble(_swLastHiFreqL, _swLastHiAmpL, _swLastLoFreqL, _swLastLoAmpL,
-                         _swLastHiFreqR, _swLastHiAmpR, _swLastLoFreqR, _swLastLoAmpR);
-        }
-    }
-
-    /// <summary>Keep-alive for the phone's HD-rumble synth. While a Switch Pro
-    /// is emulated the current band state is re-sent every 50 ms, including an
-    /// all-zero state, so the phone keeps its synthesis thread and output
-    /// device running. Restarting that device at each rumble onset is what
-    /// clicks; a steady stream (silent when idle) removes the transient.</summary>
+    /// <summary>Keep-alive for the phone's HD-rumble synth. While a persona that
+    /// needs it (Switch Pro / Joy-Con) is emulated, the current band state is
+    /// re-sent every 50 ms, including an all-zero state, so the phone keeps its
+    /// synthesis thread and output device running. Restarting that device at
+    /// each rumble onset is what clicks; a steady stream (silent when idle)
+    /// removes the transient.</summary>
     private async Task SwitchHapticPumpAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -734,143 +583,31 @@ public class GamepadSession : IDisposable
             try { await Task.Delay(50, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
             if (_disposed) return;
-            if ((Mode != ControllerMode.SwitchPro && Mode != ControllerMode.JoyCon) || Controller == null) continue;
+            if (!_persona.NeedsHapticKeepAlive || Controller == null) continue;
 
-            float lhf, lha, llf, lla, rhf, rha, rlf, rla;
-            lock (_switchHapticLock)
-            {
-                lhf = _swLastHiFreqL; lha = _swLastHiAmpL; llf = _swLastLoFreqL; lla = _swLastLoAmpL;
-                rhf = _swLastHiFreqR; rha = _swLastHiAmpR; rlf = _swLastLoFreqR; rla = _swLastLoAmpR;
-            }
-            SendHdRumble(lhf, lha, llf, lla, rhf, rha, rlf, rla);
+            _persona.PumpHaptics(_personaHost);
         }
     }
 
-    private void SendHdRumble(float lhf, float lha, float llf, float lla,
-                              float rhf, float rha, float rlf, float rla)
+    private void SendHdRumble(in HdRumbleBands bands)
     {
         _ = SendAsync(new ServerToClient
         {
             HdRumble = new HdRumble
             {
-                LeftHighFreqHz = lhf, LeftHighAmp = lha,
-                LeftLowFreqHz = llf, LeftLowAmp = lla,
-                RightHighFreqHz = rhf, RightHighAmp = rha,
-                RightLowFreqHz = rlf, RightLowAmp = rla,
+                LeftHighFreqHz = bands.LeftHighFreqHz, LeftHighAmp = bands.LeftHighAmp,
+                LeftLowFreqHz = bands.LeftLowFreqHz, LeftLowAmp = bands.LeftLowAmp,
+                RightHighFreqHz = bands.RightHighFreqHz, RightHighAmp = bands.RightHighAmp,
+                RightLowFreqHz = bands.RightLowFreqHz, RightLowAmp = bands.RightLowAmp,
             }
         });
     }
 
+    /// <summary>Output reports belong to the persona that owns the wire format;
+    /// the session only routes the packet to it.</summary>
     private void OnGkOutputReceived(GKController controller, GKOutputPacket packet)
     {
-        if (Mode == ControllerMode.SwitchPro)
-        {
-            HandleSwitchRumbleOutput(packet);
-            return;
-        }
-
-        if (Mode == ControllerMode.JoyCon)
-        {
-            // One report per half; the primary device is the left Joy-Con,
-            // the secondary the right. Map each half's rumble to the phone's
-            // matching LRA lane. Ignore reports from a controller being
-            // torn down during a mode switch.
-            if (ReferenceEquals(controller, _controller))
-                HandleJoyconRumbleOutput(packet, left: true);
-            else if (ReferenceEquals(controller, _controllerSecondary))
-                HandleJoyconRumbleOutput(packet, left: false);
-            return;
-        }
-
-        // Feature report 0x80 is Sony's test-command surface (device/action
-        // first two bytes). dualsense-tester uses it for the 1kHz sine-wave
-        // audio test (WAVEOUT_CTRL on the AUDIO device); the real pad's
-        // firmware generates the tone internally. Synthesize it here instead
-        // of misreading the command bytes as rumble amplitudes.
-        if (packet.Source == GKOutputSource.HidFeature && packet.ReportId == 0x80)
-        {
-            HandleDualsenseTestCommand(packet.Data.Span);
-            return;
-        }
-
-        var d = packet.Data.Span;
-        if (d.Length < 4) return;
-
-        if (Mode == ControllerMode.Dualsense)
-        {
-            // DualSense output report 0x02 (no report-id byte): payload
-            // [0]=validFlag0, [1]=validFlag1, [2]=rightMotor(small),
-            // [3]=leftMotor(large).
-            _lastSmallMotor = d[2];
-            _lastLargeMotor = d[3];
-            return;
-        }
-
-        if ((Mode == ControllerMode.XboxOne || Mode == ControllerMode.XboxSeries)
-            && packet.Source == GKOutputSource.HidOutput)
-        {
-            // GIP Direct Motor Command payload ([MS-GIPUSB] Table 56), the body
-            // after the frame header: [0]=command 0x00, [1]=motor bitmap,
-            // [2]=left impulse, [3]=right impulse, [4]=left (strong) motor,
-            // [5]=right (weak) motor, [6]=duration, [7]=delay, [8]=repeat.
-            // Every level is a percentage (0-100); normalize to the 0-255 range
-            // the phone's rumble lane (and the DualSense / Xbox 360 paths) use,
-            // otherwise full rumble only reaches ~39% and feels far too faint.
-            if (d.Length >= 6)
-            {
-                _lastLargeMotor = ScaleGipLevel(d[4]);
-                _lastSmallMotor = ScaleGipLevel(d[5]);
-
-                // Xbox One impulse-trigger rumble (0-100 per side), forwarded to
-                // the phone as a separate TriggerEffects field so its adaptive
-                // trigger handler can render it unconditionally.
-                byte leftRumble = ScaleGipLevel(d[2]);
-                byte rightRumble = ScaleGipLevel(d[3]);
-                if (leftRumble != _lastLeftTriggerRumble || rightRumble != _lastRightTriggerRumble)
-                {
-                    _lastLeftTriggerRumble = leftRumble;
-                    _lastRightTriggerRumble = rightRumble;
-                    _ = SendTriggerRumbleAsync(_lastLeftTriggerRumble, _lastRightTriggerRumble);
-                }
-            }
-            return;
-        }
-
-        if (Mode == ControllerMode.Xbox360 && packet.Source == GKOutputSource.HidOutput)
-        {
-            // Xbox 360 wired output report arrives on the interrupt OUT
-            // endpoint: wire bytes are [RID=0x00][len=0x08][0x00][large][small]...
-            // The device strips the RID, so the payload here starts at len.
-            // [2]=large motor, [3]=small motor.
-            _lastLargeMotor = d[2];
-            _lastSmallMotor = d[3];
-            return;
-        }
-
-        _lastLargeMotor = d[2];
-        _lastSmallMotor = d[3];
-    }
-
-    /// <summary>GIP Direct Motor Command levels are percentages (0-100). The
-    /// phone's rumble lane expects the 0-255 range used by the DualSense and
-    /// Xbox 360 paths, so scale up (clamping in case a level exceeds 100).</summary>
-    private static byte ScaleGipLevel(byte level)
-        => (byte)Math.Min(255, level * 255 / 100);
-
-    private void HandleDualsenseTestCommand(ReadOnlySpan<byte> d)
-    {
-        if (Mode != ControllerMode.Dualsense) return;
-        if (d.Length < 3) return;
-
-        // Feature report 0x80 with bytes [0]=6 (AUDIO), [1]=2 (WAVEOUT_CTRL),
-        // [2]!=0 = enable the internal 1 kHz sine-wave generator. The phone
-        // synthesises the tone locally; forward only the on/off state.
-        byte deviceId = d[0];
-        byte actionId = d[1];
-        if (deviceId != 6 || actionId != 2) return;
-
-        _testToneEnabled = d[2] != 0;
-        _ = SendTestToneStateAsync();
+        _persona.DecodeOutput(controller, packet, _personaHost);
     }
 
     private void AttachDualsenseAudio(GKController ctrl)
@@ -1133,328 +870,6 @@ public class GamepadSession : IDisposable
         _audioFormatReady = false;
     }
 
-    private void SubmitXbox360Report(GamepadInput input)
-    {
-        var ctrl = (GKController)Controller!;
-
-        // XInput button word: A/B/X/Y live in the high byte, LB/RB/Guide and
-        // the menu/d-pad buttons in the low byte. This is the native layout a
-        // real Xbox 360 controller reports to Windows, so the host's XInput
-        // stack decodes it correctly.
-        ushort xb = 0;
-        if ((input.Buttons & (1u << 0)) != 0) xb |= 0x1000; // A
-        if ((input.Buttons & (1u << 1)) != 0) xb |= 0x2000; // B
-        if ((input.Buttons & (1u << 2)) != 0) xb |= 0x4000; // X
-        if ((input.Buttons & (1u << 3)) != 0) xb |= 0x8000; // Y
-        if ((input.Buttons & (1u << 4)) != 0) xb |= 0x0100; // LB
-        if ((input.Buttons & (1u << 5)) != 0) xb |= 0x0200; // RB
-        if ((input.Buttons & (1u << 8)) != 0) xb |= 0x0020; // Back
-        if ((input.Buttons & (1u << 9)) != 0) xb |= 0x0010; // Start
-        if ((input.Buttons & (1u << 10)) != 0) xb |= 0x0040; // LS
-        if ((input.Buttons & (1u << 11)) != 0) xb |= 0x0080; // RS
-        if ((input.Buttons & (1u << 16)) != 0) xb |= 0x0400; // Guide
-        if ((input.Dpad & 1) != 0) xb |= 0x0001; // Up
-        if ((input.Dpad & 2) != 0) xb |= 0x0002; // Down
-        if ((input.Dpad & 4) != 0) xb |= 0x0004; // Left
-        if ((input.Dpad & 8) != 0) xb |= 0x0008; // Right
-
-        var lt = input.LeftTrigger > 0 ? input.LeftTrigger : ((input.Buttons & (1u << 6)) != 0 ? 255u : 0u);
-        var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1u << 7)) != 0 ? 255u : 0u);
-
-        // 20-byte Xbox 360 wired input report (verbatim, no separate Report ID
-        // handling — the USB/IP backend transmits vendor reports as-is).
-        var buf = new byte[20];
-        buf[0] = 0x00; // report id
-        buf[1] = 0x14; // payload size
-        buf[2] = (byte)(xb & 0xFF);
-        buf[3] = (byte)(xb >> 8);
-        buf[4] = (byte)Math.Clamp(lt, 0u, 255u);
-        buf[5] = (byte)Math.Clamp(rt, 0u, 255u);
-
-        short lx = (short)input.LeftStickX;
-        short ly = (short)Math.Clamp(-(long)input.LeftStickY, short.MinValue, short.MaxValue);
-        short rx = (short)input.RightStickX;
-        short ry = (short)Math.Clamp(-(long)input.RightStickY, short.MinValue, short.MaxValue);
-        buf[6] = (byte)(lx & 0xFF); buf[7] = (byte)((lx >> 8) & 0xFF);
-        buf[8] = (byte)(ly & 0xFF); buf[9] = (byte)((ly >> 8) & 0xFF);
-        buf[10] = (byte)(rx & 0xFF); buf[11] = (byte)((rx >> 8) & 0xFF);
-        buf[12] = (byte)(ry & 0xFF); buf[13] = (byte)((ry >> 8) & 0xFF);
-        // 14..19 reserved (zero)
-
-        ctrl.SubmitRawReport(buf.AsSpan());
-
-        // Mousepad handled via SubmitMouseAndTouchpad (reads protobuf mouse fields)
-        SubmitMouseAndTouchpad(input);
-    }
-
-    /// <summary>Packs the 14-byte GIP input payload into the shared DATA
-    /// section; the USB/IP backend's GipResponder frames it as a
-    /// GIP_CMD_INPUT (0x20) message with the header/sequence and streams it.
-    /// The Guide button travel is carried in the payload's otherwise-unused
-    /// bit 0 and turned into a 0x07 virtual-key report device-side.</summary>
-    private void SubmitXboxOneReport(GamepadInput input)
-    {
-        var ctrl = (GKController)Controller!;
-        Span<byte> payload = stackalloc byte[XboxOneGipInput.PayloadSize];
-        XboxOneGipInput.BuildPayload(input, payload);
-        ctrl.SubmitRawReport(payload);
-        SubmitMouseAndTouchpad(input);
-    }
-
-    /// <summary>Packs the 15-byte Series GIP payload: the shared 14-byte body
-    /// plus a trailing console-function-map byte carrying the Share key (phone
-    /// bit 17). The backend's GipResponder frames it as a 40-byte GIP_CMD_INPUT
-    /// (0x20) report with the 18-byte map and an 8-byte dynamic-latency block.</summary>
-    private void SubmitXboxSeriesReport(GamepadInput input)
-    {
-        var ctrl = (GKController)Controller!;
-        Span<byte> payload = stackalloc byte[XboxOneGipInput.SeriesPayloadSize];
-        XboxOneGipInput.BuildSeriesPayload(input, payload);
-        ctrl.SubmitRawReport(payload);
-        SubmitMouseAndTouchpad(input);
-    }
-
-    private void SubmitDs4Report(GamepadInput input)
-    {
-        var ctrl = (GKController)Controller!;
-        var buf = new byte[63];
-
-        buf[0] = (byte)((input.LeftStickX + 32768) / 256);
-        buf[1] = (byte)((input.LeftStickY + 32768) / 256);
-        buf[2] = (byte)((input.RightStickX + 32768) / 256);
-        buf[3] = (byte)((input.RightStickY + 32768) / 256);
-
-        ushort w = (input.Dpad & 0x0F) switch
-        {
-            1 => 0,
-            2 => 4,
-            4 => 6,
-            8 => 2,
-            5 => 7,
-            6 => 5,
-            9 => 1,
-            10 => 3,
-            _ => 8,
-        };
-        if ((input.Buttons & (1 << 0)) != 0) w |= 1 << 5;
-        if ((input.Buttons & (1 << 1)) != 0) w |= 1 << 6;
-        if ((input.Buttons & (1 << 2)) != 0) w |= 1 << 4;
-        if ((input.Buttons & (1 << 3)) != 0) w |= 1 << 7;
-        if ((input.Buttons & (1 << 4)) != 0) w |= 1 << 8;
-        if ((input.Buttons & (1 << 5)) != 0) w |= 1 << 9;
-        if ((input.Buttons & (1 << 6)) != 0) w |= 1 << 10;
-        if ((input.Buttons & (1 << 7)) != 0) w |= 1 << 11;
-        if ((input.Buttons & (1 << 8)) != 0) w |= 1 << 12;
-        if ((input.Buttons & (1 << 9)) != 0) w |= 1 << 13;
-        if ((input.Buttons & (1 << 10)) != 0) w |= 1 << 14;
-        if ((input.Buttons & (1 << 11)) != 0) w |= 1 << 15;
-        buf[4] = (byte)w;
-        buf[5] = (byte)(w >> 8);
-
-        byte special = 0;
-        if ((input.Buttons & (1 << 16)) != 0) special |= 1;
-        if ((input.Buttons & (1 << 17)) != 0) special |= 2;
-        buf[6] = special;
-
-        var lt = input.LeftTrigger > 0 ? input.LeftTrigger : ((input.Buttons & (1 << 6)) != 0 ? 255u : 0u);
-        var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1 << 7)) != 0 ? 255u : 0u);
-        buf[7] = (byte)Math.Clamp(lt, 0, 255);
-        buf[8] = (byte)Math.Clamp(rt, 0, 255);
-
-        WriteInt16LE(buf, 9, (short)(_ds4Timestamp.ElapsedMilliseconds & 0xFFFF));
-
-        buf[11] = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
-
-        WriteInt16LE(buf, 12, (short)SoftLimit(input.GyroX, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
-        WriteInt16LE(buf, 14, (short)SoftLimit(input.GyroY, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
-        WriteInt16LE(buf, 16, (short)SoftLimit(input.GyroZ, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
-
-        WriteInt16LE(buf, 18, (short)SoftLimit(input.AccelX, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
-        WriteInt16LE(buf, 20, (short)SoftLimit(input.AccelY, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
-        WriteInt16LE(buf, 22, (short)SoftLimit(input.AccelZ, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
-
-        var powerState = (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 10u);
-        if (input.IsCharging) powerState |= 0x10;
-        buf[29] = powerState;
-
-        var t0 = input.Touches.Count > 0 ? input.Touches[0] : null;
-        var t1 = input.Touches.Count > 1 ? input.Touches[1] : null;
-
-        for (int i = 0; i < 2; i++)
-        {
-            var t = i == 0 ? t0 : t1;
-            bool isActive = t?.Active ?? false;
-            if (isActive && !_prevTouchActive[i])
-                _touchIds[i] = (byte)(_nextTrackingId++ & 0x7F);
-            _prevTouchActive[i] = isActive;
-        }
-
-        byte ds4CurrentCounter = (byte)(_ds4TouchCounter & 0x7F);
-        buf[32] = 1;
-        buf[33] = ds4CurrentCounter;
-        WriteTouchData(buf, 34,
-            (int)(t0?.X ?? 0), (int)(t0?.Y ?? 0),
-            t0?.Active ?? false, (byte)(_touchIds[0] & 0x7F));
-        WriteTouchData(buf, 38,
-            (int)(t1?.X ?? 0), (int)(t1?.Y ?? 0),
-            t1?.Active ?? false, (byte)(_touchIds[1] & 0x7F));
-
-        byte tid1 = (byte)((_nextTrackingId + 1) & 0x7F);
-        WriteTouchData(buf, 42, 0, 0, false, tid1);
-        byte tid2 = (byte)((_nextTrackingId + 2) & 0x7F);
-        WriteTouchData(buf, 46, 0, 0, false, tid2);
-        byte tid3 = (byte)((_nextTrackingId + 3) & 0x7F);
-        WriteTouchData(buf, 50, 0, 0, false, tid3);
-        byte tid4 = (byte)((_nextTrackingId + 4) & 0x7F);
-        WriteTouchData(buf, 54, 0, 0, false, tid4);
-        byte tid5 = (byte)((_nextTrackingId + 5) & 0x7F);
-        WriteTouchData(buf, 58, 0, 0, false, tid5);
-
-        _previousTouchCounter = ds4CurrentCounter;
-        _ds4TouchCounter++;
-
-        ctrl.SubmitRawReport(buf);
-        // Mousepad handled via SubmitMouseAndTouchpad (reads protobuf mouse fields)
-        SubmitMouseAndTouchpad(input);
-    }
-
-    private void SubmitDualsenseReport(GamepadInput input)
-    {
-        var ctrl = (GKController)Controller!;
-        var buf = new byte[63];
-
-        buf[0] = (byte)((input.LeftStickX + 32768) / 256);
-        buf[1] = (byte)((input.LeftStickY + 32768) / 256);
-        buf[2] = (byte)((input.RightStickX + 32768) / 256);
-        buf[3] = (byte)((input.RightStickY + 32768) / 256);
-
-        var lt = input.LeftTrigger > 0 ? input.LeftTrigger : ((input.Buttons & (1 << 6)) != 0 ? 255u : 0u);
-        var rt = input.RightTrigger > 0 ? input.RightTrigger : ((input.Buttons & (1 << 7)) != 0 ? 255u : 0u);
-        buf[4] = (byte)Math.Clamp(lt, 0, 255);
-        buf[5] = (byte)Math.Clamp(rt, 0, 255);
-
-        buf[6] = _ds5SequenceCounter++;
-        buf[7] = (byte)(input.Dpad & 0x0F) switch
-        {
-            1 => 0,
-            2 => 4,
-            4 => 6,
-            8 => 2,
-            5 => 7,
-            6 => 5,
-            9 => 1,
-            10 => 3,
-            _ => 8,
-        };
-        if ((input.Buttons & (1 << 2)) != 0) buf[7] |= 1 << 4; // Square
-        if ((input.Buttons & (1 << 0)) != 0) buf[7] |= 1 << 5; // Cross
-        if ((input.Buttons & (1 << 1)) != 0) buf[7] |= 1 << 6; // Circle
-        if ((input.Buttons & (1 << 3)) != 0) buf[7] |= 1 << 7; // Triangle
-
-        if ((input.Buttons & (1 << 4)) != 0) buf[8] |= 1 << 0; // L1
-        if ((input.Buttons & (1 << 5)) != 0) buf[8] |= 1 << 1; // R1
-        if ((input.Buttons & (1 << 6)) != 0) buf[8] |= 1 << 2; // L2
-        if ((input.Buttons & (1 << 7)) != 0) buf[8] |= 1 << 3; // R2
-        if ((input.Buttons & (1 << 8)) != 0) buf[8] |= 1 << 4; // Share
-        if ((input.Buttons & (1 << 9)) != 0) buf[8] |= 1 << 5; // Options
-        if ((input.Buttons & (1 << 10)) != 0) buf[8] |= 1 << 6; // L3
-        if ((input.Buttons & (1 << 11)) != 0) buf[8] |= 1 << 7; // R3
-
-        if ((input.Buttons & (1 << 16)) != 0) buf[9] |= 1 << 0; // PS
-        if ((input.Buttons & (1 << 17)) != 0) buf[9] |= 1 << 1; // Touchpad
-
-        if ((input.Buttons & (1u << 18)) != 0) buf[9] |= 1 << 2; // Mic Mute
-
-        WriteInt16LE(buf, 15, (short)SoftLimit(input.GyroX, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
-        WriteInt16LE(buf, 17, (short)SoftLimit(input.GyroY, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
-        WriteInt16LE(buf, 19, (short)SoftLimit(input.GyroZ, Ds4GyroScale, Ds4GyroKnee, Ds4GyroMaxInput, Ds4GyroMaxOutput));
-
-        WriteInt16LE(buf, 21, (short)SoftLimit(input.AccelX, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
-        WriteInt16LE(buf, 23, (short)SoftLimit(input.AccelY, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
-        WriteInt16LE(buf, 25, (short)SoftLimit(input.AccelZ, Ds4AccelScale, Ds4AccelKnee, Ds4AccelMaxInput, Ds4AccelMaxOutput));
-
-        buf[27] = (byte)(_ds4Timestamp.ElapsedMilliseconds & 0xFF);
-        buf[28] = (byte)((_ds4Timestamp.ElapsedMilliseconds >> 8) & 0xFF);
-        buf[29] = (byte)((_ds4Timestamp.ElapsedMilliseconds >> 16) & 0xFF);
-        buf[30] = (byte)((_ds4Timestamp.ElapsedMilliseconds >> 24) & 0xFF);
-        buf[31] = 0x80; // no-touch placeholder for byte 32 (reserved/temp in real DS5); prevents phantom id=0 touch
-
-        var t0 = input.Touches.Count > 0 ? input.Touches[0] : null;
-        var t1 = input.Touches.Count > 1 ? input.Touches[1] : null;
-
-        for (int i = 0; i < 2; i++)
-        {
-            var t = i == 0 ? t0 : t1;
-            bool isActive = t?.Active ?? false;
-            if (isActive && !_prevTouchActive[i])
-                _touchIds[i] = _nextTrackingId++;
-            _prevTouchActive[i] = isActive;
-        }
-
-        byte ds5CurrentCounter = (byte)(_ds4TouchCounter & 0x7F);
-        byte ds5PreviousCounter = (byte)(_previousTouchCounter & 0x7F);
-
-        int f0x = (int)(t0?.X ?? 0);
-        int f0y = (int)(t0?.Y ?? 0);
-        int f1x = (int)(t1?.X ?? 0);
-        int f1y = (int)(t1?.Y ?? 0);
-        bool f0Active = t0?.Active ?? false;
-        bool f1Active = t1?.Active ?? false;
-
-        buf[32] = f0Active
-            ? (byte)(_touchIds[0] & 0x7F)
-            : (byte)0x80;
-        buf[33] = (byte)(Math.Clamp(f0x, 0, 1919) & 0xFF);
-        buf[34] = (byte)(((Math.Clamp(f0x, 0, 1919) >> 8) & 0x0F) | ((Math.Clamp(f0y, 0, 1079) & 0x0F) << 4));
-        buf[35] = (byte)(Math.Clamp(f0y, 0, 1079) >> 4);
-
-        buf[36] = f1Active
-            ? (byte)(_touchIds[1] & 0x7F)
-            : (byte)0x80;
-        buf[37] = (byte)(Math.Clamp(f1x, 0, 1919) & 0xFF);
-        buf[38] = (byte)(((Math.Clamp(f1x, 0, 1919) >> 8) & 0x0F) | ((Math.Clamp(f1y, 0, 1079) & 0x0F) << 4));
-        buf[39] = (byte)(Math.Clamp(f1y, 0, 1079) >> 4);
-        buf[40] = ds5CurrentCounter;
-        buf[41] = ds5PreviousCounter;
-
-        _previousTouchCounter = ds5CurrentCounter;
-        _ds4TouchCounter++;
-
-        buf[52] = input.BatteryLevel > 0 ? (byte)Math.Clamp(input.BatteryLevel / 10u, 0u, 9u) : (byte)0x09;
-        if (input.IsCharging) buf[52] |= 0x10;
-
-        ctrl.SubmitRawReport(buf.AsSpan());
-
-        // Mousepad handled via SubmitMouseAndTouchpad (reads protobuf mouse fields)
-        SubmitMouseAndTouchpad(input);
-    }
-
-    /// <summary>Packs a 48-byte Switch Pro report-0x30 body into the shared
-    /// input section; the USB/IP backend frames it and streams it at the
-    /// 15 ms wire cadence.</summary>
-    private void SubmitSwitchReport(GamepadInput input)
-    {
-        var ctrl = (GKController)Controller!;
-        Span<byte> body = stackalloc byte[SwitchProInput.BodySize];
-        SwitchProInput.BuildBody(input, body);
-        ctrl.SubmitRawReport(body);
-        SubmitMouseAndTouchpad(input);
-    }
-
-    /// <summary>Packs one 48-byte Switch report-0x30 body and feeds it to both
-    /// Joy-Con halves. Each half is a separate USB HID device with its own
-    /// device type, so eden reads only the buttons/stick belonging to that
-    /// side; the shared body carries everything and each side ignores the
-    /// other's bits.</summary>
-    private void SubmitJoyConReport(GamepadInput input)
-    {
-        Span<byte> body = stackalloc byte[SwitchProInput.BodySize];
-        SwitchProInput.BuildBody(input, body);
-        if (Controller is GKController primary) primary.SubmitRawReport(body);
-        if (_controllerSecondary is GKController secondary) secondary.SubmitRawReport(body);
-        SubmitMouseAndTouchpad(input);
-    }
-
     /// <summary>Forwards the frame's mouse movement / scroll / buttons to the
     /// virtual USB HID mouse on the USB/IP backend. The device is created when
     /// the session connects, so it is already live by the time frames arrive.</summary>
@@ -1548,37 +963,6 @@ public class GamepadSession : IDisposable
         lock (_kbMouseLock) { _kbMouseCreating = false; _kbMouseFailed = true; }
     }
 
-    private static void WriteInt16LE(byte[] buf, int offset, short value)
-    {
-        buf[offset] = (byte)value;
-        buf[offset + 1] = (byte)(value >> 8);
-    }
-
-    private static float SoftLimit(float input, float scale, float knee, float maxInput, float maxOutput)
-    {
-        float abs = MathF.Abs(input);
-        if (abs <= knee)
-            return input * scale;
-
-        float sign = input < 0 ? -1f : 1f;
-        if (abs >= maxInput)
-            return sign * maxOutput;
-
-        float atKnee = knee * scale;
-        float slope = (maxOutput - atKnee) / (maxInput - knee);
-        return sign * (atKnee + (abs - knee) * slope);
-    }
-
-    private static void WriteTouchData(byte[] buf, int offset, int x, int y, bool active, byte id)
-    {
-        buf[offset] = active ? id : (byte)(0x80 | id);
-        int cx = Math.Clamp(x, 0, 1919);
-        int cy = Math.Clamp(y, 0, 1079);
-        buf[offset + 1] = (byte)(cx & 0xFF);
-        buf[offset + 2] = (byte)(((cx >> 8) & 0x0F) | ((cy & 0x0F) << 4));
-        buf[offset + 3] = (byte)((cy >> 4) & 0xFF);
-    }
-
     private async Task SendCompactFrameAsync(
         byte largeMotor, byte smallMotor,
         byte[]? leftTrigger, byte[]? rightTrigger,
@@ -1660,10 +1044,11 @@ public class GamepadSession : IDisposable
             _ = SendClearTriggerEffectsAsync();
 
             // 创建新控制器；成功前保留旧控制器。若创建失败，系统仍只有一个旧手柄，
+            var nextPersona = PersonaCatalog.Create(mode);
             CreatedControllers newSet;
             try
             {
-                newSet = await Task.Run(() => CreateControllers(mode));
+                newSet = await Task.Run(() => CreateControllers(nextPersona));
             }
             catch (UsbipRebootRequiredException)
             {
@@ -1695,6 +1080,8 @@ public class GamepadSession : IDisposable
                 oldSecondary = _controllerSecondary;
                 _controller = newSet.Primary;
                 _controllerSecondary = newSet.Secondary;
+                // The persona changes with the wire format, and only here.
+                _persona = nextPersona;
                 Mode = mode;
             }
 
@@ -1888,30 +1275,8 @@ public class GamepadSession : IDisposable
         try
         {
             var neutral = new GamepadInput();
-            switch (Mode)
-            {
-                case ControllerMode.Xbox360:
-                    SubmitXbox360Report(neutral);
-                    break;
-                case ControllerMode.Dualsense:
-                    SubmitDualsenseReport(neutral);
-                    break;
-                case ControllerMode.SwitchPro:
-                    SubmitSwitchReport(neutral);
-                    break;
-                case ControllerMode.JoyCon:
-                    SubmitJoyConReport(neutral);
-                    break;
-                case ControllerMode.XboxOne:
-                    SubmitXboxOneReport(neutral);
-                    break;
-                case ControllerMode.XboxSeries:
-                    SubmitXboxSeriesReport(neutral);
-                    break;
-                default:
-                    SubmitDs4Report(neutral);
-                    break;
-            }
+            _persona.WriteInput(neutral, _personaHost);
+            SubmitMouseAndTouchpad(neutral);
         }
         catch { }
 
@@ -1952,6 +1317,44 @@ public class GamepadSession : IDisposable
     public Task WaitForCleanupAsync()
     {
         return _cleanupTask ?? Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// The narrow surface a persona uses to reach its session: submit a report
+    /// into an emulated device, or update the state the phone mirrors. Nested
+    /// and private so the persona seam never widens the public API.
+    /// </summary>
+    private sealed class PersonaHost : IPersonaHost
+    {
+        private readonly GamepadSession _session;
+
+        public PersonaHost(GamepadSession session) => _session = session;
+
+        public GKController? PrimaryController => _session.Controller as GKController;
+
+        public GKController? SecondaryController => _session.SecondaryController as GKController;
+
+        public long TimestampMs => _session._reportClock.ElapsedMilliseconds;
+
+        public void SubmitReport(GKController controller, ReadOnlySpan<byte> report)
+            => controller.SubmitRawReport(report);
+
+        public void SetVibration(byte largeMotor, byte smallMotor)
+        {
+            _session._lastLargeMotor = largeMotor;
+            _session._lastSmallMotor = smallMotor;
+        }
+
+        public void SetTriggerRumble(byte left, byte right)
+            => _ = _session.SendTriggerRumbleAsync(left, right);
+
+        public void SetTestTone(bool enabled)
+        {
+            _session._testToneEnabled = enabled;
+            _ = _session.SendTestToneStateAsync();
+        }
+
+        public void SendHdRumble(in HdRumbleBands bands) => _session.SendHdRumble(bands);
     }
 
     public void Dispose()
