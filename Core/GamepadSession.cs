@@ -7,6 +7,7 @@ using GamepadEmu.Protocol;
 using Google.Protobuf;
 using GKMD;
 using GKMD.Internal.Usbip;
+using GKME.Core.Downlink;
 using GKME.Core.Personas;
 
 namespace GKME.Core;
@@ -24,18 +25,10 @@ public class GamepadSession : IDisposable
     private volatile bool _disposed;
     private bool _readyFired;
     private DateTime _lastReceiveTime = DateTime.UtcNow;
-    private byte _lastLargeMotor;
-    private byte _lastSmallMotor;
-    // Emulated controller LED state, forwarded to the phone. color is 0xRRGGBB.
-    private volatile int _lastLedColor;
-    private volatile int _lastPlayerLed;
-    private byte[]? _lastLeftTriggerEffect;
-    private byte[]? _lastRightTriggerEffect;
-    // Xbox One impulse-trigger rumble amplitudes, normalized to 0-255 for the
-    // phone's rumble lane (the GIP wire value is a 0-100 percentage). Forwarded
-    // in the TriggerEffects message (separate from the DualSense effect blocks).
-    private byte _lastLeftTriggerRumble;
-    private byte _lastRightTriggerRumble;
+    // Every phone-bound feedback packet is constructed here, and the last-known
+    // state it is built from lives here. The session only feeds it state and
+    // publishes; see PhoneDownlink for why the seven shallow senders moved.
+    private readonly PhoneDownlink _downlink;
 
     private readonly ManualResetEventSlim _inputReceived = new(false, 1);
     // A queue (not a single overwritten slot) so that a fast press+release in
@@ -59,25 +52,6 @@ public class GamepadSession : IDisposable
     private bool _kbMouseCreating;
     private bool _kbMouseFailed;
 
-    // 4-channel audio forwarding (DualSense): the phone needs the raw
-    // speaker + voice-coil PCM, not just the rumble peaks folded above.
-    private uint _audioFrameIndex;
-    private bool _audioFormatReady;
-    private uint _audioSampleRate;
-    private byte _audioChannels;
-    private byte _audioBitsPerSample;
-
-    // 1 kHz test-tone state (dualsense-tester WAVEOUT_CTRL). Forwarded to the
-    // phone as a state flag; the phone synthesises and plays the tone locally
-    // instead of the PC streaming test-tone PCM over the audio lane.
-    private volatile bool _testToneEnabled;
-
-    // Telemetry for the driver-delivered PCM stream (game → speaker).
-    private long _audioReceivedBytes;
-    private long _audioDrainedBytes;
-    private int _audioWindowsSeen;
-    private int _lastAudioWindowBytes;
-
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
     private volatile object? _controller;
@@ -96,10 +70,6 @@ public class GamepadSession : IDisposable
     private volatile IControllerPersona _persona;
     private readonly PersonaHost _personaHost;
 
-    /// <summary>True when the emulated controller reports trigger rumble instead of
-    /// adaptive-trigger effects (currently Xbox One / Series), so compact frames carry the
-    /// trigger-rumble fields rather than the DualSense effect blocks.</summary>
-    private bool SendsTriggerRumble => _persona.SendsTriggerRumble;
     public bool HasBeenReady => _readyFired;
 
     public event Action<GamepadSession>? OnReady;
@@ -128,6 +98,8 @@ public class GamepadSession : IDisposable
         Mode = initialMode;
         _persona = PersonaCatalog.Create(initialMode);
         _personaHost = new PersonaHost(this);
+        _downlink = new PhoneDownlink(SendAsync, onAudioSendStart);
+        _downlink.Configure(_persona.HasLed, _persona.SendsTriggerRumble);
     }
 
     public void Start()
@@ -163,39 +135,20 @@ public class GamepadSession : IDisposable
 
     /// <summary>Event-driven input submission — each UDP packet triggers an
     /// immediate report to the emulated controller with no rate limit.
-    /// Also drains test tone and sends vibration echo on each wake to keep
-    /// the phone's feedback loop running without a separate timer.</summary>
+    /// Also re-publishes the compact frame on each wake so the phone's feedback
+    /// loop keeps running without a separate timer.</summary>
     private async Task ReportLoop(CancellationToken ct)
     {
-        var sw = new System.Diagnostics.Stopwatch();
-        sw.Start();
-        long lastStatTicks = 0;
-
         while (!ct.IsCancellationRequested && !_disposed)
         {
             // Wait for an input packet or a periodic wake (vibration/telemetry).
-            // 500ms timeout keeps vibration echo + audio drain running at ~2 Hz
+            // 500ms timeout keeps the compact frame + audio drain running at ~2 Hz
             // when no input arrives, without fighting Windows timer throttling.
             if (!_inputReceived.Wait(500, ct))
             {
-                // Periodic wake — send compact frame + test-tone state when idle.
-                if (_testToneEnabled) _ = SendTestToneStateAsync();
-                if (Controller != null)
-                {
-                    _ = SendCompactFrameAsync(
-                        _lastLargeMotor, _lastSmallMotor,
-                        _lastLeftTriggerEffect, _lastRightTriggerEffect,
-                        sendLed: true, sendTestTone: false);
-                }
-
-                // Periodic audio-flow diagnostics (~every 500 ms).
-                if (sw.Elapsed.Ticks - lastStatTicks > TimeSpan.TicksPerMillisecond * 500)
-                {
-                    lastStatTicks = sw.Elapsed.Ticks;
-                    _audioReceivedBytes = 0;
-                    _audioDrainedBytes = 0;
-                    _audioWindowsSeen = 0;
-                }
+                // Periodic wake — re-publish the compact frame + test-tone state.
+                if (_downlink.TestToneEnabled) _downlink.PublishTestToneState();
+                if (Controller != null) _downlink.PublishCompactFrame();
                 continue;
             }
 
@@ -214,23 +167,8 @@ public class GamepadSession : IDisposable
                 try { SubmitKeyboardInput(input); } catch { }
             }
 
-            // Send compact frame on every input wake.
-            if (Controller != null)
-            {
-                _ = SendCompactFrameAsync(
-                    _lastLargeMotor, _lastSmallMotor,
-                    _lastLeftTriggerEffect, _lastRightTriggerEffect,
-                    sendLed: true, sendTestTone: false);
-            }
-
-            // Periodic audio-flow diagnostics.
-            if (sw.Elapsed.Ticks - lastStatTicks > TimeSpan.TicksPerMillisecond * 500)
-            {
-                lastStatTicks = sw.Elapsed.Ticks;
-                _audioReceivedBytes = 0;
-                _audioDrainedBytes = 0;
-                _audioWindowsSeen = 0;
-            }
+            // Re-publish the compact frame on every input wake.
+            if (Controller != null) _downlink.PublishCompactFrame();
         }
     }
 
@@ -369,8 +307,8 @@ public class GamepadSession : IDisposable
         // one that survived a watchdog timeout) can re-sync on the auto-reconnect
         // path — otherwise the phone never receives any packet and stays stuck.
         _ = SendAsync(NetworkService.BuildServerHello());
-        _ = SendLedStateAsync();
-        _ = SendTestToneStateAsync();
+        _downlink.PublishLedState();
+        _downlink.PublishTestToneState();
     }
 
     private readonly record struct CreatedControllers(object Primary, object? Secondary);
@@ -418,13 +356,15 @@ public class GamepadSession : IDisposable
         byte[]? newLeftTriggerEffect = null;
         byte[]? newRightTriggerEffect = null;
         int? validFlag0 = null;
+        byte? largeMotor = null;
+        byte? smallMotor = null;
         foreach (var (k, v) in e.Fields)
         {
             var key = k.ToLowerInvariant();
             if (key is "leftmotor" or "largemotor" or "leftactuator" or "leftlinear")
-                _lastLargeMotor = Convert.ToByte(v);
+                largeMotor = Convert.ToByte(v);
             else if (key is "rightmotor" or "smallmotor" or "rightactuator" or "rightlinear")
-                _lastSmallMotor = Convert.ToByte(v);
+                smallMotor = Convert.ToByte(v);
             else if (key is "lightbar" && v is byte[] rgb && rgb.Length >= 3)
                 newColor = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
             else if (key is "playerindicator")
@@ -437,20 +377,12 @@ public class GamepadSession : IDisposable
                 newRightTriggerEffect = rightTriggerBytes;
         }
 
-        bool changed = false;
-        if (newColor.HasValue && newColor.Value != _lastLedColor)
+        if (largeMotor.HasValue) _downlink.SetLargeMotor(largeMotor.Value);
+        if (smallMotor.HasValue) _downlink.SetSmallMotor(smallMotor.Value);
+
+        if (_downlink.UpdateLed(newColor, newPlayerLed))
         {
-            _lastLedColor = newColor.Value;
-            changed = true;
-        }
-        if (newPlayerLed.HasValue && newPlayerLed.Value != _lastPlayerLed)
-        {
-            _lastPlayerLed = newPlayerLed.Value;
-            changed = true;
-        }
-        if (changed)
-        {
-            _ = SendLedStateAsync();
+            _downlink.PublishLedState();
         }
 
         // DualSense VALID_FLAG0：bit2(0x04)=右扳机、bit3(0x08)=左扳机。手柄只应用被标记的
@@ -466,108 +398,19 @@ public class GamepadSession : IDisposable
         bool triggersUpdated = false;
         if (newLeftTriggerEffect != null && leftValid)
         {
-            _lastLeftTriggerEffect = newLeftTriggerEffect;
+            _downlink.SetLeftTriggerEffect(newLeftTriggerEffect);
             triggersUpdated = true;
         }
         if (newRightTriggerEffect != null && rightValid)
         {
-            _lastRightTriggerEffect = newRightTriggerEffect;
+            _downlink.SetRightTriggerEffect(newRightTriggerEffect);
             triggersUpdated = true;
         }
 
         if (triggersUpdated)
         {
-            _ = SendTriggerEffectAsync(_lastLeftTriggerEffect, _lastRightTriggerEffect);
+            _downlink.PublishTriggerEffects();
         }
-    }
-
-    /// <summary>Forwards the emulated controller's LED state to the phone. Personas
-    /// without an LED (Xbox) always report #000000 / no player indicator.</summary>
-    private async Task SendLedStateAsync()
-    {
-        bool noLed = !_persona.HasLed;
-        int color = noLed ? 0 : _lastLedColor;
-        int player = noLed ? 0 : _lastPlayerLed;
-        await SendAsync(new ServerToClient
-        {
-            LedState = new LedState
-            {
-                Color = (uint)color,
-                PlayerLed = (uint)player,
-            }
-        });
-    }
-
-    /// <summary>Forwards the 1 kHz test-tone on/off state to the phone. The phone
-    /// synthesises the tone locally; no test-tone PCM is streamed.</summary>
-    private async Task SendTestToneStateAsync()
-    {
-        await SendAsync(new ServerToClient
-        {
-            TestTone = new TestTone
-            {
-                Enabled = _testToneEnabled,
-            }
-        });
-    }
-
-    private async Task SendTriggerEffectAsync(byte[]? leftEffect, byte[]? rightEffect)
-    {
-        if (leftEffect == null && rightEffect == null) return;
-
-        _lastLeftTriggerEffect = leftEffect;
-        _lastRightTriggerEffect = rightEffect;
-
-        await SendAsync(new ServerToClient
-        {
-            TriggerEffects = new TriggerEffects
-            {
-                LeftTriggerEffect = ByteString.CopyFrom(leftEffect ?? Array.Empty<byte>()),
-                RightTriggerEffect = ByteString.CopyFrom(rightEffect ?? Array.Empty<byte>()),
-            }
-        });
-    }
-
-    /// <summary>Forwards Xbox One impulse-trigger rumble amplitudes (0-255) to the
-    /// phone. Sent in the same TriggerEffects envelope as DualSense adaptive effects
-    /// but in dedicated fields, so the phone can render it unconditionally.</summary>
-    private async Task SendTriggerRumbleAsync(byte left, byte right)
-    {
-        await SendAsync(new ServerToClient
-        {
-            TriggerEffects = new TriggerEffects
-            {
-                LeftTriggerRumble = (uint)left,
-                RightTriggerRumble = (uint)right,
-            }
-        });
-    }
-
-    private async Task SendTriggerEffectEchoAsync(bool force = true)
-    {
-        if (_lastLeftTriggerEffect == null && _lastRightTriggerEffect == null) return;
-
-        await SendAsync(new ServerToClient
-        {
-            TriggerEffects = new TriggerEffects
-            {
-                LeftTriggerEffect = ByteString.CopyFrom(_lastLeftTriggerEffect),
-                RightTriggerEffect = ByteString.CopyFrom(_lastRightTriggerEffect),
-            }
-        });
-    }
-
-    private async Task SendClearTriggerEffectsAsync()
-    {
-        var clearEffect = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-        await SendAsync(new ServerToClient
-        {
-            TriggerEffects = new TriggerEffects
-            {
-                LeftTriggerEffect = ByteString.CopyFrom(clearEffect),
-                RightTriggerEffect = ByteString.CopyFrom(clearEffect),
-            }
-        });
     }
 
     /// <summary>Keep-alive for the phone's HD-rumble synth. While a persona that
@@ -587,20 +430,6 @@ public class GamepadSession : IDisposable
 
             _persona.PumpHaptics(_personaHost);
         }
-    }
-
-    private void SendHdRumble(in HdRumbleBands bands)
-    {
-        _ = SendAsync(new ServerToClient
-        {
-            HdRumble = new HdRumble
-            {
-                LeftHighFreqHz = bands.LeftHighFreqHz, LeftHighAmp = bands.LeftHighAmp,
-                LeftLowFreqHz = bands.LeftLowFreqHz, LeftLowAmp = bands.LeftLowAmp,
-                RightHighFreqHz = bands.RightHighFreqHz, RightHighAmp = bands.RightHighAmp,
-                RightLowFreqHz = bands.RightLowFreqHz, RightLowAmp = bands.RightLowAmp,
-            }
-        });
     }
 
     /// <summary>Output reports belong to the persona that owns the wire format;
@@ -640,236 +469,12 @@ public class GamepadSession : IDisposable
     }
 
     private void OnDs4AudioFrames(GKAudioOutput output, ReadOnlyMemory<byte> pcm)
-    {
-        try
-        {
-            int channels = output.Channels;
-            if (channels != 2 || pcm.IsEmpty) return;
-
-            var span = pcm.Span;
-            // DS4 has 2-channel 32 kHz stereo. Resample to TargetSampleRate (44.1 kHz)
-            // and convert to phone's expected 4-channel layout.
-            if (!_audioFormatReady)
-            {
-                _audioSampleRate = (uint)TargetSampleRate;
-                _audioChannels = 4;
-                _audioBitsPerSample = (byte)output.BitsPerSample;
-                _audioFormatReady = true;
-                System.Diagnostics.Debug.WriteLine(
-                    $"[Ds4Audio] stream opened: {output.SampleRateHz}Hz {channels}ch {output.BitsPerSample}bit -> 4ch @ {TargetSampleRate}Hz");
-            }
-
-            int bitsPerSample = output.BitsPerSample;
-            int bytesPerSample = bitsPerSample / 8;
-            int srcChannels = channels;
-            int srcBytesPerFrame = srcChannels * bytesPerSample;
-            int srcSampleRate = output.SampleRateHz;
-            int srcNumSamples = span.Length / srcBytesPerFrame;
-
-            // Resample from srcSampleRate to TargetSampleRate using linear interpolation
-            double ratio = (double)TargetSampleRate / srcSampleRate;
-            int dstNumSamples = (int)(srcNumSamples * ratio);
-            int dstChannels = 4;
-            int dstBytesPerFrame = dstChannels * bytesPerSample;
-            var dst = new byte[dstNumSamples * dstBytesPerFrame];
-
-            for (int s = 0; s < dstNumSamples; s++)
-            {
-                double srcPos = s / ratio;
-                int srcIdx0 = (int)srcPos;
-                int srcIdx1 = Math.Min(srcIdx0 + 1, srcNumSamples - 1);
-                double frac = srcPos - srcIdx0;
-
-                int srcOff0 = srcIdx0 * srcBytesPerFrame;
-                int srcOff1 = srcIdx1 * srcBytesPerFrame;
-                int dstOff = s * dstBytesPerFrame;
-
-                short left0 = BitConverter.ToInt16(span[srcOff0..(srcOff0 + 2)]);
-                short left1 = BitConverter.ToInt16(span[srcOff1..(srcOff1 + 2)]);
-                short right0 = BitConverter.ToInt16(span[(srcOff0 + 2)..(srcOff0 + 4)]);
-                short right1 = BitConverter.ToInt16(span[(srcOff1 + 2)..(srcOff1 + 4)]);
-
-                short left = (short)(left0 + frac * (left1 - left0));
-                short right = (short)(right0 + frac * (right1 - right0));
-                short mono = (short)((left + right) / 2);
-
-                dst[dstOff] = 0; dst[dstOff + 1] = 0;
-                dst[dstOff + 2] = (byte)(mono & 0xFF); dst[dstOff + 3] = (byte)((mono >> 8) & 0xFF);
-                dst[dstOff + 4] = 0; dst[dstOff + 5] = 0;
-                dst[dstOff + 6] = 0; dst[dstOff + 7] = 0;
-            }
-
-            DrainSingleChunk(dst);
-            _audioReceivedBytes += span.Length;
-            _audioWindowsSeen++;
-            _lastAudioWindowBytes = span.Length;
-        }
-        catch { }
-    }
-
-    // Target sample rate forwarded to the phone. Both the emulated DualSense
-    // audio endpoint and the phone's native DS5 PCM path run at 48 kHz, so
-    // forwarding at the source rate avoids a lossy double resample
-    // (48k -> 44.1k on the PC, 44.1k -> 48k on the phone). The per-window
-    // resamplers are stateless, so any rate conversion injects a click at
-    // every buffer boundary, which is heard as noise on the voice coils.
-    private const int TargetSampleRate = 48000;
+        => _downlink.PushPcm(
+            PcmSourceLayout.Ds4Stereo, output.Channels, output.SampleRateHz, output.BitsPerSample, pcm.Span);
 
     private void OnDualsenseAudioFrames(GKAudioOutput output, ReadOnlyMemory<byte> pcm)
-    {
-        try
-        {
-            int channels = output.Channels;
-            if (channels < 4 || pcm.IsEmpty) return;
-
-            var span = pcm.Span;
-            // DualSense 4-channel layout: ch0=speakerLeft, ch1=speakerRight, ch2=hapticLeft, ch3=hapticRight
-            // Phone expects: ch0=silent, ch1=controller audio (mono speaker mix), ch2=left voice coil, ch3=right voice coil
-            if (!_audioFormatReady)
-            {
-                _audioSampleRate = (uint)TargetSampleRate;
-                _audioChannels = 4;
-                _audioBitsPerSample = (byte)output.BitsPerSample;
-                _audioFormatReady = true;
-                System.Diagnostics.Debug.WriteLine(
-                    $"[DualSenseAudio] stream opened: {output.SampleRateHz}Hz {channels}ch {output.BitsPerSample}bit -> remapped 4ch @ {TargetSampleRate}Hz");
-            }
-
-            int bitsPerSample = output.BitsPerSample;
-            int bytesPerSample = bitsPerSample / 8;
-            int srcChannels = channels;
-            int srcBytesPerFrame = srcChannels * bytesPerSample;
-            int srcSampleRate = output.SampleRateHz;
-            int srcNumSamples = span.Length / srcBytesPerFrame;
-
-            // Resample from srcSampleRate to TargetSampleRate using linear interpolation
-            double ratio = (double)TargetSampleRate / srcSampleRate;
-            int dstNumSamples = (int)(srcNumSamples * ratio);
-            int dstChannels = 4;
-            int dstBytesPerFrame = dstChannels * bytesPerSample;
-            var dst = new byte[dstNumSamples * dstBytesPerFrame];
-
-            for (int s = 0; s < dstNumSamples; s++)
-            {
-                double srcPos = s / ratio;
-                int srcIdx0 = (int)srcPos;
-                int srcIdx1 = Math.Min(srcIdx0 + 1, srcNumSamples - 1);
-                double frac = srcPos - srcIdx0;
-
-                int srcOff0 = srcIdx0 * srcBytesPerFrame;
-                int srcOff1 = srcIdx1 * srcBytesPerFrame;
-                int dstOff = s * dstBytesPerFrame;
-
-                // Channel 0: speakerLeft
-                short speakerL0 = BitConverter.ToInt16(span[srcOff0..(srcOff0 + 2)]);
-                short speakerL1 = BitConverter.ToInt16(span[srcOff1..(srcOff1 + 2)]);
-                // Channel 1: speakerRight
-                short speakerR0 = BitConverter.ToInt16(span[(srcOff0 + 2)..(srcOff0 + 4)]);
-                short speakerR1 = BitConverter.ToInt16(span[(srcOff1 + 2)..(srcOff1 + 4)]);
-                // Channel 2: hapticLeft
-                short hapticL0 = BitConverter.ToInt16(span[(srcOff0 + 4)..(srcOff0 + 6)]);
-                short hapticL1 = BitConverter.ToInt16(span[(srcOff1 + 4)..(srcOff1 + 6)]);
-                // Channel 3: hapticRight
-                short hapticR0 = BitConverter.ToInt16(span[(srcOff0 + 6)..(srcOff0 + 8)]);
-                short hapticR1 = BitConverter.ToInt16(span[(srcOff1 + 6)..(srcOff1 + 8)]);
-
-                // Linear interpolation
-                short speakerL = (short)(speakerL0 + frac * (speakerL1 - speakerL0));
-                short speakerR = (short)(speakerR0 + frac * (speakerR1 - speakerR0));
-                short hapticL = (short)(hapticL0 + frac * (hapticL1 - hapticL0));
-                short hapticR = (short)(hapticR0 + frac * (hapticR1 - hapticR0));
-
-                short monoSpeaker = (short)((speakerL + speakerR) / 2);
-
-                dst[dstOff] = 0; dst[dstOff + 1] = 0;                    // ch0: silent
-                dst[dstOff + 2] = (byte)(monoSpeaker & 0xFF); dst[dstOff + 3] = (byte)((monoSpeaker >> 8) & 0xFF); // ch1: mono speaker
-                dst[dstOff + 4] = (byte)(hapticL & 0xFF); dst[dstOff + 5] = (byte)((hapticL >> 8) & 0xFF);         // ch2: left voice coil
-                dst[dstOff + 6] = (byte)(hapticR & 0xFF); dst[dstOff + 7] = (byte)((hapticR >> 8) & 0xFF);         // ch3: right voice coil
-            }
-
-            // Skip silent windows: the phone's native sender keeps the DualSense
-            // endpoint fed with locally-generated silence, so forwarding silence
-            // only floods the link and blocks the phone's receive thread.
-            if (!IsSilent(dst)) DrainSingleChunk(dst);
-            _audioReceivedBytes += span.Length;
-            _audioWindowsSeen++;
-            _lastAudioWindowBytes = span.Length;
-        }
-        catch { }
-    }
-
-    /// <summary>True when every 16-bit sample is within a few LSB of zero. A game
-    /// holding the DualSense audio stream open makes the endpoint deliver silent
-    /// windows (often dithered, not exactly 0) continuously; the phone cannot tell
-    /// them from real audio, so they are dropped at the source.</summary>
-    private static bool IsSilent(byte[] data)
-    {
-        for (int i = 0; i + 1 < data.Length; i += 2)
-        {
-            int s = (short)(data[i] | (data[i + 1] << 8));
-            if (s > 8 || s < -8) return false;
-        }
-        return true;
-    }
-
-    /// <summary>Split an already-collected PCM buffer into frame-aligned
-    /// UDP chunks and send them. Called by OnDualsenseAudioFrames.</summary>
-    private void DrainSingleChunk(byte[] pcm)
-    {
-        if (!_audioFormatReady) return;
-
-        int bytesPerFrame = _audioChannels * (_audioBitsPerSample / 8);
-        if (bytesPerFrame <= 0) return;
-
-        int completeBytes = (pcm.Length / bytesPerFrame) * bytesPerFrame;
-        if (completeBytes == 0) return;
-
-        _onAudioSendStart?.Invoke();
-
-        const int MaxPacketBytes = 4096;
-        int chunkBytes = (MaxPacketBytes / bytesPerFrame) * bytesPerFrame;
-
-        for (int sent = 0; sent < completeBytes; sent += chunkBytes)
-        {
-            int n = Math.Min(chunkBytes, completeBytes - sent);
-            var bytes = new byte[n];
-            Buffer.BlockCopy(pcm, sent, bytes, 0, n);
-            _ = SendAudioFrameAsync(bytes);
-        }
-        _audioDrainedBytes += completeBytes;
-    }
-
-    private Task SendAudioFrameAsync(byte[] pcm)
-    {
-        try
-        {
-            var frame = new ServerToClient
-            {
-                AudioFrame = new AudioFrame
-                {
-                    SampleRateHz = _audioSampleRate,
-                    Channels = _audioChannels,
-                    BitsPerSample = _audioBitsPerSample,
-                    FrameIndex = _audioFrameIndex++,
-                    SampleCount = (uint)(pcm.Length / (_audioChannels * (_audioBitsPerSample / 8))),
-                    Pcm = Google.Protobuf.ByteString.CopyFrom(pcm),
-                }
-            };
-            return SendAsync(frame);
-        }
-        catch
-        {
-            return Task.CompletedTask;
-        }
-    }
-
-    private void ClearPendingAudio()
-    {
-        _audioFrameIndex = 0;
-        _testToneEnabled = false;
-        _audioFormatReady = false;
-    }
-
+        => _downlink.PushPcm(
+            PcmSourceLayout.DualsenseFourChannel, output.Channels, output.SampleRateHz, output.BitsPerSample, pcm.Span);
     /// <summary>Forwards the frame's mouse movement / scroll / buttons to the
     /// virtual USB HID mouse on the USB/IP backend. The device is created when
     /// the session connects, so it is already live by the time frames arrive.</summary>
@@ -963,58 +568,6 @@ public class GamepadSession : IDisposable
         lock (_kbMouseLock) { _kbMouseCreating = false; _kbMouseFailed = true; }
     }
 
-    private async Task SendCompactFrameAsync(
-        byte largeMotor, byte smallMotor,
-        byte[]? leftTrigger, byte[]? rightTrigger,
-        bool sendLed = true, bool sendTestTone = false)
-    {
-        await SendAsync(new ServerToClient
-        {
-            CompactFrame = new global::GamepadEmu.Protocol.CompactFrame
-            {
-                Vibration = new Vibration
-                {
-                    LargeMotor = largeMotor,
-                    SmallMotor = smallMotor,
-                },
-                TriggerEffects = BuildCompactTriggerEffects(leftTrigger, rightTrigger),
-                LedState = sendLed
-                    ? new LedState
-                    {
-                        Color = (uint)_lastLedColor,
-                        PlayerLed = (uint)_lastPlayerLed,
-                    }
-                    : null,
-                TestTone = sendTestTone
-                    ? new TestTone { Enabled = _testToneEnabled }
-                    : null,
-            }
-        });
-    }
-
-    /// <summary>Builds the compact frame's TriggerEffects envelope. DualSense modes carry
-    /// the adaptive-effect byte blocks; Xbox One carries the (always present, even 0)
-    /// trigger-rumble amplitudes so the phone can stop a latched rumble.</summary>
-    private TriggerEffects? BuildCompactTriggerEffects(byte[]? leftTrigger, byte[]? rightTrigger)
-    {
-        bool hasRumble = SendsTriggerRumble;
-        if (leftTrigger == null && rightTrigger == null && !hasRumble) return null;
-
-        var effects = new TriggerEffects
-        {
-            LeftTriggerEffect = ByteString.CopyFrom(leftTrigger ?? Array.Empty<byte>()),
-            RightTriggerEffect = ByteString.CopyFrom(rightTrigger ?? Array.Empty<byte>()),
-        };
-        if (hasRumble)
-        {
-            // Assigning marks the optional fields present, so the phone can tell an
-            // Xbox source (including an explicit 0) from "no trigger-rumble source".
-            effects.LeftTriggerRumble = _lastLeftTriggerRumble;
-            effects.RightTriggerRumble = _lastRightTriggerRumble;
-        }
-        return effects;
-    }
-
     public async Task<ControllerMode> SetControllerModeAsync(ControllerMode mode)
     {
         if (_disposed || _switchingMode) return Mode;
@@ -1034,14 +587,11 @@ public class GamepadSession : IDisposable
                 _pendingDestroy = null;
             }
 
-            _lastLargeMotor = 0;
-            _lastSmallMotor = 0;
-            _lastLeftTriggerEffect = null;
-            _lastRightTriggerEffect = null;
-            _lastLeftTriggerRumble = 0;
-            _lastRightTriggerRumble = 0;
-            ClearPendingAudio();
-            _ = SendClearTriggerEffectsAsync();
+            _downlink.ResetVibration();
+            _downlink.ResetTriggerEffects();
+            _downlink.ResetTriggerRumble();
+            _downlink.ResetAudio();
+            _downlink.ClearTriggerEffects();
 
             // 创建新控制器；成功前保留旧控制器。若创建失败，系统仍只有一个旧手柄，
             var nextPersona = PersonaCatalog.Create(mode);
@@ -1098,12 +648,11 @@ public class GamepadSession : IDisposable
                 });
             }
 
-            _lastLargeMotor = 0;
-            _lastSmallMotor = 0;
-            _lastLedColor = 0;
-            _lastPlayerLed = 0;
-            _ = SendLedStateAsync();
-            _ = SendTestToneStateAsync();
+            _downlink.Configure(nextPersona.HasLed, nextPersona.SendsTriggerRumble);
+            _downlink.ResetVibration();
+            _downlink.ResetLed();
+            _downlink.PublishLedState();
+            _downlink.PublishTestToneState();
 
             if (!_readyFired)
             {
@@ -1130,8 +679,8 @@ public class GamepadSession : IDisposable
             kbMouse = _kbMouse;
             _kbMouse = null;
         }
-        ClearPendingAudio();
-        _ = SendClearTriggerEffectsAsync();
+        _downlink.ResetAudio();
+        _downlink.ClearTriggerEffects();
 
         var primary = Controller;
         var secondary = _controllerSecondary;
@@ -1340,21 +889,15 @@ public class GamepadSession : IDisposable
             => controller.SubmitRawReport(report);
 
         public void SetVibration(byte largeMotor, byte smallMotor)
-        {
-            _session._lastLargeMotor = largeMotor;
-            _session._lastSmallMotor = smallMotor;
-        }
+            => _session._downlink.SetVibration(largeMotor, smallMotor);
 
         public void SetTriggerRumble(byte left, byte right)
-            => _ = _session.SendTriggerRumbleAsync(left, right);
+            => _session._downlink.SetTriggerRumble(left, right);
 
         public void SetTestTone(bool enabled)
-        {
-            _session._testToneEnabled = enabled;
-            _ = _session.SendTestToneStateAsync();
-        }
+            => _session._downlink.SetTestTone(enabled);
 
-        public void SendHdRumble(in HdRumbleBands bands) => _session.SendHdRumble(bands);
+        public void SendHdRumble(in HdRumbleBands bands) => _session._downlink.PublishHdRumble(bands);
     }
 
     public void Dispose()

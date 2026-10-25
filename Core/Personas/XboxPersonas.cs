@@ -51,9 +51,6 @@ internal sealed class Xbox360Persona : IControllerPersona
 /// </summary>
 internal abstract class GipPersona : IControllerPersona
 {
-    private byte _lastLeftTriggerRumble;
-    private byte _lastRightTriggerRumble;
-
     private protected GipPersona(ControllerMode mode, string profileId)
     {
         Mode = mode;
@@ -89,14 +86,11 @@ internal abstract class GipPersona : IControllerPersona
                 // otherwise only reach ~39% and feel far too faint).
                 host.SetVibration(ScaleGipLevel(d[4]), ScaleGipLevel(d[5]));
 
-                byte leftRumble = ScaleGipLevel(d[2]);
-                byte rightRumble = ScaleGipLevel(d[3]);
-                if (leftRumble != _lastLeftTriggerRumble || rightRumble != _lastRightTriggerRumble)
-                {
-                    _lastLeftTriggerRumble = leftRumble;
-                    _lastRightTriggerRumble = rightRumble;
-                    host.SetTriggerRumble(leftRumble, rightRumble);
-                }
+                // Impulse-trigger amplitudes, forwarded as a separate lane. The
+                // downlink owns the last-known pair and suppresses redundant
+                // updates (and echoes that pair in the compact frame), so this
+                // reports the current value unconditionally.
+                host.SetTriggerRumble(ScaleGipLevel(d[2]), ScaleGipLevel(d[3]));
             }
             return;
         }
