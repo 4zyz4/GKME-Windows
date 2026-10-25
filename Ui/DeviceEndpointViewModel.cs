@@ -19,8 +19,11 @@ public class DeviceEndpointViewModel : INotifyPropertyChanged
     }
 
     public DiscoveredDevice Device { get; }
-    public string IpAddress => Device.IpString;
-    public string DisplayAddress => Device.DisplayAddress;
+    /// <summary>Transport endpoint identity; keys this endpoint in the session
+    /// ledger and in the card's endpoint list.</summary>
+    public string Endpoint => Device.Identity.EndpointId;
+    public string IpAddress => Device.Identity.EndpointLabel;
+    public string DisplayAddress => Device.Identity.DisplayAddress;
     public bool IsUsb => Device.IsUsb;
 
     public bool IsConnected

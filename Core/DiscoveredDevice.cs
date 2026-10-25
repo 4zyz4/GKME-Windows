@@ -27,31 +27,8 @@ public class DiscoveredDevice
     /// <summary>Raw adb state (device / unauthorized / offline).</summary>
     public string? AdbState { get; set; }
 
-    public string IpString => IsWeb
-        ? $"WEB:{MacAddress}"
-        : IsUsb ? $"USB:{AdbSerial}" : IpAddress.ToString();
-
-    /// <summary>Address shown in the UI. USB devices show their serial rather
-    /// than the meaningless loopback address; web clients show the browser's
-    /// real peer address.</summary>
-    public string DisplayAddress => IsUsb ? $"USB {AdbSerial}" : IpAddress.ToString();
-
-    // Endpoint identity: unique per transport endpoint.
-    public string Key => IsWeb
-        ? $"web:{MacAddress}"
-        : IsUsb ? $"usb:{AdbSerial}" : $"{IpAddress}:{Port}";
-
-    // Identity key: the MAC when known (stable across IP changes), otherwise the
-    // IP. Used to group multiple endpoints that belong to the same physical
-    // phone. USB devices use their adb serial so the card stays stable even
-    // after the Hello handshake fills in the phone's ANDROID_ID.
-    public string GroupKey => IsWeb
-        ? $"web:{MacAddress}"
-        : IsUsb
-            ? $"usb:{AdbSerial}"
-            : (string.IsNullOrWhiteSpace(MacAddress) ? IpString : MacAddress);
-
-    // Persisted-mode key. The emulated controller type is stored per physical
-    // device, so it follows the MAC rather than the (volatile) IP.
-    public string ModeKey => GroupKey;
+    /// <summary>Endpoint and device identity of this device, plus its display
+    /// forms. Computed on demand because the Hello handshake can fill in the MAC
+    /// (and so change <see cref="DeviceIdentity.DeviceId"/>) after discovery.</summary>
+    public DeviceIdentity Identity => DeviceIdentity.Of(this);
 }

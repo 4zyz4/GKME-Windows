@@ -45,7 +45,7 @@ public class NetworkService : IDisposable
     public string? UsbAdbError => _adb.LastError;
 
     /// <summary>Resolves a previously persisted controller mode for a device
-    /// (keyed by <see cref="DiscoveredDevice.ModeKey"/>), or null when none is
+    /// (keyed by <see cref="DeviceIdentity.DeviceId"/>), or null when none is
     /// saved. Used by every connection path (manual + auto-reconnect) so the
     /// initial controller matches what the user last picked.</summary>
     public Func<DiscoveredDevice, ControllerMode?>? SavedModeResolver { get; set; }
@@ -63,7 +63,7 @@ public class NetworkService : IDisposable
         _intake = new SessionIntake(CreateSession, () => RebootRequired);
         _intake.SessionStarted += s => OnSessionStarted?.Invoke(s);
         _intake.SessionEnded += s => OnSessionEnded?.Invoke(s);
-        _intake.SessionConnectionLost += ip => OnSessionConnectionLost?.Invoke(ip);
+        _intake.SessionConnectionLost += identity => OnSessionConnectionLost?.Invoke(identity);
         _intake.DeviceInfoUpdated += d => OnDeviceInfoUpdated?.Invoke(d);
         _intake.RebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
         _intake.UsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
@@ -227,7 +227,7 @@ public class NetworkService : IDisposable
     public event Action<DiscoveredDevice>? OnDeviceInfoUpdated;
     public event Action<GamepadSession>? OnSessionStarted;
     public event Action<GamepadSession>? OnSessionEnded;
-    public event Action<string>? OnSessionConnectionLost;
+    public event Action<DeviceIdentity>? OnSessionConnectionLost;
     /// <summary>Raised when the USBip transport needs a reboot before
     /// controllers can be created. The UI shows a reboot prompt.</summary>
     public event Action? OnRebootRequired;
@@ -252,7 +252,7 @@ public class NetworkService : IDisposable
     public bool UsbipInstallRequired { get; private set; }
 
     private static string GetSessionKey(IPEndPoint remoteEp) =>
-        $"{new IPEndPoint(remoteEp.Address, Port)}";
+        DeviceIdentity.NetworkEndpointId(remoteEp.Address, Port);
 
     internal static ServerToClient BuildServerHello() => new()
     {
@@ -341,7 +341,7 @@ public class NetworkService : IDisposable
                     // list matches the WiFi list (only live services show up).
                     if (!probe.ServiceListening) continue;
 
-                    var key = $"usb:{d.Serial}";
+                    var key = DeviceIdentity.UsbEndpointId(d.Serial);
                     seen.Add(key);
                     DiscoveredDevice? publish = null;
                     DiscoveredDevice current;
@@ -699,7 +699,7 @@ public class NetworkService : IDisposable
 
     public async Task SendDisconnectAsync(DiscoveredDevice device)
     {
-        if (!_intake.TryGet(device.Key, out var session)) return;
+        if (!_intake.TryGet(device.Identity.EndpointId, out var session)) return;
 
         // Tell the phone first (the downlink still belongs to the transport),
         // then let the intake evict and retire the session. Releasing the link

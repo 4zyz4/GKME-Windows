@@ -54,8 +54,8 @@ public sealed class SessionIntake
 
     public event Action<GamepadSession>? SessionStarted;
     public event Action<GamepadSession>? SessionEnded;
-    /// <summary>Carries the device's <see cref="DiscoveredDevice.IpString"/>.</summary>
-    public event Action<string>? SessionConnectionLost;
+    /// <summary>Carries the identity of the device whose transport dropped.</summary>
+    public event Action<DeviceIdentity>? SessionConnectionLost;
     public event Action<DiscoveredDevice>? DeviceInfoUpdated;
     public event Action<GamepadSession>? RebootRequired;
     public event Action<GamepadSession>? UsbipInstallRequired;
@@ -80,7 +80,7 @@ public sealed class SessionIntake
     public bool IsCurrent(GamepadSession session)
     {
         lock (_connectLock)
-            return _sessions.TryGetValue(session.Device.Key, out var current)
+            return _sessions.TryGetValue(session.Device.Identity.EndpointId, out var current)
                 && ReferenceEquals(current, session);
     }
 
@@ -118,7 +118,7 @@ public sealed class SessionIntake
         // the transport, so every new connection is refused up front.
         if (_isConnectionBlocked?.Invoke() == true) return null;
 
-        var key = device.Key;
+        var key = device.Identity.EndpointId;
         GamepadSession? oldSession = null;
 
         lock (_connectLock)
@@ -222,7 +222,7 @@ public sealed class SessionIntake
     private void Wire(GamepadSession session, ISessionTransport transport)
     {
         session.OnReady += s => SessionStarted?.Invoke(s);
-        session.OnConnectionLost += s => SessionConnectionLost?.Invoke(s.Device.IpString);
+        session.OnConnectionLost += s => SessionConnectionLost?.Invoke(s.Device.Identity);
         session.OnDeviceInfoUpdated += s => DeviceInfoUpdated?.Invoke(s.Device);
         session.OnRebootRequired += s => RebootRequired?.Invoke(s);
         session.OnUsbipInstallRequired += s => UsbipInstallRequired?.Invoke(s);
@@ -232,8 +232,8 @@ public sealed class SessionIntake
             {
                 // Only evict when this session still owns the key: a session that
                 // lost the registration race must not remove the winner.
-                if (_sessions.TryGetValue(s.Device.Key, out var current) && ReferenceEquals(current, s))
-                    _sessions.Remove(s.Device.Key);
+                if (_sessions.TryGetValue(s.Device.Identity.EndpointId, out var current) && ReferenceEquals(current, s))
+                    _sessions.Remove(s.Device.Identity.EndpointId);
                 _transports.Remove(s);
             }
 
@@ -249,8 +249,8 @@ public sealed class SessionIntake
     {
         lock (_retireLock)
         {
-            if (!_retired.TryGetValue(session.Device.Key, out var list))
-                _retired[session.Device.Key] = list = new List<GamepadSession>();
+            if (!_retired.TryGetValue(session.Device.Identity.EndpointId, out var list))
+                _retired[session.Device.Identity.EndpointId] = list = new List<GamepadSession>();
             list.Add(session);
         }
 
@@ -264,10 +264,10 @@ public sealed class SessionIntake
             {
                 lock (_retireLock)
                 {
-                    if (_retired.TryGetValue(session.Device.Key, out var list))
+                    if (_retired.TryGetValue(session.Device.Identity.EndpointId, out var list))
                     {
                         list.Remove(session);
-                        if (list.Count == 0) _retired.Remove(session.Device.Key);
+                        if (list.Count == 0) _retired.Remove(session.Device.Identity.EndpointId);
                     }
                 }
             }

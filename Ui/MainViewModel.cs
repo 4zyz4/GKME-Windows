@@ -182,7 +182,7 @@ public class MainViewModel : INotifyPropertyChanged
         {
             SetStatus("Status_HidMaestroUnavailable");
         }
-        _network!.SavedModeResolver = (DiscoveredDevice d) => _modeStore.Get(d.ModeKey);
+        _network!.SavedModeResolver = (DiscoveredDevice d) => _modeStore.Get(d.Identity.DeviceId);
         _network.OnDeviceDiscovered += OnDeviceDiscovered;
         _network.OnDeviceLost += OnDeviceLost;
         _network.OnDeviceInfoUpdated += OnDeviceInfoUpdated;
@@ -383,23 +383,24 @@ public class MainViewModel : INotifyPropertyChanged
         }
 
         var device = ep.Device;
-        var ip = device.IpString;
+        var identity = device.Identity;
+        var ip = identity.EndpointId;
         if (_sessionMap.ContainsKey(ip)) return;
 
         _initialConnecting.Add(ip);
         ep.IsConnecting = true;
-        SetStatus("Status_ConnectingTo", ip);
+        SetStatus("Status_ConnectingTo", identity.EndpointLabel);
         var session = await _network.ConnectAsync(device);
         if (session != null)
         {
             _sessionMap[ip] = session;
-            SetStatus("Status_ConnectedTo", ip);
+            SetStatus("Status_ConnectedTo", identity.EndpointLabel);
         }
         else
         {
             _initialConnecting.Remove(ip);
             ep.IsConnecting = false;
-            SetStatus("Status_ConnectFailed", ip);
+            SetStatus("Status_ConnectFailed", identity.EndpointLabel);
         }
     }
 
@@ -411,9 +412,9 @@ public class MainViewModel : INotifyPropertyChanged
 
     public async Task DisconnectEndpointAsync(DeviceEndpointViewModel ep)
     {
-        var ip = ep.IpAddress;
-        _initialConnecting.Remove(ip);
-        if (_sessionMap.TryGetValue(ip, out var session))
+        var endpoint = ep.Endpoint;
+        _initialConnecting.Remove(endpoint);
+        if (_sessionMap.TryGetValue(endpoint, out var session))
         {
             if (_network != null)
             {
@@ -423,7 +424,7 @@ public class MainViewModel : INotifyPropertyChanged
             {
                 session.Disconnect();
             }
-            _sessionMap.Remove(ip);
+            _sessionMap.Remove(endpoint);
         }
         ep.IsConnected = false;
         ep.IsConnecting = false;
@@ -457,13 +458,13 @@ public class MainViewModel : INotifyPropertyChanged
     {
         var ep = card.ActiveEndpoint;
         if (ep == null) return;
-        var ip = ep.IpAddress;
+        var endpoint = ep.Endpoint;
 
-        if (_sessionMap.TryGetValue(ip, out var session))
+        if (_sessionMap.TryGetValue(endpoint, out var session))
         {
             ControllerMode actualMode = await session.SetControllerModeAsync(mode);
             card.Mode = actualMode;
-            _modeStore.Set(card.ModeKey, actualMode);
+            _modeStore.Set(card.DeviceId, actualMode);
             if (actualMode != mode)
             {
                 SetStatus("Status_ModeFallback");
@@ -472,7 +473,7 @@ public class MainViewModel : INotifyPropertyChanged
         else
         {
             card.Mode = mode;
-            _modeStore.Set(card.ModeKey, mode);
+            _modeStore.Set(card.DeviceId, mode);
         }
     }
 
@@ -490,7 +491,7 @@ public class MainViewModel : INotifyPropertyChanged
         foreach (var session in _network.ActiveSessions)
         {
             Sessions.Add(session);
-            _sessionMap[session.Device.IpString] = session;
+            _sessionMap[session.Device.Identity.EndpointId] = session;
         }
 
         foreach (var device in _network.DiscoveredDevices)
@@ -498,9 +499,9 @@ public class MainViewModel : INotifyPropertyChanged
             AddOrUpdateCard(device);
         }
 
-        foreach (var (ip, _) in _sessionMap)
+        foreach (var (endpointId, _) in _sessionMap)
         {
-            var ep = FindEndpoint(ip);
+            var ep = FindEndpoint(endpointId);
             if (ep != null) ep.IsConnected = true;
         }
 
@@ -532,13 +533,15 @@ public class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        if (_sessionMap.ContainsKey(ip))
+        var manual = new DiscoveredDevice { IpAddress = addr };
+        var endpointId = manual.Identity.EndpointId;
+        if (_sessionMap.ContainsKey(endpointId))
         {
             SetStatus("Status_AlreadyConnectedTo", ip);
             return;
         }
 
-        var existing = FindEndpoint(ip);
+        var existing = FindEndpoint(endpointId);
         DeviceEndpointViewModel ep;
         if (existing != null)
         {
@@ -546,8 +549,7 @@ public class MainViewModel : INotifyPropertyChanged
         }
         else
         {
-            var device = new DiscoveredDevice { IpAddress = addr };
-            var card = new DeviceCardViewModel(device);
+            var card = new DeviceCardViewModel(manual);
             ApplySavedMode(card);
             DeviceCards.Add(card);
             ep = card.Endpoints[0];
@@ -558,15 +560,15 @@ public class MainViewModel : INotifyPropertyChanged
 
     private void ApplySavedMode(DeviceCardViewModel card)
     {
-        var saved = _modeStore.Get(card.ModeKey);
+        var saved = _modeStore.Get(card.DeviceId);
         if (saved != null)
             card.Mode = saved.Value;
     }
 
     private DeviceCardViewModel AddOrUpdateCard(DiscoveredDevice device)
     {
-        var key = device.GroupKey;
-        var card = DeviceCards.FirstOrDefault(c => c.GroupKey == key);
+        var key = device.Identity.DeviceId;
+        var card = DeviceCards.FirstOrDefault(c => c.DeviceId == key);
         if (card == null)
         {
             card = new DeviceCardViewModel(device);
@@ -582,27 +584,28 @@ public class MainViewModel : INotifyPropertyChanged
         return card;
     }
 
-    private DeviceEndpointViewModel? FindEndpoint(string ip)
+    private DeviceEndpointViewModel? FindEndpoint(string endpointId)
     {
         foreach (var card in DeviceCards)
         {
-            var ep = card.FindEndpoint(ip);
+            var ep = card.FindEndpoint(endpointId);
             if (ep != null) return ep;
         }
         return null;
     }
 
-    private DeviceCardViewModel? FindCardByIp(string ip) =>
-        DeviceCards.FirstOrDefault(c => c.FindEndpoint(ip) != null);
+    private DeviceCardViewModel? FindCardByEndpoint(string endpointId) =>
+        DeviceCards.FirstOrDefault(c => c.FindEndpoint(endpointId) != null);
 
     private void OnDeviceDiscovered(DiscoveredDevice device)
     {
         UiInvoke(() =>
         {
-            var existed = DeviceCards.Any(c => c.GroupKey == device.GroupKey && c.FindEndpoint(device.IpString) != null);
+            var identity = device.Identity;
+            var existed = DeviceCards.Any(c => c.DeviceId == identity.DeviceId && c.FindEndpoint(identity.EndpointId) != null);
             AddOrUpdateCard(device);
             if (!existed)
-                SetStatus("Status_DeviceFound", device.IpString);
+                SetStatus("Status_DeviceFound", identity.EndpointLabel);
         });
     }
 
@@ -610,14 +613,14 @@ public class MainViewModel : INotifyPropertyChanged
     {
         UiInvoke(() =>
         {
-            var ip = device.IpString;
+            var identity = device.Identity;
             // Never drop a card that is currently in use.
-            if (_sessionMap.ContainsKey(ip)) return;
+            if (_sessionMap.ContainsKey(identity.EndpointId)) return;
 
-            var card = DeviceCards.FirstOrDefault(c => c.GroupKey == device.GroupKey);
+            var card = DeviceCards.FirstOrDefault(c => c.DeviceId == identity.DeviceId);
             if (card == null) return;
 
-            var ep = card.FindEndpoint(ip);
+            var ep = card.FindEndpoint(identity.EndpointId);
             if (ep == null) return;
             if (ep.IsConnected || ep.IsConnecting) return;
 
@@ -631,9 +634,10 @@ public class MainViewModel : INotifyPropertyChanged
     {
         UiInvoke(() =>
         {
-            var ep = FindEndpoint(device.IpString);
+            var identity = device.Identity;
+            var ep = FindEndpoint(identity.EndpointId);
             if (ep == null) return;
-            var card = FindCardByIp(device.IpString);
+            var card = FindCardByEndpoint(identity.EndpointId);
             if (card == null) return;
 
             if (!string.IsNullOrWhiteSpace(device.DeviceName)) card.DeviceName = device.DeviceName;
@@ -646,7 +650,7 @@ public class MainViewModel : INotifyPropertyChanged
             var mac = device.MacAddress;
             if (!device.IsUsb && !string.IsNullOrWhiteSpace(mac))
             {
-                var other = DeviceCards.FirstOrDefault(c => c != card && c.GroupKey == mac);
+                var other = DeviceCards.FirstOrDefault(c => c != card && c.DeviceId == mac);
                 if (other != null)
                 {
                     MergeCards(other, card);
@@ -676,20 +680,20 @@ public class MainViewModel : INotifyPropertyChanged
     {
         UiInvoke(() =>
         {
-            var ip = session.Device.IpString;
-            _initialConnecting.Remove(ip);
+            var identity = session.Device.Identity;
+            _initialConnecting.Remove(identity.EndpointId);
             if (!Sessions.Contains(session))
             {
                 Sessions.Add(session);
             }
-            _sessionMap[ip] = session;
+            _sessionMap[identity.EndpointId] = session;
             OnPropertyChanged(nameof(HasActiveSession));
 
             var card = AddOrUpdateCard(session.Device);
             if (!string.IsNullOrWhiteSpace(session.Device.DeviceName)) card.DeviceName = session.Device.DeviceName;
             if (!string.IsNullOrWhiteSpace(session.Device.MacAddress)) card.MacAddress = session.Device.MacAddress;
 
-            var ep = card.FindEndpoint(ip);
+            var ep = card.FindEndpoint(identity.EndpointId);
             if (ep != null)
             {
                 ep.IsConnected = true;
@@ -706,12 +710,12 @@ public class MainViewModel : INotifyPropertyChanged
         {
             Sessions.Remove(session);
             OnPropertyChanged(nameof(HasActiveSession));
-            var ip = session.Device.IpString;
-            _initialConnecting.Remove(ip);
-            _sessionMap.Remove(ip);
+            var identity = session.Device.Identity;
+            _initialConnecting.Remove(identity.EndpointId);
+            _sessionMap.Remove(identity.EndpointId);
 
-            var card = FindCardByIp(ip);
-            var ep = card?.FindEndpoint(ip);
+            var card = FindCardByEndpoint(identity.EndpointId);
+            var ep = card?.FindEndpoint(identity.EndpointId);
             if (ep != null)
             {
                 ep.IsConnected = false;
@@ -722,22 +726,22 @@ public class MainViewModel : INotifyPropertyChanged
             {
                 card.SetModeRestored(ControllerMode.Ds4);
             }
-            SetStatus("Status_DisconnectedFrom", ip);
+            SetStatus("Status_DisconnectedFrom", identity.EndpointLabel);
         });
     }
 
-    private void OnSessionConnectionLost(string ip)
+    private void OnSessionConnectionLost(DeviceIdentity identity)
     {
         UiInvoke(() =>
         {
-            var card = FindCardByIp(ip);
-            var ep = card?.FindEndpoint(ip);
+            var card = FindCardByEndpoint(identity.EndpointId);
+            var ep = card?.FindEndpoint(identity.EndpointId);
             if (ep != null)
             {
                 ep.IsConnected = false;
                 ep.IsReconnecting = true;
             }
-            SetStatus("Status_ConnectionLost", ip);
+            SetStatus("Status_ConnectionLost", identity.EndpointLabel);
         });
     }
 

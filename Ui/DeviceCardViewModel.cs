@@ -47,16 +47,14 @@ public class DeviceCardViewModel : INotifyPropertyChanged
             if (_macAddress == value) return;
             _macAddress = value;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(ModeKey));
+            OnPropertyChanged(nameof(DeviceId));
         }
     }
 
     /// <summary>Stable identity of the physical device (MAC for WiFi, adb serial
-    /// for USB). Used to look up the card as endpoints come and go.</summary>
-    public string GroupKey => Endpoints.Count > 0 ? Endpoints[0].Device.GroupKey : "";
-
-    /// <summary>Persistence key for the emulated controller type.</summary>
-    public string ModeKey => GroupKey;
+    /// for USB). Used to look up the card as endpoints come and go, and as the
+    /// persistence key for the emulated controller type.</summary>
+    public string DeviceId => Endpoints.Count > 0 ? Endpoints[0].Device.Identity.DeviceId : "";
 
     public bool HasMultipleEndpoints => Endpoints.Count > 1;
 
@@ -152,7 +150,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
 
     public DeviceEndpointViewModel AddOrUpdateEndpoint(DiscoveredDevice device)
     {
-        var existing = FindEndpoint(device.IpString);
+        var existing = FindEndpoint(device.Identity.EndpointId);
         if (existing != null) return existing;
 
         var ep = new DeviceEndpointViewModel(device);
@@ -172,8 +170,8 @@ public class DeviceCardViewModel : INotifyPropertyChanged
         RaiseGroupingChanged();
     }
 
-    public DeviceEndpointViewModel? FindEndpoint(string ip) =>
-        Endpoints.FirstOrDefault(e => e.IpAddress == ip);
+    public DeviceEndpointViewModel? FindEndpoint(string endpointId) =>
+        Endpoints.FirstOrDefault(e => e.Endpoint == endpointId);
 
     private void OnEndpointPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -187,7 +185,7 @@ public class DeviceCardViewModel : INotifyPropertyChanged
 
     private void RaiseGroupingChanged()
     {
-        OnPropertyChanged(nameof(ModeKey));
+        OnPropertyChanged(nameof(DeviceId));
         OnPropertyChanged(nameof(HasMultipleEndpoints));
         OnPropertyChanged(nameof(IsExpanded));
         OnPropertyChanged(nameof(IsCollapsed));
