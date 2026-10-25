@@ -19,6 +19,22 @@ dotnet publish "$RepoRoot\GKME.csproj" `
 
 if (-not $?) { throw "dotnet publish failed" }
 
+# ---------- step 1.2: strip stray VCS metadata from publish\web ----------
+# Older GKME.csproj versions copied the whole GKME-Web repository (including
+# .git) into web\, and `PreserveNewest` never deletes leftovers. Remove them
+# explicitly so a stale checkout can never end up in the installer again.
+$WebPublishDir = Join-Path $PublishDir 'web'
+if (Test-Path -LiteralPath $WebPublishDir) {
+    Write-Host "=== Stripping repository metadata from publish\web ==="
+    foreach ($Junk in @('.git', '.github', '.vscode', '.idea', '.gitignore', '.gitattributes')) {
+        $JunkPath = Join-Path $WebPublishDir $Junk
+        if (Test-Path -LiteralPath $JunkPath) {
+            Remove-Item -LiteralPath $JunkPath -Recurse -Force
+            Write-Host "Removed $Junk"
+        }
+    }
+}
+
 # ---------- step 1.5: read version from project ----------
 Write-Host "=== Reading version from GKME.csproj ==="
 $csprojContent = Get-Content "$RepoRoot\GKME.csproj" -Raw

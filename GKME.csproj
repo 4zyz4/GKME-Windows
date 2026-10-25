@@ -115,10 +115,12 @@
 
   <!-- The browser-based controller app (GKME-Web) is bundled into the output
        under `web\` and served by the embedded WebServer. It lives in a sibling
-       repository directory. -->
+       repository directory, so only the site itself may be copied: repository
+       metadata (.git/.github/...) and docs must never reach the output or the
+       installer. -->
   <ItemGroup Condition="Exists('..\GKME-Web\index.html')">
     <Content Include="..\GKME-Web\**\*"
-             Exclude="..\GKME-Web\**\*.md;..\GKME-Web\**\*.md">
+             Exclude="..\GKME-Web\.git\**;..\GKME-Web\.github\**;..\GKME-Web\.vscode\**;..\GKME-Web\.idea\**;..\GKME-Web\.gitignore;..\GKME-Web\.gitattributes;..\GKME-Web\**\*.md;..\GKME-Web\**\Thumbs.db;..\GKME-Web\**\.DS_Store">
       <Link>web\%(RecursiveDir)%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
