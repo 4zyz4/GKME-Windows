@@ -63,6 +63,11 @@ public class NetworkService : IDisposable
         _intake = new SessionIntake(CreateSession, () => RebootRequired);
         _intake.SessionStarted += s => OnSessionStarted?.Invoke(s);
         _intake.SessionEnded += s => OnSessionEnded?.Invoke(s);
+        // A browser client has no broadcast that can expire, so its card is
+        // dropped when its session ends. Ordered after the forward above so
+        // listeners see the session gone (and the endpoint free) before the
+        // device is unpublished.
+        _intake.SessionEnded += s => { if (s.Device.IsWeb) OnDeviceLost?.Invoke(s.Device); };
         _intake.SessionConnectionLost += identity => OnSessionConnectionLost?.Invoke(identity);
         _intake.DeviceInfoUpdated += d => OnDeviceInfoUpdated?.Invoke(d);
         _intake.RebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
@@ -626,19 +631,23 @@ public class NetworkService : IDisposable
     }
 
     /// <summary>Creates a session for a browser client served by the embedded
-    /// GKME-Web server. Mirrors the WiFi connect path, but the transport is a
+    /// HTTP host. Mirrors the WiFi connect path, but the transport is a
     /// WebSocket bridge instead of UDP: <paramref name="sendToBrowser"/> is the
     /// session's downlink (ServerToClient messages), while the caller feeds the
-    /// browser's Hello / GamepadInput into the returned session.</summary>
-    public Task<GamepadSession?> ConnectWebAsync(DiscoveredDevice device, Func<IMessage, Task> sendToBrowser)
-        => _intake.ConnectAsync(device, new WebSessionTransport(sendToBrowser));
-
-    /// <summary>Publishes a web client as a discovered device so the desktop UI
-    /// shows a card for it (the browser is never seen via UDP broadcast).</summary>
-    public void AnnounceDevice(DiscoveredDevice device) => OnDeviceDiscovered?.Invoke(device);
-
-    /// <summary>Marks a web client as gone so its card is dropped.</summary>
-    public void AnnounceDeviceLost(DiscoveredDevice device) => OnDeviceLost?.Invoke(device);
+    /// browser's Hello / GamepadInput into the returned session.
+    ///
+    /// <para>The browser is published as a discovered device (that is what puts
+    /// a card on the desktop) and unpublished if the connect fails; both are
+    /// consequences of this call rather than an API the caller has to drive.
+    /// A browser has no broadcast that can expire, so a successful session is
+    /// unpublished when it ends — see the constructor.</para></summary>
+    public async Task<GamepadSession?> ConnectWebAsync(DiscoveredDevice device, Func<IMessage, Task> sendToBrowser)
+    {
+        OnDeviceDiscovered?.Invoke(device);
+        var session = await _intake.ConnectAsync(device, new WebSessionTransport(sendToBrowser));
+        if (session == null) OnDeviceLost?.Invoke(device);
+        return session;
+    }
 
     /// <summary>Connects to a phone over USB/ADB. Sets up a `tcp:0 -> tcp:37284`
     /// forward and opens a TCP connection to the assigned loopback port; the

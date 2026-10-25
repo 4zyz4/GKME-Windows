@@ -3,7 +3,7 @@ using Google.Protobuf;
 namespace GKME.Core.Transport;
 
 /// <summary>Browser transport: the downlink writes a WebSocket frame back to the
-/// browser; the browser's frames are pushed in by <see cref="Web.WebServer"/>,
+/// browser; the browser's frames are pushed in by <see cref="Web.BrowserBridge"/>,
 /// which owns the socket. Nothing to open or close per session here either.</summary>
 public sealed class WebSessionTransport : ISessionTransport
 {

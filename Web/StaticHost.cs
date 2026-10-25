@@ -4,37 +4,59 @@ using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Net.WebSockets;
-using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using GamepadEmu.Protocol;
 using GKME.Core;
 using GKME.Localization;
-using Google.Protobuf;
 
 namespace GKME.Web;
 
 /// <summary>
-/// Embedded HTTP + WebSocket server that hosts the GKME-Web controller app
-/// and bridges browser input to a <see cref="GamepadSession"/>.
+/// The one seam between the HTTP host and the browser bridge.
+/// <see cref="StaticHost"/> stops being an HTTP server at this point: it hands
+/// over the connection, the parsed request that asked for it and the peer
+/// address, and whoever implements this owns the socket until it closes.
 ///
-/// <para>The browser speaks the exact same protobuf protocol as the Android
-/// client; only the framing differs. Each WebSocket binary frame is
-/// <c>[1 byte type][protobuf payload]</c> — the same type constants used by the
-/// UDP transport (<see cref="NetworkService.TypeClientToServer"/> /
-/// <see cref="NetworkService.TypeGamepadInput"/> uplink,
-/// <see cref="NetworkService.TypeServerToClient"/> downlink).</para>
+/// Nothing about HTTP crosses this seam, and nothing about WebSocket framing
+/// crosses back — which is what lets each side be reasoned about (and tested)
+/// on its own.
 /// </summary>
-public sealed class WebServer : IDisposable
+public interface IBrowserSocketHandler
+{
+    Task HandleAsync(Stream stream, HttpRequest request, IPAddress peer, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// The embedded HTTP/1.1 host: it accepts connections, keeps them alive across
+/// requests, serves the GKME-Web front end from disk, and routes the WebSocket
+/// upgrade to a <see cref="IBrowserSocketHandler"/>.
+///
+/// It knows nothing about gamepads or the protobuf protocol — that starts on the
+/// other side of the seam, in <see cref="BrowserBridge"/>.
+/// </summary>
+public sealed class StaticHost : IDisposable
 {
     public const int HttpPort = 37285;
 
-    private readonly NetworkService _service;
+    private readonly IBrowserSocketHandler _browser;
+    private readonly string? _webRootOverride;
+    private readonly int _port;
     private readonly CancellationTokenSource _cts = new();
     private TcpListener? _httpListener;
     private bool _disposed;
+
+    /// <param name="browser">Who takes the socket after a <c>/ws</c> upgrade.</param>
+    /// <param name="webRoot">Directory to serve; when null the usual locations
+    /// next to the executable (and the dev layout) are probed.</param>
+    /// <param name="port">Listening port; defaults to the advertised
+    /// <see cref="HttpPort"/>. Overridable so a host can be exercised on its own.</param>
+    public StaticHost(IBrowserSocketHandler browser, string? webRoot = null, int port = HttpPort)
+    {
+        _browser = browser;
+        _webRootOverride = webRoot;
+        _port = port;
+    }
 
     public string? WebRoot { get; private set; }
     public bool Running { get; private set; }
@@ -43,17 +65,14 @@ public sealed class WebServer : IDisposable
     /// <summary>Raised with the primary LAN URL (http) once the server is up.</summary>
     public event Action<string>? OnStarted;
 
-    public WebServer(NetworkService service)
-    {
-        _service = service;
-    }
-
     public void Start()
     {
         if (Running) return;
         try
         {
-            WebRoot = ResolveWebRoot() ?? throw new DirectoryNotFoundException(Localizer.Instance.Get("Web_FolderNotFound"));
+            WebRoot = _webRootOverride
+                ?? ResolveWebRoot()
+                ?? throw new DirectoryNotFoundException(Localizer.Instance.Get("Web_FolderNotFound"));
         }
         catch (Exception ex)
         {
@@ -63,13 +82,13 @@ public sealed class WebServer : IDisposable
 
         try
         {
-            _httpListener = new TcpListener(IPAddress.Any, HttpPort);
+            _httpListener = new TcpListener(IPAddress.Any, _port);
             _httpListener.Start();
             _ = Task.Run(() => AcceptLoopAsync(_httpListener));
         }
         catch (Exception ex)
         {
-            LastError = Localizer.Instance.Format("Web_PortUnavailable", HttpPort, ex.Message);
+            LastError = Localizer.Instance.Format("Web_PortUnavailable", _port, ex.Message);
             _httpListener = null;
         }
 
@@ -145,15 +164,16 @@ public sealed class WebServer : IDisposable
                 var req = HttpRequest.Parse(header);
                 if (req == null || !string.Equals(req.Method, "GET", StringComparison.OrdinalIgnoreCase))
                 {
-                    await WriteResponseAsync(stream, 405, "Method Not Allowed", "text/plain",
+                    await HttpResponse.WriteAsync(stream, 405, "Method Not Allowed", "text/plain",
                         Encoding.UTF8.GetBytes("Only GET is supported."));
                     break;
                 }
 
                 if (string.Equals(req.Path, "/ws", StringComparison.OrdinalIgnoreCase))
                 {
-                    await HandleWebSocketAsync(stream, req, clientAddress);
-                    return; // the stream now belongs to the WebSocket
+                    // The bridge owns the socket from here on.
+                    await _browser.HandleAsync(stream, req, clientAddress, _cts.Token);
+                    return;
                 }
 
                 await ServeStaticAsync(stream, req);
@@ -177,139 +197,6 @@ public sealed class WebServer : IDisposable
         {
             try { stream?.Dispose(); } catch { }
             try { client.Close(); } catch { }
-        }
-    }
-
-    // ────────────────────────── WebSocket bridge ──────────────────────────
-
-    private async Task HandleWebSocketAsync(Stream stream, HttpRequest req, IPAddress clientAddress)
-    {
-        if (!req.Headers.TryGetValue("sec-websocket-key", out var key) || string.IsNullOrEmpty(key))
-        {
-            await WriteResponseAsync(stream, 400, "Bad Request", "text/plain",
-                Encoding.UTF8.GetBytes("Missing Sec-WebSocket-Key."));
-            return;
-        }
-
-        var accept = Convert.ToBase64String(
-            SHA1.HashData(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
-
-        var sb = new StringBuilder();
-        sb.Append("HTTP/1.1 101 Switching Protocols\r\n");
-        sb.Append("Upgrade: websocket\r\n");
-        sb.Append("Connection: Upgrade\r\n");
-        sb.Append("Sec-WebSocket-Accept: ").Append(accept).Append("\r\n\r\n");
-        var handshake = Encoding.ASCII.GetBytes(sb.ToString());
-        await stream.WriteAsync(handshake, _cts.Token);
-        await stream.FlushAsync(_cts.Token);
-
-        using var ws = WebSocket.CreateFromStream(stream, isServer: true, subProtocol: null,
-            keepAliveInterval: TimeSpan.FromSeconds(20));
-
-        req.Query.TryGetValue("id", out var clientId);
-        req.Query.TryGetValue("name", out var clientName);
-        if (string.IsNullOrWhiteSpace(clientId)) clientId = Guid.NewGuid().ToString("N");
-        if (string.IsNullOrWhiteSpace(clientName)) clientName = Localizer.Instance.Get("Web_ClientName");
-
-        var device = new DiscoveredDevice
-        {
-            DeviceName = clientName!,
-            MacAddress = clientId!,
-            IpAddress = clientAddress,
-            IsWeb = true,
-        };
-
-        var sendLock = new SemaphoreSlim(1, 1);
-
-        Task SendToBrowser(IMessage msg) => SendFrameAsync(ws, sendLock, NetworkService.TypeServerToClient, msg.ToByteArray());
-
-        _service.AnnounceDevice(device);
-        var session = await _service.ConnectWebAsync(device, SendToBrowser);
-
-        if (session == null)
-        {
-            try { await ws.CloseAsync(WebSocketCloseStatus.InternalServerError, "connect failed", _cts.Token); } catch { }
-            _service.AnnounceDeviceLost(device);
-            return;
-        }
-
-        try
-        {
-            using var acc = new MemoryStream();
-            var buf = new byte[65536];
-            while (ws.State == WebSocketState.Open && !_cts.IsCancellationRequested)
-            {
-                WebSocketReceiveResult result;
-                try
-                {
-                    result = await ws.ReceiveAsync(new ArraySegment<byte>(buf), _cts.Token);
-                }
-                catch (OperationCanceledException) { break; }
-                catch (WebSocketException) { break; }
-
-                if (result.MessageType == WebSocketMessageType.Close) break;
-                if (result.MessageType != WebSocketMessageType.Binary) continue;
-
-                acc.Write(buf, 0, result.Count);
-                if (!result.EndOfMessage) continue;
-
-                var frame = acc.ToArray();
-                acc.SetLength(0);
-                if (frame.Length < 1) continue;
-
-                byte type = frame[0];
-                var payload = new byte[frame.Length - 1];
-                if (payload.Length > 0) Buffer.BlockCopy(frame, 1, payload, 0, payload.Length);
-
-                try
-                {
-                    switch (type)
-                    {
-                        case NetworkService.TypeClientToServer:
-                            session.HandleClientToServer(ClientToServer.Parser.ParseFrom(payload));
-                            break;
-                        case NetworkService.TypeGamepadInput:
-                            session.ReportGamepadInput(GamepadInput.Parser.ParseFrom(payload));
-                            break;
-                    }
-                }
-                catch
-                {
-                    // Malformed frame — drop it; the connection stays alive.
-                }
-            }
-        }
-        catch { }
-        finally
-        {
-            try { session.Disconnect(); } catch { }
-            _service.AnnounceDeviceLost(device);
-            try
-            {
-                if (ws.State == WebSocketState.Open)
-                    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
-            }
-            catch { }
-        }
-    }
-
-    private static async Task SendFrameAsync(WebSocket ws, SemaphoreSlim sendLock, byte type, byte[] payload)
-    {
-        if (ws.State != WebSocketState.Open) return;
-        var frame = new byte[payload.Length + 1];
-        frame[0] = type;
-        if (payload.Length > 0) Buffer.BlockCopy(payload, 0, frame, 1, payload.Length);
-
-        await sendLock.WaitAsync();
-        try
-        {
-            if (ws.State == WebSocketState.Open)
-                await ws.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Binary, true, CancellationToken.None);
-        }
-        catch { }
-        finally
-        {
-            sendLock.Release();
         }
     }
 
@@ -352,7 +239,7 @@ public sealed class WebServer : IDisposable
         var rootFull = Path.GetFullPath(root);
         if (!full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
         {
-            await WriteResponseAsync(stream, 403, "Forbidden", "text/plain",
+            await HttpResponse.WriteAsync(stream, 403, "Forbidden", "text/plain",
                 Encoding.UTF8.GetBytes("Forbidden."));
             return;
         }
@@ -368,7 +255,7 @@ public sealed class WebServer : IDisposable
                 full = fallback;
             else
             {
-                await WriteResponseAsync(stream, 404, "Not Found", "text/plain",
+                await HttpResponse.WriteAsync(stream, 404, "Not Found", "text/plain",
                     Encoding.UTF8.GetBytes("Not found: " + path));
                 return;
             }
@@ -378,7 +265,7 @@ public sealed class WebServer : IDisposable
         try { bytes = await File.ReadAllBytesAsync(full, _cts.Token); }
         catch
         {
-            await WriteResponseAsync(stream, 500, "Internal Server Error", "text/plain",
+            await HttpResponse.WriteAsync(stream, 500, "Internal Server Error", "text/plain",
                 Encoding.UTF8.GetBytes("Read error."));
             return;
         }
@@ -389,24 +276,7 @@ public sealed class WebServer : IDisposable
         // update is picked up without a manual hard-refresh.
         var cacheable = ext is ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp"
             or ".svg" or ".ico" or ".woff" or ".woff2" or ".ttf";
-        await WriteResponseAsync(stream, 200, "OK", mime, bytes, cache: cacheable);
-    }
-
-    private static async Task WriteResponseAsync(Stream stream, int status, string reason,
-        string contentType, byte[] body, bool cache = false)
-    {
-        var header = new StringBuilder();
-        header.Append("HTTP/1.1 ").Append(status).Append(' ').Append(reason).Append("\r\n");
-        header.Append("Content-Type: ").Append(contentType).Append("\r\n");
-        header.Append("Content-Length: ").Append(body.Length).Append("\r\n");
-        header.Append("Cache-Control: ").Append(cache ? "public, max-age=3600" : "no-cache").Append("\r\n");
-        header.Append("Connection: keep-alive\r\n");
-        header.Append("\r\n");
-
-        var headerBytes = Encoding.ASCII.GetBytes(header.ToString());
-        await stream.WriteAsync(headerBytes);
-        if (body.Length > 0) await stream.WriteAsync(body);
-        await stream.FlushAsync();
+        await HttpResponse.WriteAsync(stream, 200, "OK", mime, bytes, cache: cacheable);
     }
 
     // ────────────────────────── HTTP parsing ──────────────────────────
@@ -425,57 +295,7 @@ public sealed class WebServer : IDisposable
         return null;
     }
 
-    private sealed class HttpRequest
-    {
-        public string Method = "";
-        public string Path = "";
-        public string QueryString = "";
-        public Dictionary<string, string> Headers = new(StringComparer.OrdinalIgnoreCase);
-        public Dictionary<string, string> Query = new(StringComparer.OrdinalIgnoreCase);
-
-        public static HttpRequest? Parse(string header)
-        {
-            var lines = header.Split("\r\n");
-            if (lines.Length == 0) return null;
-            var requestLine = lines[0].Split(' ');
-            if (requestLine.Length < 2) return null;
-
-            var req = new HttpRequest { Method = requestLine[0] };
-            var target = requestLine[1];
-            int q = target.IndexOf('?');
-            if (q >= 0)
-            {
-                req.Path = target.Substring(0, q);
-                req.QueryString = target.Substring(q + 1);
-                foreach (var pair in req.QueryString.Split('&', StringSplitOptions.RemoveEmptyEntries))
-                {
-                    var kv = pair.Split('=', 2);
-                    var k = Uri.UnescapeDataString(kv[0]);
-                    var v = kv.Length > 1 ? Uri.UnescapeDataString(kv[1]) : "";
-                    req.Query[k] = v;
-                }
-            }
-            else
-            {
-                req.Path = target;
-            }
-
-            for (int i = 1; i < lines.Length; i++)
-            {
-                var line = lines[i];
-                if (line.Length == 0) break;
-                int colon = line.IndexOf(':');
-                if (colon <= 0) continue;
-                var k = line.Substring(0, colon).Trim();
-                var v = line.Substring(colon + 1).Trim();
-                req.Headers[k] = v;
-            }
-
-            return req;
-        }
-    }
-
-    // ────────────────────────── Paths & certificate ──────────────────────────
+    // ────────────────────────── Paths ──────────────────────────
 
     private static string? ResolveWebRoot()
     {

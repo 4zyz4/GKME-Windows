@@ -64,14 +64,14 @@ public sealed class WebAccess : INotifyPropertyChanged
     public bool HasUrl => !string.IsNullOrEmpty(_url);
 
     /// <summary>Populates the interface list and selects a sensible default.
-    /// Called once the embedded web server is up.</summary>
+    /// Called once the embedded HTTP host is up.</summary>
     public void Configure()
     {
         Interfaces.Clear();
-        foreach (var nic in WebServer.EnumerateLanInterfaces())
+        foreach (var nic in StaticHost.EnumerateLanInterfaces())
             Interfaces.Add(nic);
 
-        var primary = WebServer.GetPrimaryLanAddress();
+        var primary = StaticHost.GetPrimaryLanAddress();
         _selected = Interfaces.FirstOrDefault(i => i.Address == primary) ?? Interfaces.FirstOrDefault();
         OnPropertyChanged(nameof(Selected));
         Update();
@@ -88,9 +88,9 @@ public sealed class WebAccess : INotifyPropertyChanged
             return;
         }
 
-        var url = WebServer.BuildUrl(address);
+        var url = StaticHost.BuildUrl(address);
         Url = url;
-        Host = $"http://{address}:{WebServer.HttpPort}";
+        Host = $"http://{address}:{StaticHost.HttpPort}";
         try { QrCode = QrCodeImage.Render(url); }
         catch { QrCode = null; }
     }

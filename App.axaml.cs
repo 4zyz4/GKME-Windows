@@ -26,7 +26,7 @@ namespace GKME;
 public partial class App : Application
 {
     private NetworkService? _service;
-    private WebServer? _webServer;
+    private StaticHost? _webHost;
     private Window? _mainWindow;
     private bool _showingWindow;
     private NativeMenuItem? _trayShowItem;
@@ -174,29 +174,29 @@ public partial class App : Application
         }
     }
 
-    /// <summary>Starts the embedded GKME-Web server that hosts the browser-based
-    /// controller and bridges it to a virtual gamepad session.</summary>
+    /// <summary>Starts the embedded HTTP host that serves GKME-Web and bridges
+    /// the browser to a virtual gamepad session.</summary>
     private void StartWebServer(MainViewModel vm)
     {
         if (_service == null) return;
         try
         {
-            _webServer = new WebServer(_service);
-            _webServer.Start();
-            if (_webServer.Running)
+            _webHost = new StaticHost(new BrowserBridge(_service));
+            _webHost.Start();
+            if (_webHost.Running)
             {
                 vm.ConfigureWeb();
             }
             else
             {
-                if (!string.IsNullOrEmpty(_webServer.LastError))
-                    vm.SetWebServerError(_webServer.LastError);
+                if (!string.IsNullOrEmpty(_webHost.LastError))
+                    vm.SetWebServerError(_webHost.LastError);
             }
         }
         catch
         {
-            _webServer?.Dispose();
-            _webServer = null;
+            _webHost?.Dispose();
+            _webHost = null;
         }
     }
 
@@ -244,8 +244,8 @@ public partial class App : Application
 
     private async Task SafeExitAsync()
     {
-        try { _webServer?.Dispose(); } catch { }
-        _webServer = null;
+        try { _webHost?.Dispose(); } catch { }
+        _webHost = null;
 
         if (_mainWindow is MainWindow mw)
         {
