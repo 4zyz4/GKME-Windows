@@ -1,134 +1,109 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Globalization;
+using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
-using Avalonia;
-using Avalonia.Controls;
-using Avalonia.Controls.ApplicationLifetimes;
-using Avalonia.Input.Platform;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
-using GamepadEmu.Protocol;
 using GKME.Core;
 using GKME.Localization;
-using GKME.Web;
-using GKMD.Internal.Usbip;
 
 namespace GKME.Ui;
 
+/// <summary>
+/// The window's bindings, and nothing else. The device board (cards, endpoints,
+/// session ledger, grouping/merge) lives in <see cref="DeviceBoard"/>, the
+/// advertised web address in <see cref="WebAccess"/>, and the dialogs in the
+/// shell (<see cref="MainWindow"/>). This type forwards network events into the
+/// board, republishes its signals as bindings, and keeps the status line.
+/// </summary>
 public class MainViewModel : INotifyPropertyChanged
 {
     private readonly NetworkService? _network;
-    private readonly DeviceModeStore _modeStore = null!;
+    private readonly DeviceBoard _board;
+    private readonly WebAccess _web = new();
     private string _statusText = "";
     private string? _statusKey = "Status_Ready";
     private object[] _statusArgs = System.Array.Empty<object>();
     private bool _driverOk;
     private string _manualIp = "";
-    private string _webUrl = "";
-    private string _webHost = "";
-    private Bitmap? _webQrCode;
-    private LanInterfaceInfo? _selectedWebInterface;
-    private readonly Dictionary<string, GamepadSession> _sessionMap = new();
-    private readonly HashSet<string> _initialConnecting = new();
-    private int _rebootPromptShown;
-    private int _usbipInstallPromptShown;
 
-    public ObservableCollection<DeviceCardViewModel> DeviceCards { get; } = new();
-    public ObservableCollection<GamepadSession> Sessions { get; } = new();
+    /// <summary>Raised when the shell should show the reboot prompt.</summary>
+    public event Action? RebootRequired;
+    /// <summary>Raised when the shell should show the USBip install prompt.</summary>
+    public event Action? UsbipInstallRequired;
+    /// <summary>Raised when discovery failed because another instance holds the port.</summary>
+    public event Action? AlreadyRunning;
 
-    public bool HasActiveSession => Sessions.Count > 0;
+    public MainViewModel(NetworkService? network)
+    {
+        _network = network;
+        _board = new DeviceBoard(network, new DeviceModeStore());
+        _board.Changed += () => OnPropertyChanged(nameof(HasActiveSession));
+        _board.Status += SetStatus;
+        _web.PropertyChanged += (_, e) => OnPropertyChanged(e.PropertyName switch
+        {
+            nameof(WebAccess.Selected) => nameof(SelectedWebInterface),
+            nameof(WebAccess.Host) => nameof(WebHost),
+            nameof(WebAccess.QrCode) => nameof(WebQrCode),
+            nameof(WebAccess.HasUrl) => nameof(HasWebUrl),
+            var other => other,
+        });
+
+        SetStatus("Status_Ready");
+
+        if (_network == null)
+        {
+            _driverOk = false;
+            SetStatus("Status_DriverCreateFailed");
+            return;
+        }
+
+        _driverOk = true;
+        if (!_network.HidMaestroAvailable)
+            SetStatus("Status_HidMaestroUnavailable");
+
+        _network.OnDeviceDiscovered += OnDeviceDiscovered;
+        _network.OnDeviceLost += OnDeviceLost;
+        _network.OnDeviceInfoUpdated += OnDeviceInfoUpdated;
+        _network.OnSessionStarted += OnSessionStarted;
+        _network.OnSessionEnded += OnSessionEnded;
+        _network.OnSessionConnectionLost += OnSessionConnectionLost;
+        _network.OnRebootRequired += OnRebootRequired;
+        _network.OnUsbipInstallRequired += OnUsbipInstallRequired;
+    }
+
+    // ----- device board bindings ------------------------------------------
+
+    public ObservableCollection<DeviceCardViewModel> DeviceCards => _board.Cards;
+    public ObservableCollection<GamepadSession> Sessions => _board.Sessions;
+    public bool HasActiveSession => _board.HasActiveSession;
+
+    // ----- web entry bindings ---------------------------------------------
 
     /// <summary>List of usable LAN interfaces for the web controller.</summary>
-    public ObservableCollection<LanInterfaceInfo> WebInterfaces { get; } = new();
+    public ObservableCollection<LanInterfaceInfo> WebInterfaces => _web.Interfaces;
 
     /// <summary>Selected interface; drives the advertised URL and QR code.</summary>
     public LanInterfaceInfo? SelectedWebInterface
     {
-        get => _selectedWebInterface;
-        set
-        {
-            if (ReferenceEquals(_selectedWebInterface, value)) return;
-            _selectedWebInterface = value;
-            OnPropertyChanged();
-            UpdateWebFromSelection();
-        }
-    }
-
-    /// <summary>LAN URL of the embedded web controller (HTTP).</summary>
-    public string WebUrl
-    {
-        get => _webUrl;
-        private set
-        {
-            _webUrl = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(HasWebUrl));
-        }
+        get => _web.Selected;
+        set => _web.Selected = value;
     }
 
     /// <summary>Current advertised host, e.g. "http://192.168.1.5:37285".</summary>
-    public string WebHost
-    {
-        get => _webHost;
-        private set { _webHost = value; OnPropertyChanged(); }
-    }
+    public string WebHost => _web.Host;
 
     /// <summary>QR code pointing at <see cref="WebUrl"/>.</summary>
-    public Bitmap? WebQrCode
-    {
-        get => _webQrCode;
-        private set { _webQrCode = value; OnPropertyChanged(); }
-    }
+    public Bitmap? WebQrCode => _web.QrCode;
 
-    public bool HasWebUrl => !string.IsNullOrEmpty(_webUrl);
+    public bool HasWebUrl => _web.HasUrl;
 
     /// <summary>Populates the interface list and selects a sensible default.
     /// Called once the embedded web server is up.</summary>
-    public void ConfigureWeb()
-    {
-        WebInterfaces.Clear();
-        foreach (var nic in WebServer.EnumerateLanInterfaces())
-            WebInterfaces.Add(nic);
+    public void ConfigureWeb() => _web.Configure();
 
-        var primary = WebServer.GetPrimaryLanAddress();
-        _selectedWebInterface = WebInterfaces.FirstOrDefault(i => i.Address == primary)
-            ?? WebInterfaces.FirstOrDefault();
-        OnPropertyChanged(nameof(SelectedWebInterface));
-        UpdateWebFromSelection();
-    }
-
-    private void UpdateWebFromSelection()
-    {
-        var address = _selectedWebInterface?.Address;
-        if (string.IsNullOrEmpty(address))
-        {
-            WebUrl = "";
-            WebHost = "";
-            WebQrCode = null;
-            return;
-        }
-
-        var url = WebServer.BuildUrl(address);
-        WebUrl = url;
-        WebHost = $"http://{address}:{WebServer.HttpPort}";
-        try { WebQrCode = QrCodeImage.Render(url); }
-        catch { WebQrCode = null; }
-    }
-
-    public void CopyWebUrl()
-    {
-        var url = _webUrl;
-        if (string.IsNullOrEmpty(url)) return;
-        try
-        {
-            var owner = MainWindow.Instance;
-            if (owner != null)
-                _ = owner.Clipboard?.SetTextAsync(url);
-        }
-        catch { }
-    }
+    // ----- manual address / status line -----------------------------------
 
     public string ManualIp
     {
@@ -144,7 +119,7 @@ public class MainViewModel : INotifyPropertyChanged
 
     /// <summary>Updates the status line and remembers the localization key so
     /// the text can be rebuilt when the language changes.</summary>
-    private void SetStatus(string key, params object[] args)
+    public void SetStatus(string key, params object[] args)
     {
         _statusKey = key;
         _statusArgs = args;
@@ -160,126 +135,11 @@ public class MainViewModel : INotifyPropertyChanged
         if (_statusKey != null)
             StatusText = Localizer.Instance.Format(_statusKey, _statusArgs);
 
-        foreach (var card in DeviceCards)
+        foreach (var card in _board.Cards)
             card.RefreshLocalization();
     }
 
-    public MainViewModel(NetworkService? network)
-    {
-        _network = network;
-        _modeStore = new DeviceModeStore();
-        SetStatus("Status_Ready");
-
-        if (_network == null)
-        {
-            _driverOk = false;
-            SetStatus("Status_DriverCreateFailed");
-            return;
-        }
-
-        _driverOk = true;
-        if (!_network.HidMaestroAvailable)
-        {
-            SetStatus("Status_HidMaestroUnavailable");
-        }
-        _network!.SavedModeResolver = (DiscoveredDevice d) => _modeStore.Get(d.Identity.DeviceId);
-        _network.OnDeviceDiscovered += OnDeviceDiscovered;
-        _network.OnDeviceLost += OnDeviceLost;
-        _network.OnDeviceInfoUpdated += OnDeviceInfoUpdated;
-        _network.OnSessionStarted += OnSessionStarted;
-        _network.OnSessionEnded += OnSessionEnded;
-        _network.OnSessionConnectionLost += OnSessionConnectionLost;
-        _network.OnRebootRequired += OnRebootRequired;
-        _network.OnUsbipInstallRequired += OnUsbipInstallRequired;
-    }
-
-    private void OnRebootRequired()
-    {
-        if (Interlocked.Exchange(ref _rebootPromptShown, 1) != 0) return;
-        Dispatcher.UIThread.Post(ShowRebootRequiredDialog, DispatcherPriority.Background);
-    }
-
-    private void OnUsbipInstallRequired()
-    {
-        if (Interlocked.Exchange(ref _usbipInstallPromptShown, 1) != 0) return;
-        Dispatcher.UIThread.Post(ShowUsbipInstallDialog, DispatcherPriority.Background);
-    }
-
-    private void ShowUsbipInstallDialog()
-    {
-        var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
-        var owner = MainWindow.Instance ?? (lifetime?.MainWindow as Window);
-
-        bool applied = false;
-        var dlg = new UsbipInstallDialog();
-        dlg.Closed += (_, _) =>
-        {
-            // If nothing was installed (the user cancelled), allow the prompt
-            // again on a later controller attempt.
-            if (!applied) Interlocked.Exchange(ref _usbipInstallPromptShown, 0);
-        };
-        dlg.InstallRequested += async () =>
-        {
-            dlg.SetBusy();
-            dlg.SetStatus(Localizer.Instance.Get("Status_UsbipExtracting"));
-
-            UsbipInstallResult result;
-            try
-            {
-                result = await Task.Run(() => UsbipDriverInstaller.Install(
-                    s => Dispatcher.UIThread.Post(() => dlg.SetStatus(s)),
-                    interactive: true));
-            }
-            catch (Exception ex)
-            {
-                dlg.SetCompleted(Localizer.Instance.Format("Status_InstallFailed", ex.Message));
-                return;
-            }
-
-            if (result == UsbipInstallResult.Success)
-            {
-                applied = true;
-                // Refresh availability so controllers can be created without
-                // restarting GKME.
-                try { _network?.InitializeHidMaestro(); } catch { }
-                SetStatus("Status_UsbipInstalled");
-                dlg.Close();
-            }
-            else if (result == UsbipInstallResult.RebootRequired)
-            {
-                applied = true;
-                // Close the install dialog first, then raise a fresh reboot
-                // prompt. Mark the service so every later connection is
-                // refused until the machine restarts.
-                dlg.Close();
-                _network?.MarkRebootRequired();
-                OnRebootRequired();
-            }
-            else
-            {
-                dlg.SetCompleted(Localizer.Instance.Get("Status_InstallIncomplete"));
-            }
-        };
-
-        if (owner != null)
-            _ = dlg.ShowDialog(owner);
-        else
-            dlg.Show();
-    }
-
-    private void ShowRebootRequiredDialog()
-    {
-        SetStatus("Status_RebootForDriver");
-        var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
-        var owner = MainWindow.Instance ?? (lifetime?.MainWindow as Window);
-
-        var dlg = new RebootPromptDialog();
-        dlg.Closed += (_, _) => Interlocked.Exchange(ref _rebootPromptShown, 0);
-        if (owner != null)
-            _ = dlg.ShowDialog(owner);
-        else
-            dlg.Show();
-    }
+    // ----- lifecycle ------------------------------------------------------
 
     public Task<bool> InitializeAsync()
     {
@@ -308,204 +168,57 @@ public class MainViewModel : INotifyPropertyChanged
         catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse || ex.NativeErrorCode == 10048)
         {
             SetStatus("Status_AlreadyRunning");
-            Dispatcher.UIThread.Post(() => ShowAlreadyRunningDialog(), DispatcherPriority.Background);
+            UiInvoke(() => AlreadyRunning?.Invoke());
         }
     }
 
-    private void ShowAlreadyRunningDialog()
+    public async Task ShutdownAsync()
     {
-        var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
-        var owner = MainWindow.Instance ?? (lifetime?.MainWindow as Window) ?? throw new InvalidOperationException("No main window found");
-
-        var bgColor = Avalonia.Media.Color.Parse("#1E1E1E");
-        var fgColor = Avalonia.Media.Color.Parse("#E0E0E0");
-        var btnColor = Avalonia.Media.Color.Parse("#0E639C");
-
-        var textBlock = new TextBlock
-        {
-            Text = Localizer.Instance.Get("Dialog_AlreadyRunning"),
-            Margin = new Thickness(20),
-            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
-            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-            Foreground = new Avalonia.Media.SolidColorBrush(fgColor),
-            FontSize = 14
-        };
-        var btn = new Button
-        {
-            Content = Localizer.Instance.Get("Ok"),
-            Margin = new Thickness(10),
-            Background = new Avalonia.Media.SolidColorBrush(btnColor),
-            Foreground = Avalonia.Media.Brushes.White,
-            BorderThickness = new Avalonia.Thickness(0),
-            CornerRadius = new Avalonia.CornerRadius(4),
-            Padding = new Avalonia.Thickness(12, 6),
-            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
-        };
-        var panel = new StackPanel
-        {
-            Children = { textBlock, btn }
-        };
-        var dlg = new Window
-        {
-            Content = panel,
-            WindowStartupLocation = WindowStartupLocation.CenterScreen,
-            Width = 320,
-            Height = 160,
-            CanResize = false,
-            Background = new Avalonia.Media.SolidColorBrush(bgColor)
-        };
-        btn.Click += (_, _) =>
-        {
-            dlg.Close();
-            lifetime?.Shutdown();
-        };
-        dlg.ShowDialog(owner);
+        if (_network == null) return;
+        _network.OnDeviceDiscovered -= OnDeviceDiscovered;
+        _network.OnDeviceLost -= OnDeviceLost;
+        _network.OnDeviceInfoUpdated -= OnDeviceInfoUpdated;
+        _network.OnSessionStarted -= OnSessionStarted;
+        _network.OnSessionEnded -= OnSessionEnded;
+        _network.OnSessionConnectionLost -= OnSessionConnectionLost;
+        _network.OnRebootRequired -= OnRebootRequired;
+        _network.OnUsbipInstallRequired -= OnUsbipInstallRequired;
+        _network.StopDiscovery();
+        await _network.DisconnectAllAsync();
     }
 
-    public Task ConnectAsync(DeviceCardViewModel card)
-    {
-        var ep = card.ActiveEndpoint;
-        return ep == null ? Task.CompletedTask : ConnectEndpointAsync(ep);
-    }
+    // ----- connect / disconnect / mode commands ---------------------------
+
+    public Task ConnectAsync(DeviceCardViewModel card) => _board.ConnectAsync(card);
 
     public async Task ConnectEndpointAsync(DeviceEndpointViewModel ep)
     {
-        if (_network == null) return;
-
         // A reboot is pending: the USB transport cannot be used until Windows
         // reloads it, so refuse the connection and re-surface the prompt
         // instead of letting it half-establish.
-        if (_network.RebootRequired)
+        if (_network?.RebootRequired == true)
         {
             SetStatus("Status_RebootRequiredToConnect");
             OnRebootRequired();
             return;
         }
-
-        var device = ep.Device;
-        var identity = device.Identity;
-        var ip = identity.EndpointId;
-        if (_sessionMap.ContainsKey(ip)) return;
-
-        _initialConnecting.Add(ip);
-        ep.IsConnecting = true;
-        SetStatus("Status_ConnectingTo", identity.EndpointLabel);
-        var session = await _network.ConnectAsync(device);
-        if (session != null)
-        {
-            _sessionMap[ip] = session;
-            SetStatus("Status_ConnectedTo", identity.EndpointLabel);
-        }
-        else
-        {
-            _initialConnecting.Remove(ip);
-            ep.IsConnecting = false;
-            SetStatus("Status_ConnectFailed", identity.EndpointLabel);
-        }
+        await _board.ConnectEndpointAsync(ep);
     }
 
-    public Task DisconnectAsync(DeviceCardViewModel card)
-    {
-        var ep = card.ActiveEndpoint;
-        return ep == null ? Task.CompletedTask : DisconnectEndpointAsync(ep);
-    }
+    public Task DisconnectAsync(DeviceCardViewModel card) => _board.DisconnectAsync(card);
 
-    public async Task DisconnectEndpointAsync(DeviceEndpointViewModel ep)
-    {
-        var endpoint = ep.Endpoint;
-        _initialConnecting.Remove(endpoint);
-        if (_sessionMap.TryGetValue(endpoint, out var session))
-        {
-            if (_network != null)
-            {
-                await _network.SendDisconnectAsync(session.Device);
-            }
-            else
-            {
-                session.Disconnect();
-            }
-            _sessionMap.Remove(endpoint);
-        }
-        ep.IsConnected = false;
-        ep.IsConnecting = false;
-        ep.IsReconnecting = false;
-    }
+    public Task DisconnectEndpointAsync(DeviceEndpointViewModel ep) => _board.DisconnectEndpointAsync(ep);
 
-    public async Task DisconnectAllAsync()
-    {
-        if (_network != null)
-            await _network.DisconnectAllAsync();
+    public Task DisconnectAllAsync() => _board.DisconnectAllAsync();
 
-        Sessions.Clear();
-        _sessionMap.Clear();
-        _initialConnecting.Clear();
-        OnPropertyChanged(nameof(HasActiveSession));
-
-        foreach (var card in DeviceCards)
-        {
-            foreach (var ep in card.Endpoints)
-            {
-                ep.IsConnected = false;
-                ep.IsConnecting = false;
-                ep.IsReconnecting = false;
-            }
-        }
-
-        SetStatus("Status_AllDisconnected");
-    }
-
-    public async Task SetModeAsync(DeviceCardViewModel card, ControllerMode mode)
-    {
-        var ep = card.ActiveEndpoint;
-        if (ep == null) return;
-        var endpoint = ep.Endpoint;
-
-        if (_sessionMap.TryGetValue(endpoint, out var session))
-        {
-            ControllerMode actualMode = await session.SetControllerModeAsync(mode);
-            card.Mode = actualMode;
-            _modeStore.Set(card.DeviceId, actualMode);
-            if (actualMode != mode)
-            {
-                SetStatus("Status_ModeFallback");
-            }
-        }
-        else
-        {
-            card.Mode = mode;
-            _modeStore.Set(card.DeviceId, mode);
-        }
-    }
+    public Task SetModeAsync(DeviceCardViewModel card, ControllerMode mode) => _board.SetModeAsync(card, mode);
 
     public void Refresh()
     {
         if (_network == null) return;
         SetStatus("Status_Refreshing");
         _network.Refresh();
-
-        DeviceCards.Clear();
-        Sessions.Clear();
-        _sessionMap.Clear();
-        _initialConnecting.Clear();
-
-        foreach (var session in _network.ActiveSessions)
-        {
-            Sessions.Add(session);
-            _sessionMap[session.Device.Identity.EndpointId] = session;
-        }
-
-        foreach (var device in _network.DiscoveredDevices)
-        {
-            AddOrUpdateCard(device);
-        }
-
-        foreach (var (endpointId, _) in _sessionMap)
-        {
-            var ep = FindEndpoint(endpointId);
-            if (ep != null) ep.IsConnected = true;
-        }
-
-        OnPropertyChanged(nameof(HasActiveSession));
+        _board.Refresh();
         SetStatus("Status_Scanning");
     }
 
@@ -527,7 +240,7 @@ public class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        if (!System.Net.IPAddress.TryParse(ip, out var addr))
+        if (!IPAddress.TryParse(ip, out var addr))
         {
             SetStatus("Status_InvalidIp");
             return;
@@ -535,215 +248,41 @@ public class MainViewModel : INotifyPropertyChanged
 
         var manual = new DiscoveredDevice { IpAddress = addr };
         var endpointId = manual.Identity.EndpointId;
-        if (_sessionMap.ContainsKey(endpointId))
+        if (_board.IsConnected(endpointId))
         {
             SetStatus("Status_AlreadyConnectedTo", ip);
             return;
         }
 
-        var existing = FindEndpoint(endpointId);
-        DeviceEndpointViewModel ep;
-        if (existing != null)
-        {
-            ep = existing;
-        }
-        else
-        {
-            var card = new DeviceCardViewModel(manual);
-            ApplySavedMode(card);
-            DeviceCards.Add(card);
-            ep = card.Endpoints[0];
-        }
-
+        var ep = _board.FindEndpoint(endpointId) ?? _board.AddManualCard(manual).Endpoints[0];
         await ConnectEndpointAsync(ep);
     }
 
-    private void ApplySavedMode(DeviceCardViewModel card)
+    // ----- USBip install / reboot hooks used by the shell -----------------
+
+    /// <summary>Re-initialises the emulated-controller engine after a successful
+    /// USBip install so controllers work without restarting GKME.</summary>
+    public void AfterUsbipInstalled()
     {
-        var saved = _modeStore.Get(card.DeviceId);
-        if (saved != null)
-            card.Mode = saved.Value;
+        try { _network?.InitializeHidMaestro(); } catch { }
+        SetStatus("Status_UsbipInstalled");
     }
 
-    private DeviceCardViewModel AddOrUpdateCard(DiscoveredDevice device)
-    {
-        var key = device.Identity.DeviceId;
-        var card = DeviceCards.FirstOrDefault(c => c.DeviceId == key);
-        if (card == null)
-        {
-            card = new DeviceCardViewModel(device);
-            ApplySavedMode(card);
-            DeviceCards.Add(card);
-        }
-        else
-        {
-            card.AddOrUpdateEndpoint(device);
-            if (!string.IsNullOrWhiteSpace(device.DeviceName)) card.DeviceName = device.DeviceName;
-            if (!string.IsNullOrWhiteSpace(device.MacAddress)) card.MacAddress = device.MacAddress;
-        }
-        return card;
-    }
+    /// <summary>Marks a reboot as required (set by the shell after an install
+    /// that needs a restart), so every later connection is refused.</summary>
+    public void MarkRebootRequired() => _network?.MarkRebootRequired();
 
-    private DeviceEndpointViewModel? FindEndpoint(string endpointId)
-    {
-        foreach (var card in DeviceCards)
-        {
-            var ep = card.FindEndpoint(endpointId);
-            if (ep != null) return ep;
-        }
-        return null;
-    }
+    // ----- network events -------------------------------------------------
 
-    private DeviceCardViewModel? FindCardByEndpoint(string endpointId) =>
-        DeviceCards.FirstOrDefault(c => c.FindEndpoint(endpointId) != null);
+    private void OnDeviceDiscovered(DiscoveredDevice device) => UiInvoke(() => _board.OnDeviceDiscovered(device));
+    private void OnDeviceLost(DiscoveredDevice device) => UiInvoke(() => _board.OnDeviceLost(device));
+    private void OnDeviceInfoUpdated(DiscoveredDevice device) => UiInvoke(() => _board.OnDeviceInfoUpdated(device));
+    private void OnSessionStarted(GamepadSession session) => UiInvoke(() => _board.OnSessionStarted(session));
+    private void OnSessionEnded(GamepadSession session) => UiInvoke(() => _board.OnSessionEnded(session));
+    private void OnSessionConnectionLost(DeviceIdentity identity) => UiInvoke(() => _board.OnSessionConnectionLost(identity));
 
-    private void OnDeviceDiscovered(DiscoveredDevice device)
-    {
-        UiInvoke(() =>
-        {
-            var identity = device.Identity;
-            var existed = DeviceCards.Any(c => c.DeviceId == identity.DeviceId && c.FindEndpoint(identity.EndpointId) != null);
-            AddOrUpdateCard(device);
-            if (!existed)
-                SetStatus("Status_DeviceFound", identity.EndpointLabel);
-        });
-    }
-
-    private void OnDeviceLost(DiscoveredDevice device)
-    {
-        UiInvoke(() =>
-        {
-            var identity = device.Identity;
-            // Never drop a card that is currently in use.
-            if (_sessionMap.ContainsKey(identity.EndpointId)) return;
-
-            var card = DeviceCards.FirstOrDefault(c => c.DeviceId == identity.DeviceId);
-            if (card == null) return;
-
-            var ep = card.FindEndpoint(identity.EndpointId);
-            if (ep == null) return;
-            if (ep.IsConnected || ep.IsConnecting) return;
-
-            card.RemoveEndpoint(ep);
-            if (card.Endpoints.Count == 0)
-                DeviceCards.Remove(card);
-        });
-    }
-
-    private void OnDeviceInfoUpdated(DiscoveredDevice device)
-    {
-        UiInvoke(() =>
-        {
-            var identity = device.Identity;
-            var ep = FindEndpoint(identity.EndpointId);
-            if (ep == null) return;
-            var card = FindCardByEndpoint(identity.EndpointId);
-            if (card == null) return;
-
-            if (!string.IsNullOrWhiteSpace(device.DeviceName)) card.DeviceName = device.DeviceName;
-            if (!string.IsNullOrWhiteSpace(device.MacAddress)) card.MacAddress = device.MacAddress;
-
-            // The handshake may reveal a MAC that another (broadcast) card already
-            // owns. Merge the manual card into the discovered one so a device is
-            // never listed twice. USB cards keep their own identity (adb serial)
-            // and must never be folded into a WiFi card.
-            var mac = device.MacAddress;
-            if (!device.IsUsb && !string.IsNullOrWhiteSpace(mac))
-            {
-                var other = DeviceCards.FirstOrDefault(c => c != card && c.DeviceId == mac);
-                if (other != null)
-                {
-                    MergeCards(other, card);
-                }
-            }
-        });
-    }
-
-    /// <summary>Move every endpoint of <paramref name="remove"/> into
-    /// <paramref name="keep"/> and drop the now-empty card.</summary>
-    private static void MergeCards(DeviceCardViewModel keep, DeviceCardViewModel remove)
-    {
-        foreach (var ep in remove.Endpoints.ToList())
-        {
-            var device = ep.Device;
-            remove.RemoveEndpoint(ep);
-            var kep = keep.AddOrUpdateEndpoint(device);
-            if (!string.IsNullOrWhiteSpace(device.DeviceName)) keep.DeviceName = device.DeviceName;
-            if (!string.IsNullOrWhiteSpace(device.MacAddress)) keep.MacAddress = device.MacAddress;
-            kep.IsConnected = ep.IsConnected;
-            kep.IsConnecting = ep.IsConnecting;
-            kep.IsReconnecting = ep.IsReconnecting;
-        }
-    }
-
-    private void OnSessionStarted(GamepadSession session)
-    {
-        UiInvoke(() =>
-        {
-            var identity = session.Device.Identity;
-            _initialConnecting.Remove(identity.EndpointId);
-            if (!Sessions.Contains(session))
-            {
-                Sessions.Add(session);
-            }
-            _sessionMap[identity.EndpointId] = session;
-            OnPropertyChanged(nameof(HasActiveSession));
-
-            var card = AddOrUpdateCard(session.Device);
-            if (!string.IsNullOrWhiteSpace(session.Device.DeviceName)) card.DeviceName = session.Device.DeviceName;
-            if (!string.IsNullOrWhiteSpace(session.Device.MacAddress)) card.MacAddress = session.Device.MacAddress;
-
-            var ep = card.FindEndpoint(identity.EndpointId);
-            if (ep != null)
-            {
-                ep.IsConnected = true;
-                ep.IsConnecting = false;
-                ep.IsReconnecting = false;
-            }
-            card.SetModeRestored(session.Mode);
-        });
-    }
-
-    private void OnSessionEnded(GamepadSession session)
-    {
-        UiInvoke(() =>
-        {
-            Sessions.Remove(session);
-            OnPropertyChanged(nameof(HasActiveSession));
-            var identity = session.Device.Identity;
-            _initialConnecting.Remove(identity.EndpointId);
-            _sessionMap.Remove(identity.EndpointId);
-
-            var card = FindCardByEndpoint(identity.EndpointId);
-            var ep = card?.FindEndpoint(identity.EndpointId);
-            if (ep != null)
-            {
-                ep.IsConnected = false;
-                ep.IsConnecting = false;
-                ep.IsReconnecting = false;
-            }
-            if (card != null)
-            {
-                card.SetModeRestored(ControllerMode.Ds4);
-            }
-            SetStatus("Status_DisconnectedFrom", identity.EndpointLabel);
-        });
-    }
-
-    private void OnSessionConnectionLost(DeviceIdentity identity)
-    {
-        UiInvoke(() =>
-        {
-            var card = FindCardByEndpoint(identity.EndpointId);
-            var ep = card?.FindEndpoint(identity.EndpointId);
-            if (ep != null)
-            {
-                ep.IsConnected = false;
-                ep.IsReconnecting = true;
-            }
-            SetStatus("Status_ConnectionLost", identity.EndpointLabel);
-        });
-    }
+    private void OnRebootRequired() => UiInvoke(() => RebootRequired?.Invoke());
+    private void OnUsbipInstallRequired() => UiInvoke(() => UsbipInstallRequired?.Invoke());
 
     private static void UiInvoke(Action action)
     {
@@ -751,22 +290,6 @@ public class MainViewModel : INotifyPropertyChanged
             action();
         else
             Dispatcher.UIThread.Invoke(action);
-    }
-
-    public async Task ShutdownAsync()
-    {
-        if (_network == null) return;
-        _network.OnDeviceDiscovered -= OnDeviceDiscovered;
-        _network.OnDeviceLost -= OnDeviceLost;
-        _network.OnDeviceInfoUpdated -= OnDeviceInfoUpdated;
-        _network.OnSessionStarted -= OnSessionStarted;
-        _network.OnSessionEnded -= OnSessionEnded;
-        _network.OnSessionConnectionLost -= OnSessionConnectionLost;
-        _network.OnRebootRequired -= OnRebootRequired;
-        _network.OnUsbipInstallRequired -= OnUsbipInstallRequired;
-        _network.StopDiscovery();
-        await _network.DisconnectAllAsync();
-        _initialConnecting.Clear();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
