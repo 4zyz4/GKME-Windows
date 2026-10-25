@@ -1,6 +1,8 @@
 <Window x:Class="GKME.Ui.MainWindow" xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:GKME.Ui"
+        xmlns:core="clr-namespace:GKME.Core"
+        x:DataType="ui:MainViewModel"
         Width="580" Height="540"
         WindowStartupLocation="CenterScreen"
         Background="#1E1E1E"
@@ -167,7 +169,7 @@
                               SelectedItem="{Binding SelectedWebInterface}"
                               Classes="dark">
                         <ComboBox.ItemTemplate>
-                            <DataTemplate>
+                            <DataTemplate x:DataType="core:LanInterfaceInfo">
                                 <TextBlock Text="{Binding Display}" Foreground="#E0E0E0" />
                             </DataTemplate>
                         </ComboBox.ItemTemplate>
@@ -185,7 +187,7 @@
         <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
             <ItemsControl ItemsSource="{Binding DeviceCards}">
                 <ItemsControl.ItemTemplate>
-                    <DataTemplate>
+                    <DataTemplate x:DataType="ui:DeviceCardViewModel">
                       <StackPanel>
                         <!-- Expanded: same MAC reachable over several IPs and none
                              connected. Each IP gets its own connect button. -->
@@ -197,7 +199,7 @@
 
                                 <ItemsControl ItemsSource="{Binding Endpoints}" Margin="0,8,0,0">
                                     <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
+                                        <DataTemplate x:DataType="ui:DeviceEndpointViewModel">
                                             <Grid Margin="0,3,0,3">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*" />
@@ -258,7 +260,7 @@
                                               SelectionChanged="OnModeChanged"
                                               Classes="dark">
                                         <ComboBox.ItemTemplate>
-                                            <DataTemplate>
+                                            <DataTemplate x:DataType="ui:ControllerModeOption">
                                                 <TextBlock Text="{Binding Display}"
                                                            Foreground="#E0E0E0" />
                                             </DataTemplate>
