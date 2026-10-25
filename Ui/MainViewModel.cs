@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Input.Platform;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using GamepadEmu.Protocol;
@@ -124,7 +125,7 @@ public class MainViewModel : INotifyPropertyChanged
         {
             var owner = MainWindow.Instance;
             if (owner != null)
-                owner.Clipboard?.SetTextAsync(url);
+                _ = owner.Clipboard?.SetTextAsync(url);
         }
         catch { }
     }
