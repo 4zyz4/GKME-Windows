@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using GamepadEmu.Protocol;
+using GKME.Core.Transport;
 using GKME.Core.Usb;
 using Google.Protobuf;
 using GKMD;
@@ -24,18 +25,16 @@ public class NetworkService : IDisposable
     public const byte TypeGamepadInput = 0x02;
 
     private readonly ConcurrentDictionary<string, DiscoveredDevice> _discovered = new();
-    private readonly ConcurrentDictionary<string, GamepadSession> _sessions = new();
     private readonly GKContext _gkContext = new();
+
+    // Every session-lifetime rule (serialise, replace, retire, drain, register)
+    // lives here; transports only move bytes.
+    private readonly SessionIntake _intake;
 
     // ── USB/ADB transport ──
     private readonly AdbManager _adb = new();
     private readonly object _usbLock = new();
     private readonly Dictionary<string, DiscoveredDevice> _usbDiscovered = new();
-    private readonly Dictionary<string, UsbConnection> _usbConnections = new();
-    // adb-forward local port currently bound to each USB session key. Tracked
-    // separately from the connection so it can be swapped when the transport
-    // is re-attached after a dropped link (the assigned port changes).
-    private readonly Dictionary<string, int> _usbForwardPorts = new();
     private Thread? _usbScanThread;
 
     public bool HidMaestroAvailable { get; private set; }
@@ -57,6 +56,32 @@ public class NetworkService : IDisposable
         // floor is silently ignored (Factor falls back to 1.0). 0.1 is the floor
         // and shrinks every internal device-removal wait budget by 10x.
         Environment.SetEnvironmentVariable("GKMD_TIMEOUT_SCALE", "0.1");
+    }
+
+    public NetworkService()
+    {
+        _intake = new SessionIntake(CreateSession, () => RebootRequired);
+        _intake.SessionStarted += s => OnSessionStarted?.Invoke(s);
+        _intake.SessionEnded += s => OnSessionEnded?.Invoke(s);
+        _intake.SessionConnectionLost += ip => OnSessionConnectionLost?.Invoke(ip);
+        _intake.DeviceInfoUpdated += d => OnDeviceInfoUpdated?.Invoke(d);
+        _intake.RebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
+        _intake.UsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
+    }
+
+    /// <summary>Builds the session object the intake will drive. The controller
+    /// persona is picked from the device's persisted mode, so every path
+    /// (manual, USB, web, auto-reconnect) starts with what the user chose.</summary>
+    private GamepadSession CreateSession(DiscoveredDevice device, Func<IMessage, Task> downlink)
+    {
+        var initialMode = SavedModeResolver?.Invoke(device) ?? ControllerMode.Ds4;
+        return new GamepadSession(
+            device,
+            downlink,
+            OnAudioSendStart,
+            _gkContext,
+            HidMaestroAvailable,
+            initialMode);
     }
 
     private UdpClient? _udpClient;
@@ -191,7 +216,7 @@ public class NetworkService : IDisposable
         }
     }
 
-    public IReadOnlyCollection<GamepadSession> ActiveSessions => _sessions.Values.ToList();
+    public IReadOnlyCollection<GamepadSession> ActiveSessions => _intake.ActiveSessions;
 
     public event Action<DiscoveredDevice>? OnDeviceDiscovered;
     /// <summary>Raised when a previously discovered USB device disappears —
@@ -354,7 +379,7 @@ public class NetworkService : IDisposable
                     // controller survived that loss; re-open the link so the same
                     // session resumes — the USB equivalent of a phone resuming its
                     // WiFi broadcast after a brief dropout.
-                    if (_sessions.ContainsKey(key))
+                    if (_intake.Contains(key))
                         TryReattachUsbSession(key, current);
                 }
 
@@ -538,7 +563,7 @@ public class NetworkService : IDisposable
 
         // Phone restarted its broadcast — send ServerHello so the phone can
         // resume the handshake even if it hasn't sent a Hello yet.
-        if (_sessions.TryGetValue(key, out var session))
+        if (_intake.Contains(key))
         {
             EnqueueSend(phoneEp, TypeServerToClient, BuildServerHello());
         }
@@ -546,71 +571,19 @@ public class NetworkService : IDisposable
         OnDeviceDiscovered?.Invoke(device);
     }
 
-    private readonly object _connectLock = new();
-    private readonly HashSet<string> _connecting = new();
-
-    // 已从 _sessions 移除、但虚拟手柄仍在后台清理中的 session（key = 设备 key）。
-    // 新连接必须先等这些旧手柄彻底销毁，保证同一 IP 同时只出现一个虚拟手柄
-    // （"断开 → 手机自动重连" / "反复手动连接断开" 时容易触发双柄并存）。
-    private readonly object _retireLock = new();
-    private readonly Dictionary<string, List<GamepadSession>> _retired = new();
-
     private void RouteClientToServer(IPEndPoint remoteEp, byte[] payload)
     {
         var key = GetSessionKey(remoteEp);
         try
         {
             var cts = ClientToServer.Parser.ParseFrom(payload);
-            if (_sessions.TryGetValue(key, out var session))
+            if (_intake.TryGet(key, out var session))
             {
                 session.HandleClientToServer(cts);
             }
             // 无 session 时不自动创建虚拟手柄：PC 端只能通过用户手动点"连接"建立，
             // 否则手机 app 一打开、广播 Hello，就会在用户未选择的情况下冒出虚拟手柄。
         }
-        catch { }
-    }
-
-    /// <summary>登记一个已断开、但虚拟手柄仍在后台销毁中的 session。新连接在
-    /// <see cref="DrainRetiredAsync"/> 里等待它彻底清理完，避免新旧手柄并存。</summary>
-    private void Retire(GamepadSession s)
-    {
-        lock (_retireLock)
-        {
-            if (!_retired.TryGetValue(s.Device.Key, out var list))
-                _retired[s.Device.Key] = list = new List<GamepadSession>();
-            list.Add(s);
-        }
-
-        // 清理完成后自行脱离登记，避免长期持有已释放的引用。
-        _ = Task.Run(async () =>
-        {
-            try { await s.WaitForCleanupAsync(); }
-            catch { }
-            finally
-            {
-                lock (_retireLock)
-                {
-                    if (_retired.TryGetValue(s.Device.Key, out var l))
-                    {
-                        l.Remove(s);
-                        if (l.Count == 0) _retired.Remove(s.Device.Key);
-                    }
-                }
-            }
-        });
-    }
-
-    /// <summary>等待指定设备的全部已退役 session 完成虚拟手柄销毁（幂等）。</summary>
-    private async Task DrainRetiredAsync(string key)
-    {
-        List<GamepadSession>? list;
-        lock (_retireLock)
-        {
-            if (!_retired.TryGetValue(key, out list)) return;
-            _retired.Remove(key);
-        }
-        try { await Task.WhenAll(list.Select(s => s.WaitForCleanupAsync())); }
         catch { }
     }
 
@@ -621,7 +594,7 @@ public class NetworkService : IDisposable
             var input = GamepadInput.Parser.ParseFrom(payload);
             var key = GetSessionKey(remoteEp);
 
-            if (_sessions.TryGetValue(key, out var session))
+            if (_intake.TryGet(key, out var session))
             {
                 // 直接上报，无队列
                 session.ReportGamepadInput(input);
@@ -640,105 +613,16 @@ public class NetworkService : IDisposable
         _sendEvent.Set();
     }
 
-    public async Task<GamepadSession?> ConnectAsync(DiscoveredDevice device, int connectTimeoutMs = 5000)
+    public Task<GamepadSession?> ConnectAsync(DiscoveredDevice device, int connectTimeoutMs = 5000)
     {
-        // Reboot pending: Windows will not load the transport until the next
-        // boot, so refuse every new connection instead of letting it half-
-        // establish and then fail while creating a controller.
-        if (RebootRequired) return null;
+        if (device.IsUsb) return ConnectUsbAsync(device, connectTimeoutMs);
 
-        if (device.IsUsb) return await ConnectUsbAsync(device, connectTimeoutMs);
-
-        var key = device.Key;
-        GamepadSession? oldSession = null;
-
-        // 串行化同一手机的所有连接入口（手动连接、设备卡片、自动重连），
-        // 避免并发各建一个 session / 虚拟控制器。
-        lock (_connectLock)
-        {
-            if (_connecting.Contains(key)) return null;
-            if (_sessions.TryGetValue(key, out var existing) && existing.IsConnected)
-                return existing;
-            _sessions.TryRemove(key, out oldSession);
-            _connecting.Add(key);
-        }
-
-        try
-        {
-            // 拆旧控制器（HIDMaestro teardown 慢，等它彻底释放再建新的，
-            // 否则 Windows 会短暂同时显示两个手柄）。只影响同一时刻唯一的连接流程。
-            if (oldSession != null)
-            {
-                oldSession.Disconnect();
-                await oldSession.WaitForCleanupAsync();
-            }
-
-            // 手动断开 / DisconnectAll 留下的 session 不在 _sessions 里，但虚拟手柄
-            // 可能仍在后台清理。等它们全部释放后再建新控制器，保证同一 IP 同时
-            // 只有一个虚拟手柄（"断开 → 自动重连" 场景最容易触发双柄并存）。
-            await DrainRetiredAsync(key);
-
-            var phoneEp = new IPEndPoint(device.IpAddress, Port);
-
-            var initialMode = SavedModeResolver?.Invoke(device) ?? ControllerMode.Ds4;
-            var session = new GamepadSession(
-                device,
-                msg => { EnqueueSend(phoneEp, TypeServerToClient, msg); return Task.CompletedTask; },
-                OnAudioSendStart,
-                _gkContext,
-                HidMaestroAvailable,
-                initialMode);
-            session.OnReady += s =>
-            {
-                OnSessionStarted?.Invoke(s);
-            };
-            session.OnConnectionLost += s =>
-            {
-                OnSessionConnectionLost?.Invoke(s.Device.IpString);
-            };
-            session.OnDeviceInfoUpdated += s =>
-            {
-                OnDeviceInfoUpdated?.Invoke(s.Device);
-            };
-            session.OnRebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
-            session.OnUsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
-            session.OnDisconnected += s =>
-            {
-                _sessions.TryRemove(s.Device.Key, out _);
-                // 旧手柄仍在后台销毁中；新连接必须等它释放，否则 Windows 里会
-                // 同时出现旧+新两个虚拟手柄。
-                Retire(s);
-                OnSessionEnded?.Invoke(s);
-            };
-
-            lock (_connectLock)
-            {
-                // 尽快注册 session 防止并发的连接流程各建一个 session / 虚拟控制器。
-                // 等待期间另一个流程抢先把 session 建好了：销毁本流程刚建的，
-                // 复用已注册的那个，避免出现两个虚拟控制器。
-                if (_sessions.TryGetValue(key, out var current))
-                {
-                    session.Disconnect();
-                    return current;
-                }
-                _sessions[key] = session;
-            }
-
-            session.Start();
-
-            // 注册后再发送 ServerHello，让手机端可以完成握手。
-            EnqueueSend(phoneEp, TypeServerToClient, BuildServerHello());
-
-            return session;
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            lock (_connectLock) _connecting.Remove(key);
-        }
+        // The intake performs the reboot check, serialises connects, reuses a
+        // live session, drains retired ones, registers and starts.
+        var phoneEp = new IPEndPoint(device.IpAddress, Port);
+        var transport = new UdpSessionTransport(
+            msg => EnqueueSend(phoneEp, TypeServerToClient, msg));
+        return _intake.ConnectAsync(device, transport);
     }
 
     /// <summary>Creates a session for a browser client served by the embedded
@@ -746,75 +630,8 @@ public class NetworkService : IDisposable
     /// WebSocket bridge instead of UDP: <paramref name="sendToBrowser"/> is the
     /// session's downlink (ServerToClient messages), while the caller feeds the
     /// browser's Hello / GamepadInput into the returned session.</summary>
-    public async Task<GamepadSession?> ConnectWebAsync(DiscoveredDevice device, Func<IMessage, Task> sendToBrowser)
-    {
-        if (RebootRequired) return null;
-
-        var key = device.Key;
-        GamepadSession? oldSession = null;
-
-        lock (_connectLock)
-        {
-            if (_connecting.Contains(key)) return null;
-            if (_sessions.TryGetValue(key, out var existing) && existing.IsConnected)
-                return existing;
-            _sessions.TryRemove(key, out oldSession);
-            _connecting.Add(key);
-        }
-
-        try
-        {
-            if (oldSession != null)
-            {
-                oldSession.Disconnect();
-                await oldSession.WaitForCleanupAsync();
-            }
-            await DrainRetiredAsync(key);
-
-            var initialMode = SavedModeResolver?.Invoke(device) ?? ControllerMode.Ds4;
-            var session = new GamepadSession(
-                device,
-                sendToBrowser,
-                OnAudioSendStart,
-                _gkContext,
-                HidMaestroAvailable,
-                initialMode);
-
-            session.OnReady += s => OnSessionStarted?.Invoke(s);
-            session.OnConnectionLost += s => OnSessionConnectionLost?.Invoke(s.Device.IpString);
-            session.OnDeviceInfoUpdated += s => OnDeviceInfoUpdated?.Invoke(s.Device);
-            session.OnRebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
-            session.OnUsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
-            session.OnDisconnected += s =>
-            {
-                _sessions.TryRemove(s.Device.Key, out _);
-                Retire(s);
-                OnSessionEnded?.Invoke(s);
-            };
-
-            lock (_connectLock)
-            {
-                if (_sessions.TryGetValue(key, out var current))
-                {
-                    session.Disconnect();
-                    return current;
-                }
-                _sessions[key] = session;
-            }
-
-            session.Start();
-            await session.SendAsync(BuildServerHello());
-            return session;
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            lock (_connectLock) _connecting.Remove(key);
-        }
-    }
+    public Task<GamepadSession?> ConnectWebAsync(DiscoveredDevice device, Func<IMessage, Task> sendToBrowser)
+        => _intake.ConnectAsync(device, new WebSessionTransport(sendToBrowser));
 
     /// <summary>Publishes a web client as a discovered device so the desktop UI
     /// shows a card for it (the browser is never seen via UDP broadcast).</summary>
@@ -825,257 +642,52 @@ public class NetworkService : IDisposable
 
     /// <summary>Connects to a phone over USB/ADB. Sets up a `tcp:0 -> tcp:37284`
     /// forward and opens a TCP connection to the assigned loopback port; the
-    /// phone accepts it in its USB TCP server.</summary>
-    private async Task<GamepadSession?> ConnectUsbAsync(DiscoveredDevice device, int connectTimeoutMs)
+    /// phone accepts it in its USB TCP server. The session's device is the
+    /// loopback endpoint, not the scan card.</summary>
+    private Task<GamepadSession?> ConnectUsbAsync(DiscoveredDevice device, int connectTimeoutMs)
     {
-        if (RebootRequired) return null;
+        if (string.IsNullOrEmpty(device.AdbSerial)) return Task.FromResult<GamepadSession?>(null);
 
-        var key = device.Key;
-        GamepadSession? oldSession = null;
-
-        lock (_connectLock)
+        var liveDevice = new DiscoveredDevice
         {
-            if (_connecting.Contains(key)) return null;
-            // A live session already owns this device: its transport is either up
-            // or being re-attached by the scan loop, so just hand it back.
-            if (_sessions.TryGetValue(key, out var existing) && existing.IsConnected)
-                return existing;
-            _sessions.TryRemove(key, out oldSession);
-            _connecting.Add(key);
-        }
+            DeviceName = device.DeviceName,
+            MacAddress = device.MacAddress,
+            IpAddress = IPAddress.Loopback,
+            Port = AdbManager.DevicePort,
+            IsUsb = true,
+            AdbSerial = device.AdbSerial,
+            AdbState = device.AdbState,
+        };
 
-        try
-        {
-            if (oldSession != null)
-            {
-                oldSession.Disconnect();
-                await oldSession.WaitForCleanupAsync();
-            }
-            await DrainRetiredAsync(key);
-
-            if (string.IsNullOrEmpty(device.AdbSerial)) return null;
-
-            var liveDevice = new DiscoveredDevice
-            {
-                DeviceName = device.DeviceName,
-                MacAddress = device.MacAddress,
-                IpAddress = IPAddress.Loopback,
-                Port = AdbManager.DevicePort,
-                IsUsb = true,
-                AdbSerial = device.AdbSerial,
-                AdbState = device.AdbState,
-            };
-
-            var initialMode = SavedModeResolver?.Invoke(liveDevice) ?? ControllerMode.Ds4;
-            var session = new GamepadSession(
-                liveDevice,
-                // Resolve the live transport per send so a re-attached link keeps
-                // flowing through the same session without re-creating it.
-                msg => SendUsbAsync(key, msg),
-                OnAudioSendStart,
-                _gkContext,
-                HidMaestroAvailable,
-                initialMode);
-
-            session.OnReady += s => OnSessionStarted?.Invoke(s);
-            session.OnConnectionLost += s => OnSessionConnectionLost?.Invoke(s.Device.IpString);
-            session.OnDeviceInfoUpdated += s => OnDeviceInfoUpdated?.Invoke(s.Device);
-            session.OnRebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
-            session.OnUsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
-            session.OnDisconnected += s =>
-            {
-                _sessions.TryRemove(s.Device.Key, out _);
-                Retire(s);
-                OnSessionEnded?.Invoke(s);
-            };
-
-            lock (_connectLock)
-            {
-                if (_sessions.TryGetValue(key, out var current))
-                {
-                    session.Disconnect();
-                    return current;
-                }
-                _sessions[key] = session;
-            }
-
-            session.Start();
-
-            if (!await OpenUsbTransportAsync(key, liveDevice, session, connectTimeoutMs))
-            {
-                // Could not open the link — roll the just-registered session back
-                // so the UI does not show a connected device with no transport.
-                lock (_connectLock) _sessions.TryRemove(key, out _);
-                session.Disconnect();
-                return null;
-            }
-
-            return session;
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            lock (_connectLock) _connecting.Remove(key);
-        }
-    }
-
-    /// <summary>Sends a message to the phone over the USB link currently bound to
-    /// <paramref name="key"/>, or drops it when no link is up. Resolving the
-    /// connection lazily lets a session survive a transport swap.</summary>
-    private Task SendUsbAsync(string key, IMessage msg)
-    {
-        var conn = GetUsbConnection(key);
-        return conn == null
-            ? Task.CompletedTask
-            : conn.SendAsync(TypeServerToClient, msg.ToByteArray());
-    }
-
-    private UsbConnection? GetUsbConnection(string key)
-    {
-        lock (_usbLock)
-        {
-            return _usbConnections.TryGetValue(key, out var c) ? c : null;
-        }
-    }
-
-    private (UsbConnection? conn, int? port) RemoveUsbConnection(string key)
-    {
-        UsbConnection? conn = null;
-        int? port = null;
-        lock (_usbLock)
-        {
-            if (_usbConnections.TryGetValue(key, out var c)) { _usbConnections.Remove(key); conn = c; }
-            if (_usbForwardPorts.TryGetValue(key, out var p)) { _usbForwardPorts.Remove(key); port = p; }
-        }
-        return (conn, port);
-    }
-
-    /// <summary>Opens (or re-opens) the adb forward + TCP link for an existing
-    /// session. Binds the new <see cref="UsbConnection"/>'s events to the live
-    /// session and records the assigned forward port so it can be removed again.</summary>
-    private async Task<bool> OpenUsbTransportAsync(string key, DiscoveredDevice device, GamepadSession session, int connectTimeoutMs)
-    {
-        if (string.IsNullOrEmpty(device.AdbSerial)) return false;
-        if (!_adb.Available && !_adb.TryInitialize()) return false;
-        _adb.EnsureServer();
-
-        var localPort = _adb.AddForward(device.AdbSerial, AdbManager.DevicePort);
-        if (localPort == null) return false;
-
-        TcpClient? client = null;
-        UsbConnection? usbConn = null;
-        try
-        {
-            client = new TcpClient();
-            var connectTask = client.ConnectAsync(IPAddress.Loopback, localPort.Value);
-            var completed = await Task.WhenAny(connectTask, Task.Delay(connectTimeoutMs));
-            if (completed != connectTask)
-            {
-                try { client.Dispose(); } catch { }
-                _adb.RemoveForward(device.AdbSerial, localPort.Value);
-                return false;
-            }
-            await connectTask;
-            client.NoDelay = true;
-
-            usbConn = new UsbConnection(client);
-            var conn = usbConn;
-            var port = localPort.Value;
-            var serial = device.AdbSerial;
-
-            conn.OnClientToServer += cts => session.HandleClientToServer(cts);
-            conn.OnGamepadInput += input => session.ReportGamepadInput(input);
-            conn.OnClosed += () => OnUsbConnectionClosed(key, conn, serial, port);
-
-            lock (_usbLock)
-            {
-                _usbConnections[key] = conn;
-                _usbForwardPorts[key] = port;
-            }
-
-            _ = conn.StartReceiveLoopAsync();
-            await conn.SendAsync(TypeServerToClient, BuildServerHello().ToByteArray());
-            return true;
-        }
-        catch
-        {
-            usbConn?.Dispose();
-            try { client?.Dispose(); } catch { }
-            _adb.RemoveForward(device.AdbSerial, localPort.Value);
-            return false;
-        }
-    }
-
-    /// <summary>Called when a USB link drops. Cleans up the transport but does NOT
-    /// tear the session down: exactly like a phone that stops broadcasting over
-    /// WiFi, the emulated controller is kept (the session watchdog neutralises its
-    /// inputs) and the scan loop re-attaches the link when the device returns.</summary>
-    private void OnUsbConnectionClosed(string key, UsbConnection conn, string? serial, int port)
-    {
-        bool removedMine = false;
-        UsbConnection? toDispose = null;
-        lock (_usbLock)
-        {
-            if (_usbConnections.TryGetValue(key, out var c) && ReferenceEquals(c, conn))
-            {
-                _usbConnections.Remove(key);
-                removedMine = true;
-                toDispose = c;
-            }
-        }
-        toDispose?.Dispose();
-
-        if (!removedMine) return;
-
-        int? forwardPort = null;
-        lock (_usbLock)
-        {
-            if (_usbForwardPorts.TryGetValue(key, out var p)) { _usbForwardPorts.Remove(key); forwardPort = p; }
-        }
-        if (!string.IsNullOrEmpty(serial) && forwardPort != null)
-            _adb.RemoveForward(serial, forwardPort.Value);
+        // The transport resolves its link lazily, so a re-attached USB link keeps
+        // flowing through the same session without re-creating it.
+        var transport = new UsbSessionTransport(liveDevice, _adb, connectTimeoutMs);
+        return _intake.ConnectAsync(liveDevice, transport);
     }
 
     /// <summary>Re-attaches the USB transport for a session whose link dropped,
-    /// without destroying its emulated controller. Runs off the scan loop; guarded
-    /// so it never races a manual connect or a second re-attach.</summary>
+    /// without destroying its emulated controller. Runs off the scan loop; the
+    /// intake reservation makes it mutually exclusive with a manual connect and
+    /// with a second re-attach.</summary>
     private void TryReattachUsbSession(string key, DiscoveredDevice device)
     {
         _ = Task.Run(async () =>
         {
-            GamepadSession? session;
-            lock (_connectLock)
-            {
-                if (_connecting.Contains(key)) return;
-                if (!_sessions.TryGetValue(key, out session) || !session.IsConnected) return;
-                if (GetUsbConnection(key) != null) return; // link already live
-                _connecting.Add(key);
-            }
+            using var reservation = _intake.TryReserve(key);
+            if (reservation == null) return;
+
+            if (!_intake.TryGet(key, out var session) || !session.IsConnected) return;
+            if (_intake.GetTransport(session) is not UsbSessionTransport { IsLinkUp: false } transport) return;
+
             try
             {
-                if (!await OpenUsbTransportAsync(key, device, session, 5000)) return;
+                if (!await transport.AttachAsync(session).ConfigureAwait(false)) return;
 
-                // The session may have been disconnected while we opened the link
-                // (user pressed disconnect); don't leave an orphan transport.
-                lock (_connectLock)
-                {
-                    if (!_sessions.TryGetValue(key, out var cur) || !ReferenceEquals(cur, session))
-                    {
-                        var (c, p) = RemoveUsbConnection(key);
-                        c?.Dispose();
-                        if (p != null && !string.IsNullOrEmpty(device.AdbSerial))
-                            _adb.RemoveForward(device.AdbSerial, p.Value);
-                    }
-                }
+                // The session may have been disconnected while the link was being
+                // opened (user pressed disconnect); don't leave an orphan link.
+                if (!_intake.IsCurrent(session)) transport.Detach();
             }
             catch { }
-            finally
-            {
-                lock (_connectLock) _connecting.Remove(key);
-            }
         });
     }
 
@@ -1087,64 +699,21 @@ public class NetworkService : IDisposable
 
     public async Task SendDisconnectAsync(DiscoveredDevice device)
     {
-        var key = device.Key;
-        if (!_sessions.TryGetValue(key, out var session)) return;
+        if (!_intake.TryGet(device.Key, out var session)) return;
 
-        var packet = new ServerToClient
+        // Tell the phone first (the downlink still belongs to the transport),
+        // then let the intake evict and retire the session. Releasing the link
+        // is the transport's job and happens on disconnect.
+        await session.SendAsync(new ServerToClient
         {
             Disconnect = new Disconnect { Reason = "User disconnected" }
-        };
-        if (device.IsWeb)
-        {
-            await session.SendAsync(packet);
-            session.Disconnect();
-        }
-        else if (device.IsUsb)
-        {
-            await session.SendAsync(packet);
-            var (conn, port) = RemoveUsbConnection(key);
-            conn?.Dispose();
-            if (!string.IsNullOrEmpty(device.AdbSerial) && port != null)
-                _adb.RemoveForward(device.AdbSerial, port.Value);
-        }
-        else
-        {
-            EnqueueSend(new IPEndPoint(device.IpAddress, Port), TypeServerToClient, packet);
-        }
+        });
         session.Disconnect();
     }
 
-    public async Task DisconnectAllAsync()
-    {
-        var tasks = new List<Task>();
-        foreach (var session in _sessions.Values)
-        {
-            CleanupUsbConnection(session);
-            session.Disconnect();
-            tasks.Add(session.WaitForCleanupAsync());
-        }
-        _sessions.Clear();
-        await Task.WhenAll(tasks);
-    }
+    public Task DisconnectAllAsync() => _intake.DisconnectAllAsync();
 
-    public void DisconnectAll()
-    {
-        foreach (var session in _sessions.Values)
-        {
-            CleanupUsbConnection(session);
-            session.Disconnect();
-        }
-        _sessions.Clear();
-    }
-
-    private void CleanupUsbConnection(GamepadSession session)
-    {
-        if (!session.Device.IsUsb) return;
-        var (conn, port) = RemoveUsbConnection(session.Device.Key);
-        conn?.Dispose();
-        if (!string.IsNullOrEmpty(session.Device.AdbSerial) && port != null)
-            _adb.RemoveForward(session.Device.AdbSerial, port.Value);
-    }
+    public void DisconnectAll() => _intake.DisconnectAll();
 
     public void Refresh()
     {
