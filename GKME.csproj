@@ -33,19 +33,6 @@
     <NoWarn>$(NoWarn);IL2026;IL3050;IL2070;IL2075;IL3000</NoWarn>
   </PropertyGroup>
 
-  <!-- 生成版本文件供 InnoSetup 读取 -->
-  <Target Name="GenerateVersionFile" BeforeTargets="BeforeBuild" Outputs="Build\version.txt">
-    <MakeDir Directories="Build" Condition="!Exists('Build')" />
-    <WriteLinesToFile File="Build\version.txt" Lines="$(VersionString)" Overwrite="true" />
-  </Target>
-
-  <!-- 生成 InnoSetup 版本定义文件 -->
-  <Target Name="GenerateInnoVersionFile" BeforeTargets="BeforeBuild" Outputs="Install\version.iss">
-    <MakeDir Directories="Install" Condition="!Exists('Install')" />
-    <WriteLinesToFile File="Install\version.iss" Lines="#define MyAppVersion &quot;$(VersionString)&quot;" Overwrite="true" Encoding="UTF-8" />
-  </Target>
-
-
   <!-- 用 $(Version) 动态生成 app.manifest -->
   <Target Name="GenerateAppManifest" BeforeTargets="BeforeBuild">
     <PropertyGroup>

@@ -2,7 +2,7 @@ param(
     [ValidateSet('Release', 'Debug')]
     [string]$Configuration = 'Release',
     [string]$OutputDir = "$PSScriptRoot\Output",
-    [string]$InnoSetupPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+    [string]$InnoSetupPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,35 +35,36 @@ if (Test-Path -LiteralPath $WebPublishDir) {
     }
 }
 
-# ---------- step 1.5: read version from project ----------
-Write-Host "=== Reading version from GKME.csproj ==="
-$csprojContent = Get-Content "$RepoRoot\GKME.csproj" -Raw
-$versionMatch = [regex]::Match($csprojContent, '<VersionString>([^<]+)</VersionString>')
-if (-not $versionMatch.Success) {
-    throw "VersionString not found in GKME.csproj"
+# ---------- step 1.5: locate Inno Setup 7 ----------
+# Either edition builds the installer; the 64-bit one is preferred.
+Write-Host "=== Locating Inno Setup 7 ==="
+if (-not $InnoSetupPath) {
+    $Candidates = @(
+        "C:\Program Files\Inno Setup 7\ISCC.exe",
+        "C:\Program Files (x86)\Inno Setup 7\ISCC.exe"
+    )
+    $InnoSetupPath = $Candidates |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
 }
-$version = $versionMatch.Groups[1].Value
-Write-Host "Version: $version"
-
-# ---------- step 1.6: replace version placeholders in setup.iss ----------
-Write-Host "=== Generating setup.iss ==="
-$issContent = [System.IO.File]::ReadAllText("$PSScriptRoot\setup.iss", [System.Text.Encoding]::UTF8)
-$issContent = $issContent -replace 'VERSION_PLACEHOLDER', $version
-[System.IO.File]::WriteAllText("$PSScriptRoot\setup.iss", $issContent, [System.Text.UTF8Encoding]::new($false))
-
-# ---------- step 2: compile InnoSetup installer ----------
-Write-Host "=== Compiling InnoSetup installer ==="
-if (-not (Test-Path $InnoSetupPath)) {
-    throw "InnoSetup not found at $InnoSetupPath. Please install InnoSetup 6 from https://jrsoftware.org/isdl.php"
+if (-not $InnoSetupPath -or -not (Test-Path -LiteralPath $InnoSetupPath)) {
+    throw "Inno Setup 7 not found. Install it from https://jrsoftware.org/isdl.php or pass -InnoSetupPath."
 }
+Write-Host "Using: $InnoSetupPath"
 
+# ---------- step 2: compile Inno Setup installer ----------
+# setup.iss reads the version from GKME.exe in the publish folder, so the publish
+# path just has to be passed along -- no version placeholder or generated .iss.
+Write-Host "=== Compiling Inno Setup installer ==="
 if (-not (Test-Path $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
 
-& $InnoSetupPath /Q /O"$OutputDir" "$PSScriptRoot\setup.iss"
-if (-not $?) { throw "InnoSetup compilation failed" }
+& $InnoSetupPath /Q /O"$OutputDir" "/DBuildDir=$PublishDir" "$PSScriptRoot\setup.iss"
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed (exit code $LASTEXITCODE)" }
 
 Write-Host "=== Done ==="
-$result = Get-ChildItem -Path $OutputDir -Filter "*.exe" | Select-Object -First 1
+$result = Get-ChildItem -Path $OutputDir -Filter "*.exe" |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
 Write-Host "Installer created: $($result.FullName)"

@@ -1,15 +1,26 @@
 ; GKME Installer
-; Requires InnoSetup 6+  https://jrsoftware.org/isdl.php
+; Requires Inno Setup 7+  https://jrsoftware.org/isdl.php
 
 #define MyAppName "GKME"
-#include "version.iss"
 #define MyAppPublisher "4zyz4"
 #define MyAppURL ""
 #define MyAppExeName "GKME.exe"
 
-#define BuildDir "..\bin\Release\net10.0-windows\win-x64\publish"
+; Build-Installer.ps1 passes the publish folder with /DBuildDir=<absolute path>.
+; Without it (e.g. when compiling from the IDE), fall back to the Release output.
+#ifndef BuildDir
+  #define BuildDir AddBackslash(SourcePath) + "..\bin\Release\net10.0-windows\win-x64\publish"
+#endif
+
+; Read the version straight from the published executable, which is stamped from
+; <Version> in GKME.csproj, so no generated .iss include is needed anymore.
+#define MyAppVersion GetVersionNumbersString(AddBackslash(BuildDir) + MyAppExeName)
+#if MyAppVersion == ""
+  #error Could not read the version from the published GKME.exe. Run dotnet publish first or pass /DBuildDir=<publish folder>.
+#endif
 
 [Setup]
+SetupArchitecture=x64
 AppName=GKME
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
@@ -17,6 +28,7 @@ DefaultDirName={autopf}\GKME
 DefaultGroupName=GKME
 UninstallDisplayName=GKME
 OutputBaseFilename=GKME_Setup_{#MyAppVersion}
+VersionInfoVersion={#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
