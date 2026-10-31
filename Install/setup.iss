@@ -21,6 +21,8 @@
 
 [Setup]
 SetupArchitecture=x64
+; 深色外观：强制使用深色主题，并把标题栏/边框也交给样式绘制，避免亮色边框。
+WizardStyle=modern dark includetitlebar
 AppName=GKME
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
