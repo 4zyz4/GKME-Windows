@@ -47,11 +47,11 @@ Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
 
 [CustomMessages]
 UpgradingTitle=正在升级
-UpgradingDesc=检测到已安装版本 v%1%n将升级到 v%2%点击"下一步"开始升级。
+UpgradingDesc=检测到已安装版本 v%1%n将升级到 v%2%n点击"下一步"开始升级。
 InstalledTitle=已安装相同或更新版本版本
-InstalledDesc=%1 v%2 已安装。%点击"下一步"进行修复。
+InstalledDesc=%1 v%2 已安装。%n点击"下一步"进行修复。
 InstallTitle=准备安装
-InstallDesc=将在您的计算机上安装 %1 v%2%点击"下一步"开始安装。
+InstallDesc=将在您的计算机上安装 %1 v%2%n点击"下一步"开始安装。
 NoteOverwrite=提示：安装程序将覆盖现有文件。
 NoteRestart=提示：安装完成后，建议重启计算机以确保驱动正常工作。
 FinishedUpgrade=%1 v%2 升级完成！
@@ -178,16 +178,16 @@ begin
     if IsUpgradeMode then
     begin
       Title := ExpandConstant('{cm:UpgradingTitle}');
-      Desc := Format(ExpandConstant('{cm:UpgradingDesc}'), [InstalledVersion, MyAppVersion]);
+      Desc := FmtMessage(CustomMessage('UpgradingDesc'), [InstalledVersion, MyAppVersion]);
     end else
     begin
       Title := ExpandConstant('{cm:InstalledTitle}');
-      Desc := Format(ExpandConstant('{cm:InstalledDesc}'), [MyAppName, InstalledVersion]);
+      Desc := FmtMessage(CustomMessage('InstalledDesc'), [MyAppName, InstalledVersion]);
     end;
   end else
   begin
     Title := ExpandConstant('{cm:InstallTitle}');
-    Desc := Format(ExpandConstant('{cm:InstallDesc}'), [MyAppName, MyAppVersion]);
+    Desc := FmtMessage(CustomMessage('InstallDesc'), [MyAppName, MyAppVersion]);
   end;
 
   InfoPage := CreateCustomPage(wpWelcome, Title, Desc);
@@ -225,10 +225,10 @@ begin
   if CurPageID = wpFinished then
   begin
     if IsUpgradeMode then
-      WizardForm.FinishedLabel.Caption := Format(ExpandConstant('{cm:FinishedUpgrade}'), [MyAppName, MyAppVersion])
+      WizardForm.FinishedLabel.Caption := FmtMessage(CustomMessage('FinishedUpgrade'), [MyAppName, MyAppVersion])
     else if IsAppInstalled then
-      WizardForm.FinishedLabel.Caption := Format(ExpandConstant('{cm:FinishedRepair}'), [MyAppName, MyAppVersion])
+      WizardForm.FinishedLabel.Caption := FmtMessage(CustomMessage('FinishedRepair'), [MyAppName, MyAppVersion])
     else
-      WizardForm.FinishedLabel.Caption := Format(ExpandConstant('{cm:FinishedInstall}'), [MyAppName, MyAppVersion]);
+      WizardForm.FinishedLabel.Caption := FmtMessage(CustomMessage('FinishedInstall'), [MyAppName, MyAppVersion]);
   end;
 end;
