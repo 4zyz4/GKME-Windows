@@ -1,0 +1,72 @@
+#!/bin/sh
+# GKME AppImage entry point.
+#
+# Creating a virtual controller writes the kernel vhci_hcd sysfs attributes,
+# which only root may do. When the AppImage is started as a normal user this
+# script re-runs the AppImage through pkexec, so the desktop shows its usual
+# authentication dialog instead of the app failing to attach a device.
+#
+# Set GKME_NO_ELEVATE=1 to skip elevation (UI-only testing / CI); virtual
+# controllers will not be available in that mode.
+set -eu
+
+APPDIR="${APPDIR:-$(cd "$(dirname "$0")" && pwd)}"
+BIN="$APPDIR/usr/bin/GKME"
+
+if [ "$(id -u)" -eq 0 ] || [ "${GKME_NO_ELEVATE:-0}" = "1" ]; then
+    exec "$BIN" "$@"
+fi
+
+# Re-run the outer AppImage rather than $APPDIR/usr/bin/GKME: pkexec then
+# mounts/extracts its own root-owned copy, so the user's FUSE mount (and its
+# permissions) never gets in the way. The AppImage runtime exports APPIMAGE;
+# it falls back to the extracted AppDir when that is missing.
+SELF="${APPIMAGE:-$APPDIR}"
+
+if command -v pkexec >/dev/null 2>&1; then
+    if [ -n "${APPIMAGE_EXTRACT_AND_RUN:-}" ]; then
+        exec pkexec env \
+            DISPLAY="${DISPLAY:-}" \
+            WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+            XAUTHORITY="${XAUTHORITY:-}" \
+            XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+            PULSE_SERVER="${PULSE_SERVER:-}" \
+            LANG="${LANG:-}" \
+            LANGUAGE="${LANGUAGE:-}" \
+            LC_ALL="${LC_ALL:-}" \
+            LC_MESSAGES="${LC_MESSAGES:-}" \
+            APPIMAGE_EXTRACT_AND_RUN="$APPIMAGE_EXTRACT_AND_RUN" \
+            "$SELF" "$@"
+    fi
+
+    exec pkexec env \
+        DISPLAY="${DISPLAY:-}" \
+        WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+        XAUTHORITY="${XAUTHORITY:-}" \
+        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+        PULSE_SERVER="${PULSE_SERVER:-}" \
+        LANG="${LANG:-}" \
+        LANGUAGE="${LANGUAGE:-}" \
+        LC_ALL="${LC_ALL:-}" \
+        LC_MESSAGES="${LC_MESSAGES:-}" \
+        "$SELF" "$@"
+fi
+
+# No polkit: honour a graphical sudo askpass when the desktop provides one.
+if command -v sudo >/dev/null 2>&1 && [ -n "${SUDO_ASKPASS:-}" ]; then
+    exec sudo -A -E "$SELF" "$@"
+fi
+
+message="GKME needs administrator rights to create virtual gamepads.
+Install polkit (pkexec) or run it with sudo:
+  sudo \"$SELF\""
+
+printf '%s\n' "$message" >&2
+
+if command -v zenity >/dev/null 2>&1; then
+    zenity --error --no-wrap --text="$message" 2>/dev/null || true
+elif command -v kdialog >/dev/null 2>&1; then
+    kdialog --error "$message" 2>/dev/null || true
+fi
+
+exit 1

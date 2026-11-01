@@ -2,9 +2,10 @@
 Type=Application
 Name=GKME
 Comment=Virtual gamepad, keyboard and mouse from an Android phone
-Exec=@PREFIX@/gkme
+Exec=GKME
 Icon=gkme
 Terminal=false
 Categories=Utility;Game;
 StartupNotify=true
 StartupWMClass=GKME
+X-AppImage-Name=GKME

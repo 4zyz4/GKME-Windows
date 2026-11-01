@@ -48,30 +48,42 @@ build tools** component. The ARM64 package embeds the ARM64 usbip-win2
 installer; the bundled `platform-tools\adb.exe` is the x64 build and runs under
 Windows' x64 emulation.
 
-### Linux package
+### Linux AppImage
 
 ```bash
-./Install/Build-Linux-Package.sh linux-x64      # → bin/Release/GKME-v<version>-linux-x64.tar.gz
-./Install/Build-Linux-Package.sh linux-arm64
+./Install/Build-Linux-AppImage.sh linux-x64      # → bin/Release/GKME-v<version>-linux-x64.AppImage
+./Install/Build-Linux-AppImage.sh linux-arm64
 ```
 
-The tarball contains the executable, `web/`, `licenses/`, `icon.png`, an
-`install.sh`, a `gkme` launcher and a desktop entry. `sudo ./install.sh`
-installs to `/opt/gkme` and registers the application menu entry.
+The AppImage contains the executable, its native libraries, `web/`,
+`licenses/`, a desktop entry and an `AppRun` that requests administrator
+rights through `pkexec` when started as a normal user (no install step and no
+separate launcher). It is assembled from the official MIT AppImage runtime
+(vendored under `ThirdParty/AppImage`) plus a SquashFS payload with
+`mksquashfs`; `appimagetool` is not required and the build works offline.
+
+Run it with `chmod +x GKME-*.AppImage && ./GKME-*.AppImage`, or double-click it
+in the file manager.
 
 ## Linux runtime notes
 
 - Load the in-kernel USB/IP host controller once per boot:
   `sudo modprobe vhci_hcd`. The app also offers a prompt that runs this through
   `pkexec`.
-- Attaching a virtual controller needs root. The installed `gkme` launcher
-  elevates through `pkexec` and forwards the session's `DISPLAY`,
-  `WAYLAND_DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR` and locale variables.
-  Without pkexec, run `sudo /opt/gkme/GKME` (start it from the launcher when
-  the UI language matters, since a bare `sudo` may not keep `LANG`).
+- Attaching a virtual controller needs root. `AppRun` re-runs the AppImage
+  through `pkexec` (forwarding `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`,
+  `XDG_RUNTIME_DIR`, `PULSE_SERVER` and the locale variables), so the desktop
+  asks for authentication and the app comes up with the rights it needs. If
+  polkit is unavailable and a graphical `SUDO_ASKPASS` helper is configured,
+  `sudo -A` is used instead; otherwise the AppImage explains how to launch it
+  with `sudo`.
+- Set `GKME_NO_ELEVATE=1` to skip elevation for UI-only testing (virtual
+  controllers will not be available). Without FUSE (or when the AppImage
+  runtime cannot mount), use `APPIMAGE_EXTRACT_AND_RUN=1`; install `libfuse2`
+  on distributions that no longer ship FUSE 2 by default.
 - USB mode needs `adb` on `PATH`, in `$ANDROID_HOME/platform-tools`, or in
   `platform-tools/` next to the executable. The Windows `adb.exe` copied into
-  the repository is not used on Linux.
+  the repository is not bundled into the Linux AppImage.
 - Closing the window exits on Linux; on Windows it hides to the tray. The
   Linux tray icon is created when the desktop provides a StatusNotifier host,
   but a hidden window must never depend on one.
@@ -95,3 +107,5 @@ installs to `/opt/gkme` and registers the application menu entry.
 - **WenQuanYi Micro Hei** (Apache-2.0), embedded as a CJK glyph fallback for
   Linux hosts without a system CJK font. See
   `Assets/Fonts/LICENSE-WQY-MicroHei.txt`.
+- **AppImage type-2 runtime** (MIT), vendored under `ThirdParty/AppImage` and
+  prepended to the Linux AppImage payload. See `ThirdParty/AppImage/LICENSE`.
