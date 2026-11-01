@@ -283,7 +283,19 @@
             </ItemsControl>
         </ScrollViewer>
 
-        <!-- Spacer for footer space -->
-        <Border Grid.Row="4" />
+        <!-- Status line. The view model keeps the current localized message
+             here; without it scan/connection/install failures were invisible. -->
+        <StackPanel Grid.Row="4" Spacing="6" Margin="0,6,0,0">
+            <!-- Persistent Linux hint: without root no controller can attach. -->
+            <Border IsVisible="{Binding ShowRootWarning}" Background="#4A3A12"
+                    CornerRadius="4" Padding="10,6">
+                <TextBlock Text="{DynamicResource Status_LinuxRootRequired}" FontSize="11"
+                           Foreground="#E8C97A" TextWrapping="Wrap" />
+            </Border>
+            <Border BorderBrush="#3E3E3E" BorderThickness="0,1,0,0" Padding="2,8,2,0">
+                <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#9D9D9D"
+                           TextTrimming="CharacterEllipsis" />
+            </Border>
+        </StackPanel>
     </Grid>
 </Window>

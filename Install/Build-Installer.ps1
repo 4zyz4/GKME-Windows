@@ -1,19 +1,29 @@
 param(
     [ValidateSet('Release', 'Debug')]
     [string]$Configuration = 'Release',
+    [ValidateSet('x64', 'arm64')]
+    [string]$Architecture = 'x64',
     [string]$OutputDir = "$PSScriptRoot\Output",
     [string]$InnoSetupPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Resolve-Path "$PSScriptRoot\.."
-$PublishDir = "$RepoRoot\bin\$Configuration\net10.0-windows\win-x64\publish"
+$Rid = "win-$Architecture"
+$PublishDir = "$RepoRoot\bin\$Configuration\net10.0-windows\$Rid\publish"
 
-# ---------- step 1: publish self-contained ----------
-Write-Host "=== Publishing self-contained app ==="
+# The x64 installer keeps the historical file name; the ARM64 one is named
+# apart so both can sit in the same release.
+$OutputSuffix = if ($Architecture -eq 'x64') { '' } else { "_$Architecture" }
+
+# ---------- step 1: publish self-contained NativeAOT ----------
+# NativeAOT cannot cross-compile: the Windows ARM64 build needs the MSVC
+# ARM64/ARM64EC build tools installed, and every RID must be built on Windows.
+Write-Host "=== Publishing self-contained app ($Rid) ==="
 dotnet publish "$RepoRoot\GKME.csproj" `
     -c $Configuration `
-    -r win-x64 `
+    -r $Rid `
+    -p:UsbipPayloadArch=$Architecture `
     --self-contained true `
     -o "$PublishDir"
 
@@ -55,12 +65,12 @@ Write-Host "Using: $InnoSetupPath"
 # ---------- step 2: compile Inno Setup installer ----------
 # setup.iss reads the version from GKME.exe in the publish folder, so the publish
 # path just has to be passed along -- no version placeholder or generated .iss.
-Write-Host "=== Compiling Inno Setup installer ==="
+Write-Host "=== Compiling Inno Setup installer ($Architecture) ==="
 if (-not (Test-Path $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
 
-& $InnoSetupPath /Q /O"$OutputDir" "/DBuildDir=$PublishDir" "$PSScriptRoot\setup.iss"
+& $InnoSetupPath /Q /O"$OutputDir" "/DBuildDir=$PublishDir" "/DSetupArch=$Architecture" "/DOutputSuffix=$OutputSuffix" "$PSScriptRoot\setup.iss"
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed (exit code $LASTEXITCODE)" }
 
 Write-Host "=== Done ==="

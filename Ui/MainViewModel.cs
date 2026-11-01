@@ -105,6 +105,11 @@ public class MainViewModel : INotifyPropertyChanged
 
     // ----- manual address / status line -----------------------------------
 
+    /// <summary>Linux only: attaching a vhci_hcd device writes root-owned sysfs
+    /// attributes, so the app shows a permanent hint until it is relaunched
+    /// with sudo. Windows elevates through its manifest instead.</summary>
+    public bool ShowRootWarning { get; } = PlatformInfo.IsLinux && !PlatformInfo.IsElevated;
+
     public string ManualIp
     {
         get => _manualIp;

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=GKME
+Comment=Virtual gamepad, keyboard and mouse from an Android phone
+Exec=@PREFIX@/gkme
+Icon=gkme
+Terminal=false
+Categories=Utility;Game;
+StartupNotify=true
+StartupWMClass=GKME

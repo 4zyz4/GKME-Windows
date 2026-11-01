@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
@@ -32,8 +31,12 @@ public partial class App : Application
     private NativeMenuItem? _trayShowItem;
     private NativeMenuItem? _trayExitItem;
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int MessageBoxW(IntPtr hWnd, string lpText, string lpCaption, uint uType);
+    /// <summary>True when the desktop accepted a tray icon. Without one the
+    /// main window has to exit on close instead of hiding, otherwise the
+    /// process would keep running with no way to get the window back.</summary>
+    public static bool TrayAvailable { get; private set; }
+
+    private static string IconFileName => PlatformInfo.IsWindows ? "icon.ico" : "icon.png";
 
     public ICommand ShowWindowCommand { get; }
     public ICommand QuitCommand { get; }
@@ -97,7 +100,8 @@ public partial class App : Application
             StartWebServer(vm);
             var window = new MainWindow(vm);
             _mainWindow = window;
-                
+            TrySetWindowIcon(window);
+
             window.Show();
             window.Closed += OnMainWindowClosed;
 
@@ -107,42 +111,65 @@ public partial class App : Application
         base.OnFrameworkInitializationCompleted();
     }
 
+    /// <summary>Window/taskbar icon. Windows uses the multi-resolution .ico,
+    /// Linux desktops need a PNG (Skia cannot decode ICO).</summary>
+    private static void TrySetWindowIcon(Window window)
+    {
+        try
+        {
+            var iconPath = Path.Combine(AppContext.BaseDirectory, IconFileName);
+            if (File.Exists(iconPath))
+                window.Icon = new WindowIcon(new Bitmap(iconPath));
+        }
+        catch { }
+    }
+
     private void SetupTrayIcon()
     {
-        var iconPath = Path.Combine(AppContext.BaseDirectory, "icon.ico");
-        var bitmap = new Bitmap(iconPath);
-        
-        _trayShowItem = new NativeMenuItem
+        try
         {
-            Header = Localizer.Instance.Get("Tray_ShowWindow"),
-            Command = ShowWindowCommand
-        };
-        _trayExitItem = new NativeMenuItem
-        {
-            Header = Localizer.Instance.Get("Tray_Exit"),
-            Command = QuitCommand
-        };
+            var iconPath = Path.Combine(AppContext.BaseDirectory, IconFileName);
+            var bitmap = new Bitmap(iconPath);
 
-        var trayIcon = new TrayIcon
-        {
-            Icon = new WindowIcon(bitmap),
-            ToolTipText = "GKME - Gamepad Keyboard Mapper Engine",
-            Menu = new NativeMenu
+            _trayShowItem = new NativeMenuItem
             {
-                Items =
+                Header = Localizer.Instance.Get("Tray_ShowWindow"),
+                Command = ShowWindowCommand
+            };
+            _trayExitItem = new NativeMenuItem
+            {
+                Header = Localizer.Instance.Get("Tray_Exit"),
+                Command = QuitCommand
+            };
+
+            var trayIcon = new TrayIcon
+            {
+                Icon = new WindowIcon(bitmap),
+                ToolTipText = "GKME - Gamepad Keyboard Mapper Engine",
+                Menu = new NativeMenu
                 {
-                    _trayShowItem,
-                    new NativeMenuItemSeparator(),
-                    _trayExitItem
-                }
-            },
-            Command = ShowWindowCommand
-        };
+                    Items =
+                    {
+                        _trayShowItem,
+                        new NativeMenuItemSeparator(),
+                        _trayExitItem
+                    }
+                },
+                Command = ShowWindowCommand
+            };
 
-        trayIcon.Clicked += (_, _) => ShowWindow();
+            trayIcon.Clicked += (_, _) => ShowWindow();
 
-        var trayIcons = new TrayIcons { trayIcon };
-        TrayIcon.SetIcons(this, trayIcons);
+            var trayIcons = new TrayIcons { trayIcon };
+            TrayIcon.SetIcons(this, trayIcons);
+            TrayAvailable = true;
+        }
+        catch
+        {
+            // Headless sessions and desktops without a tray/StatusNotifier host
+            // do not support TrayIcon. Keep running without one.
+            TrayAvailable = false;
+        }
     }
 
     private void ShowWindow()

@@ -1,16 +1,32 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- GKME ships as a self-contained NativeAOT executable per platform:
+       Windows x64 / ARM64 and Linux x64 / ARM64. The target framework, the
+       output type and every Windows-only build input are derived from the
+       runtime identifier, so one project file builds all four. Pass
+       -r <rid> to cross-select a platform; without it the machine's own RID
+       is used (win-x64, win-arm64, linux-x64 or linux-arm64). -->
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <GkmeRuntimeIdentifier Condition="'$(GkmeRuntimeIdentifier)' == '' and '$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</GkmeRuntimeIdentifier>
+    <GkmeRuntimeIdentifier Condition="'$(GkmeRuntimeIdentifier)' == ''">$([System.Runtime.InteropServices.RuntimeInformation]::RuntimeIdentifier)</GkmeRuntimeIdentifier>
+    <GkmeIsWindows Condition="$(GkmeRuntimeIdentifier.StartsWith('win'))">true</GkmeIsWindows>
+    <GkmeIsWindows Condition="'$(GkmeIsWindows)' == ''">false</GkmeIsWindows>
+
+    <!-- net10.0-windows on Windows (Win32 interop, registry, setupapi), the
+         plain net10.0 TFM on Linux (same GKMD sources, vhci_hcd backend). -->
+    <TargetFramework Condition="'$(TargetFramework)' == '' and '$(GkmeIsWindows)' == 'true'">net10.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(TargetFramework)' == ''">net10.0</TargetFramework>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(GkmeRuntimeIdentifier)</RuntimeIdentifier>
+
+    <OutputType Condition="'$(GkmeIsWindows)' == 'true'">WinExe</OutputType>
+    <OutputType Condition="'$(GkmeIsWindows)' != 'true'">Exe</OutputType>
+
     <Nullable>enable</Nullable>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <AvaloniaEnableDependInfo>true</AvaloniaEnableDependInfo>
     <ImplicitUsings>enable</ImplicitUsings>
-    <ApplicationIcon>icon.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <IncludeNativeBuildOutputsInDotNetSelfContained>true</IncludeNativeBuildOutputsInDotNetSelfContained>
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
@@ -24,7 +40,6 @@
     <StripSymbols>true</StripSymbols>
     <Version>4.8.0.0</Version>
     <VersionString>$(Version)</VersionString>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -33,8 +48,26 @@
     <NoWarn>$(NoWarn);IL2026;IL3050;IL2070;IL2075;IL3000</NoWarn>
   </PropertyGroup>
 
+  <!-- Windows-only build inputs: the exe icon, the manifest that requests
+       administrator (needed to attach usbip-win2 devices) and the generated
+       manifest itself. None of these exist in a Linux build. -->
+  <PropertyGroup Condition="'$(GkmeIsWindows)' == 'true'">
+    <ApplicationIcon>icon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <!-- Only the two supported desktop families can be built: the virtual
+       controller backend exists for usbip-win2 (Windows) and vhci_hcd (Linux).
+       Fail a macOS/unknown RID with a readable message instead of a Linux TFM
+       that would compile but never attach a device. -->
+  <Target Name="ValidateGkmePlatform" BeforeTargets="BeforeBuild">
+    <Error Condition="!$(GkmeRuntimeIdentifier.StartsWith('win')) and !$(GkmeRuntimeIdentifier.StartsWith('linux'))"
+           Text="GKME supports win-x64, win-arm64, linux-x64 and linux-arm64 only (got '$(GkmeRuntimeIdentifier)')." />
+  </Target>
+
   <!-- 用 $(Version) 动态生成 app.manifest -->
-  <Target Name="GenerateAppManifest" BeforeTargets="BeforeBuild">
+  <Target Name="GenerateAppManifest" BeforeTargets="BeforeBuild"
+          Condition="'$(GkmeIsWindows)' == 'true'">
     <PropertyGroup>
       <_ManifestContent>&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;&#10;&lt;assembly manifestVersion=&quot;1.0&quot; xmlns=&quot;urn:schemas-microsoft-com:asm.v1&quot;&gt;&#10;  &lt;assemblyIdentity version=&quot;$(Version)&quot; name=&quot;GKME&quot;/&gt;&#10;  &lt;trustInfo xmlns=&quot;urn:schemas-microsoft-com:asm.v2&quot;&gt;&#10;    &lt;security&gt;&#10;      &lt;requestedPrivileges&gt;&#10;        &lt;requestedExecutionLevel level=&quot;requireAdministrator&quot; uiAccess=&quot;false&quot;/&gt;&#10;      &lt;/requestedPrivileges&gt;&#10;    &lt;/security&gt;&#10;  &lt;/trustInfo&gt;&#10;&lt;/assembly&gt;</_ManifestContent>
     </PropertyGroup>
@@ -43,7 +76,12 @@
 
   <ItemGroup>
     <AvaloniaResource Include="icon.ico" />
+    <AvaloniaResource Include="icon.png" />
     <Content Include="icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="icon.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
@@ -73,15 +111,20 @@
   <PropertyGroup>
     <UsbipPayloadArch Condition="'$(UsbipPayloadArch)' == '' and '$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.ToLowerInvariant().Contains('arm64'))">arm64</UsbipPayloadArch>
     <UsbipPayloadArch Condition="'$(UsbipPayloadArch)' == ''">x64</UsbipPayloadArch>
-    <DefineConstants>$(DefineConstants);GKMD_WINDOWS</DefineConstants>
+    <!-- GKMD_WINDOWS selects its Win32/registry/usbip-win2 implementation;
+         without it the same sources compile the Linux vhci_hcd backend. -->
+    <DefineConstants Condition="'$(GkmeIsWindows)' == 'true'">$(DefineConstants);GKMD_WINDOWS</DefineConstants>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(GkmeIsWindows)' == 'true'">
+    <EmbeddedResource Include="..\GKMD\Resources\USBip-0.9.8.1-$(UsbipPayloadArch).exe">
+      <LogicalName>GKMD.Resources.USBip-0.9.8.1-$(UsbipPayloadArch).exe</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
 
   <ItemGroup>
     <Compile Include="..\GKMD\**\*.cs"
              Exclude="..\GKMD\bin\**;..\GKMD\obj\**;..\GKMD\tools\**;..\GKMD\Native\**;..\GKMD\AssemblyInfo.cs" />
-    <EmbeddedResource Include="..\GKMD\Resources\USBip-0.9.8.1-$(UsbipPayloadArch).exe">
-      <LogicalName>GKMD.Resources.USBip-0.9.8.1-$(UsbipPayloadArch).exe</LogicalName>
-    </EmbeddedResource>
     <EmbeddedResource Include="..\GKMD\Resources\THIRD-PARTY-NOTICES.txt">
       <LogicalName>GKMD.Resources.THIRD-PARTY-NOTICES.txt</LogicalName>
     </EmbeddedResource>
@@ -103,12 +146,12 @@
     </Content>
   </ItemGroup>
 
-
-
   <!-- Bundled adb (USB mode fallback). Put the Android SDK platform-tools
        contents into `platform-tools\` next to this project; they are copied to
        the output/publish folder and shipped by the installer. The build still
-       succeeds when absent (an adb on PATH or in the Android SDK is used). -->  <ItemGroup Condition="Exists('platform-tools')">
+       succeeds when absent (an adb on PATH or in the Android SDK is used).
+       The directory is the same on every platform; only the executable name
+       inside differs (adb.exe / adb). -->  <ItemGroup Condition="Exists('platform-tools')">
     <Content Include="platform-tools\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
@@ -116,7 +159,7 @@
   </ItemGroup>
 
   <!-- The browser-based controller app (GKME-Web) is bundled into the output
-       under `web\` and served by the embedded WebServer. It lives in a sibling
+       under `web` and served by the embedded WebServer. It lives in a sibling
        repository directory, so only the site itself may be copied: repository
        metadata (.git/.github/...) and docs must never reach the output or the
        installer. -->

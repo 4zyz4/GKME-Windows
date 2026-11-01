@@ -304,10 +304,19 @@ public sealed class StaticHost : IDisposable
         {
             Path.Combine(baseDir, "web"),
             Path.Combine(baseDir, "GKME-Web"),
-            // Dev layout: GKME-Windows\bin\<cfg>\net10.0-windows\win-x64\ → DEV\GKME-Web
-            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "GKME-Web")),
-            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "..", "GKME-Web")),
         };
+
+        // Dev layout: the app runs from bin/<cfg>/<tfm>/<rid>/ and the site
+        // lives in the sibling GKME-Web checkout. Walk up instead of assuming
+        // a fixed depth so the same lookup works on Windows and Linux (whose
+        // output folders have one component less).
+        try
+        {
+            var dir = new DirectoryInfo(baseDir);
+            for (var i = 0; i < 8 && dir != null; i++, dir = dir.Parent)
+                candidates.Add(Path.Combine(dir.FullName, "GKME-Web"));
+        }
+        catch { }
 
         foreach (var c in candidates)
         {

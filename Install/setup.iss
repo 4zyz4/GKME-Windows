@@ -12,6 +12,26 @@
   #define BuildDir AddBackslash(SourcePath) + "..\bin\Release\net10.0-windows\win-x64\publish"
 #endif
 
+; Build-Installer.ps1 selects the target architecture. The installer binary
+; stays x64 (which also runs on Arm64 Windows 11 through x64 emulation); the
+; directives below decide where the ARM64 payload may be installed.
+#ifndef SetupArch
+  #define SetupArch "x64"
+#endif
+#ifndef OutputSuffix
+  #define OutputSuffix ""
+#endif
+#if SetupArch == "arm64"
+  #define AllowedArch "arm64"
+  #define Install64Arch "arm64"
+#else
+  ; The x64 build runs under emulation on Windows on Arm, but its bundled
+  ; usbip-win2 installer is x64 and can never load there (kernel drivers must
+  ; match the OS architecture), so send those machines to the ARM64 package.
+  #define AllowedArch "x64compatible and not arm64"
+  #define Install64Arch "x64compatible"
+#endif
+
 ; Read the version straight from the published executable, which is stamped from
 ; <Version> in GKME.csproj, so no generated .iss include is needed anymore.
 #define MyAppVersion GetVersionNumbersString(AddBackslash(BuildDir) + MyAppExeName)
@@ -21,6 +41,7 @@
 
 [Setup]
 SetupArchitecture=x64
+ArchitecturesAllowed={#AllowedArch}
 ; 深色外观：强制使用深色主题，并把标题栏/边框也交给样式绘制，避免亮色边框。
 WizardStyle=modern dark includetitlebar
 AppName=GKME
@@ -29,11 +50,11 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\GKME
 DefaultGroupName=GKME
 UninstallDisplayName=GKME
-OutputBaseFilename=GKME_Setup_{#MyAppVersion}
+OutputBaseFilename=GKME_Setup_{#MyAppVersion}{#OutputSuffix}
 VersionInfoVersion={#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesInstallIn64BitMode={#Install64Arch}
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog
 DisableProgramGroupPage=yes

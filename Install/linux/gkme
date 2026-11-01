@@ -1,0 +1,30 @@
+#!/bin/sh
+# GKME launcher.
+#
+# Creating a virtual controller writes the kernel vhci_hcd sysfs attributes,
+# which only root may do. When started as a normal user this relaunches the
+# app through pkexec, forwarding the desktop session's display environment
+# (pkexec starts from a clean environment, so DISPLAY/WAYLAND_DISPLAY and the
+# X11 cookie would otherwise be lost and the window would never appear).
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+binary="$here/GKME"
+
+if [ "$(id -u)" -eq 0 ]; then
+    exec "$binary" "$@"
+fi
+
+if ! command -v pkexec >/dev/null 2>&1; then
+    echo "GKME needs root to attach virtual USB devices." >&2
+    echo "Run it with sudo: sudo $binary" >&2
+    exit 1
+fi
+
+exec pkexec env \
+    DISPLAY="${DISPLAY:-}" \
+    WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+    XAUTHORITY="${XAUTHORITY:-}" \
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+    PULSE_SERVER="${PULSE_SERVER:-}" \
+    "$binary" "$@"

@@ -1,8 +1,8 @@
 <linker>
+  <!-- GKMD is compiled into this assembly (there is no separate GKMD
+       assembly any more), so both namespaces are rooted here. -->
   <assembly fullname="GKME">
     <type fullname="GKME.*" preserve="all" />
-  </assembly>
-  <assembly fullname="GKMD">
     <type fullname="GKMD.*" preserve="all" />
   </assembly>
 </linker>

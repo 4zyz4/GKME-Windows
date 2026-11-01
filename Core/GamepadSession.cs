@@ -763,6 +763,9 @@ public class GamepadSession : IDisposable
 
     private static void PreRemoveDevice(GKController ctrl)
     {
+        // Only the usbip-win2 device tree has SetupAPI devnodes to uninstall;
+        // Linux's vhci_hcd detach is handled entirely inside GKController.
+        if (!PlatformInfo.IsWindows) return;
         try
         {
             EnsureReflectionCache(ctrl);

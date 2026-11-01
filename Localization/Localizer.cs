@@ -108,11 +108,15 @@ public sealed class Localizer : INotifyPropertyChanged
     [DllImport("kernel32.dll")]
     private static extern ushort GetUserDefaultUILanguage();
 
-    /// <summary>Reads the Windows UI language directly from the OS. The app is
-    /// published with invariant globalization, so CultureInfo cannot be used
-    /// to detect the system language.</summary>
+    /// <summary>Reads the OS UI language. Windows is asked directly; the
+    /// Linux desktop reports it through the POSIX locale environment
+    /// variables. The app is published with invariant globalization, so
+    /// CultureInfo cannot be used to detect the system language.</summary>
     private static AppLanguage DetectSystemLanguage()
     {
+        if (!PlatformInfo.IsWindows)
+            return DetectPosixLocale();
+
         try
         {
             var languageId = GetUserDefaultUILanguage();
@@ -134,5 +138,47 @@ public sealed class Localizer : INotifyPropertyChanged
         {
             return AppLanguage.English;
         }
+    }
+
+    /// <summary>Resolves the locale from <c>LC_ALL</c> / <c>LC_MESSAGES</c> /
+    /// <c>LANG</c>, in the order the POSIX locale rules prescribe.</summary>
+    private static AppLanguage DetectPosixLocale()
+    {
+        try
+        {
+            var locale = Environment.GetEnvironmentVariable("LC_ALL");
+            if (string.IsNullOrWhiteSpace(locale))
+                locale = Environment.GetEnvironmentVariable("LC_MESSAGES");
+            if (string.IsNullOrWhiteSpace(locale))
+                locale = Environment.GetEnvironmentVariable("LANG");
+            return ParseLocale(locale);
+        }
+        catch
+        {
+            return AppLanguage.English;
+        }
+    }
+
+    private static AppLanguage ParseLocale(string? locale)
+    {
+        if (string.IsNullOrWhiteSpace(locale)) return AppLanguage.English;
+
+        // "zh_CN.UTF-8@modifier" → "zh_cn"
+        var value = locale.Split('.')[0].Split('@')[0].Replace('-', '_').ToLowerInvariant();
+        if (value == "c" || value == "posix") return AppLanguage.English;
+
+        if (value.StartsWith("zh"))
+        {
+            if (value.Contains("tw") || value.Contains("hant")) return AppLanguage.TraditionalChineseTaiwan;
+            if (value.Contains("hk") || value.Contains("mo")) return AppLanguage.TraditionalChineseHongKong;
+            return AppLanguage.SimplifiedChinese;
+        }
+
+        return value.Split('_')[0] switch
+        {
+            "ru" => AppLanguage.Russian,
+            "fr" => AppLanguage.French,
+            _ => AppLanguage.English,
+        };
     }
 }

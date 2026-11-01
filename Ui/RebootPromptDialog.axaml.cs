@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Avalonia.Controls;
+using GKME.Core;
 
 namespace GKME.Ui;
 
@@ -18,6 +19,8 @@ public partial class RebootPromptDialog : Window
 
     private static void RebootNow()
     {
+        // Only Windows can require a restart after a transport upgrade.
+        if (!PlatformInfo.IsWindows) return;
         try
         {
             Process.Start(new ProcessStartInfo("shutdown.exe", "/r /t 5")

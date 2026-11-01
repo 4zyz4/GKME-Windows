@@ -241,7 +241,16 @@ public partial class MainWindow : Window
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         e.Cancel = true;
-        Hide();
+        if (App.TrayAvailable && PlatformInfo.IsWindows)
+        {
+            Hide();
+            return;
+        }
+
+        // Windows keeps running in the tray. Linux exits instead: a desktop
+        // without a StatusNotifier host accepts the tray registration but never
+        // shows the icon, and a hidden window would then be unreachable.
+        _ = SafeCloseAsync();
     }
 
     public async Task SafeCloseAsync()

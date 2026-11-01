@@ -84,7 +84,7 @@ public sealed class AdbManager : IDisposable
                 if (string.IsNullOrWhiteSpace(dir)) continue;
                 try
                 {
-                    var full = Path.Combine(dir.Trim(), "adb.exe");
+                    var full = Path.Combine(dir.Trim(), PlatformInfo.AdbFileName);
                     if (File.Exists(full)) candidates.Add(full);
                 }
                 catch { }
@@ -93,7 +93,8 @@ public sealed class AdbManager : IDisposable
         catch { }
 
         // 3) Standard Android SDK locations (ANDROID_HOME / ANDROID_SDK_ROOT /
-        //    the default per-user SDK path).
+        //    the default per-user SDK path: %LOCALAPPDATA%\Android\Sdk on
+        //    Windows, ~/Android/Sdk on Linux and macOS).
         var sdkRoots = new[]
         {
             Environment.GetEnvironmentVariable("ANDROID_HOME"),
@@ -101,27 +102,47 @@ public sealed class AdbManager : IDisposable
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Android", "Sdk"),
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Android", "Sdk"),
         };
         foreach (var root in sdkRoots)
         {
             if (string.IsNullOrWhiteSpace(root)) continue;
             try
             {
-                var full = Path.Combine(root, "platform-tools", "adb.exe");
+                var full = Path.Combine(root, "platform-tools", PlatformInfo.AdbFileName);
                 if (File.Exists(full)) candidates.Add(full);
             }
             catch { }
         }
 
         // 4) Bundled adb shipped next to the executable.
-        candidates.Add(Path.Combine(AppContext.BaseDirectory, "platform-tools", "adb.exe"));
-        candidates.Add(Path.Combine(AppContext.BaseDirectory, "adb", "adb.exe"));
+        candidates.Add(Path.Combine(AppContext.BaseDirectory, "platform-tools", PlatformInfo.AdbFileName));
+        candidates.Add(Path.Combine(AppContext.BaseDirectory, "adb", PlatformInfo.AdbFileName));
 
         foreach (var c in candidates)
         {
-            if (File.Exists(c)) return c;
+            if (File.Exists(c)) return EnsureExecutable(c);
         }
         return null;
+    }
+
+    /// <summary>Linux tarballs and zip extracts do not always keep the
+    /// executable bit; adb is useless without it.</summary>
+    private static string EnsureExecutable(string path)
+    {
+        if (PlatformInfo.IsWindows) return path;
+#pragma warning disable CA1416 // guarded by the platform check above
+        try
+        {
+            var mode = File.GetUnixFileMode(path);
+            var wanted = mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+            if (wanted != mode) File.SetUnixFileMode(path, wanted);
+        }
+        catch { }
+#pragma warning restore CA1416
+        return path;
     }
 
     /// <summary>Starts the adb server if none is running. Returns false when adb
