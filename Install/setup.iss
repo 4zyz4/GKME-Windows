@@ -84,7 +84,8 @@ Source: "{#BuildDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#BuildDir}\*.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#BuildDir}\platform-tools\*"; DestDir: "{app}\platform-tools"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+Source: "{#BuildDir}\platform-tools\windows\*"; DestDir: "{app}\platform-tools\windows"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+Source: "{#BuildDir}\platform-tools\NOTICE.txt"; DestDir: "{app}\platform-tools"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#BuildDir}\web\*"; DestDir: "{app}\web"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 Source: "{#BuildDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 

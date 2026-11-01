@@ -59,3 +59,7 @@
 #*.RTF   diff=astextplain
 *.dll filter=lfs diff=lfs merge=lfs -text
 Driver/Resources/USBip-0.9.8.0-x64.exe filter=lfs diff=lfs merge=lfs -text
+
+# Bundled adb payloads are binaries (and linux/adb must keep its exec bit).
+platform-tools/windows/adb.exe -text
+platform-tools/linux/adb -text

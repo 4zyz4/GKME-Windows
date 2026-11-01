@@ -84,10 +84,17 @@ for dir in web licenses; do
     if [[ -d "$PUBLISH_DIR/$dir" ]]; then cp -a "$PUBLISH_DIR/$dir" "$APPDIR/usr/bin/$dir"; fi
 done
 
-# The repository's platform-tools folder holds the Windows adb. Only bundle it
-# when it actually contains the Linux adb, which the app looks up as `adb`.
-if [[ -x "$PUBLISH_DIR/platform-tools/adb" ]]; then
-    cp -a "$PUBLISH_DIR/platform-tools" "$APPDIR/usr/bin/platform-tools"
+# platform-tools holds one subfolder per OS; the AppImage ships only the Linux
+# adb (the Windows build would be dead weight). The executable bit is restored
+# here because a checkout made on Windows cannot record it.
+LINUX_ADB_DIR="$PUBLISH_DIR/platform-tools/linux"
+if [[ -f "$LINUX_ADB_DIR/adb" ]]; then
+    install -d "$APPDIR/usr/bin/platform-tools/linux"
+    cp -a "$LINUX_ADB_DIR/." "$APPDIR/usr/bin/platform-tools/linux/"
+    chmod 755 "$APPDIR/usr/bin/platform-tools/linux/adb"
+    if [[ -f "$PUBLISH_DIR/platform-tools/NOTICE.txt" ]]; then
+        install -m 644 "$PUBLISH_DIR/platform-tools/NOTICE.txt" "$APPDIR/usr/bin/platform-tools/NOTICE.txt"
+    fi
 fi
 
 cp "$REPO_ROOT/ThirdParty/AppImage/LICENSE" "$APPDIR/usr/bin/licenses/APPIMAGE-RUNTIME-LICENSE.txt"

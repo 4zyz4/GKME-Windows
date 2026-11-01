@@ -21,7 +21,8 @@ public sealed class AdbDeviceInfo
 /// order follows the product requirement: an already-running adb server first
 /// (so its version is reused and never killed/restarted), then adb available on
 /// PATH or in a standard Android SDK location, and finally the adb bundled next
-/// to the application in <c>platform-tools\</c>.
+/// to the application in <c>platform-tools\</c> (per-OS subfolder:
+/// <c>windows\</c> or <c>linux\</c>).
 /// </summary>
 public sealed class AdbManager : IDisposable
 {
@@ -46,7 +47,7 @@ public sealed class AdbManager : IDisposable
         var path = LocateAdb();
         if (path == null)
         {
-            LastError = "未找到 adb（请安装 Android SDK platform-tools，或将 adb 放入程序目录的 platform-tools 文件夹）";
+            LastError = $"未找到 adb（请安装 Android SDK platform-tools，或将 adb 放入程序目录的 {Path.Combine("platform-tools", PlatformInfo.AdbPlatformDirName)} 文件夹）";
             AdbPath = null;
             if (!_missingLogged)
             {
@@ -129,9 +130,17 @@ public sealed class AdbManager : IDisposable
             catch { }
         }
 
-        // 4) Bundled adb shipped next to the executable.
-        candidates.Add(Path.Combine(AppContext.BaseDirectory, "platform-tools", PlatformInfo.AdbFileName));
-        candidates.Add(Path.Combine(AppContext.BaseDirectory, "adb", PlatformInfo.AdbFileName));
+        // 4) Bundled adb shipped next to the executable, in the per-OS
+        //    subfolder (`platform-tools\windows\adb.exe`,
+        //    `platform-tools/linux/adb`). The flat layout is kept as a
+        //    fallback for older installs and hand-dropped copies.
+        var platformToolsDir = Path.Combine(AppContext.BaseDirectory, "platform-tools");
+        candidates.Add(Path.Combine(platformToolsDir, PlatformInfo.AdbPlatformDirName, PlatformInfo.AdbFileName));
+        candidates.Add(Path.Combine(platformToolsDir, PlatformInfo.AdbFileName));
+
+        var adbDir = Path.Combine(AppContext.BaseDirectory, "adb");
+        candidates.Add(Path.Combine(adbDir, PlatformInfo.AdbPlatformDirName, PlatformInfo.AdbFileName));
+        candidates.Add(Path.Combine(adbDir, PlatformInfo.AdbFileName));
 
         foreach (var c in candidates)
         {

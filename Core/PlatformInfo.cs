@@ -18,6 +18,14 @@ public static class PlatformInfo
     /// Android SDK uses <c>adb.exe</c> on Windows and <c>adb</c> elsewhere.</summary>
     public static string AdbFileName => IsWindows ? "adb.exe" : "adb";
 
+    /// <summary>
+    /// Subfolder of the bundled <c>platform-tools</c> directory holding this
+    /// platform's adb. The Google packages are split per OS only: the Windows
+    /// build is 32-bit x86 (it also runs on ARM64 through emulation) and the
+    /// Linux build is x86_64, so neither OS needs an architecture subfolder.
+    /// </summary>
+    public static string AdbPlatformDirName => IsWindows ? "windows" : "linux";
+
     /// <summary>Only Windows can require a reboot after a transport upgrade;
     /// Linux loads the in-kernel module and is ready immediately.</summary>
     public static bool SupportsRebootPrompt => IsWindows;

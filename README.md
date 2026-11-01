@@ -45,8 +45,29 @@ Install\Build-Installer.ps1 -Architecture arm64  # → GKME_Setup_<version>_arm6
 
 Requires Inno Setup 7 and, for ARM64, the Visual Studio **MSVC ARM64/ARM64EC
 build tools** component. The ARM64 package embeds the ARM64 usbip-win2
-installer; the bundled `platform-tools\adb.exe` is the x64 build and runs under
-Windows' x64 emulation.
+installer; adb is taken from `platform-tools\windows\`, whose official build is
+32-bit x86 — the same file runs on x64 and on ARM64 through Windows' x86
+emulation, so no separate ARM64 adb is needed.
+
+### Bundled adb (`platform-tools`)
+
+USB mode falls back to the adb shipped next to the app, so no Android SDK is
+required. The Google platform-tools packages are split per OS, not per
+architecture, so there is one folder per OS:
+
+- `platform-tools\windows\` — `adb.exe` plus `AdbWinApi.dll` and
+  `AdbWinUsbApi.dll`. The official build is 32-bit x86 and runs on x64 and on
+  ARM64 through emulation, so there is no separate ARM64 folder. Shipped by
+  both Windows installers.
+- `platform-tools\linux\` — `adb` (official x86_64 build). Shipped by both
+  AppImages.
+- `platform-tools\NOTICE.txt` — Apache 2.0 notices for both.
+
+To refresh them, extract `platform-tools-latest-windows.zip` /
+`platform-tools-latest-linux.zip` from
+<https://developer.android.com/tools/releases/platform-tools> over the two
+folders. Only adb and its two Windows DLLs are kept — the folders are trimmed
+on purpose. `platform-tools/linux/adb` must stay executable.
 
 ### Linux AppImage
 
@@ -82,8 +103,10 @@ in the file manager.
   runtime cannot mount), use `APPIMAGE_EXTRACT_AND_RUN=1`; install `libfuse2`
   on distributions that no longer ship FUSE 2 by default.
 - USB mode needs `adb` on `PATH`, in `$ANDROID_HOME/platform-tools`, or in
-  `platform-tools/` next to the executable. The Windows `adb.exe` copied into
-  the repository is not bundled into the Linux AppImage.
+  `platform-tools/linux/` next to the executable. The AppImage bundles the
+  official Linux adb, so no external install is required; on Linux ARM64 that
+  copy is the x86_64 build and only works where x86_64 emulation is available,
+  otherwise a native `adb` on `PATH` is used instead.
 - Closing the window exits on Linux; on Windows it hides to the tray. The
   Linux tray icon is created when the desktop provides a StatusNotifier host,
   but a hidden window must never depend on one.

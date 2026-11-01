@@ -153,12 +153,19 @@
     </Content>
   </ItemGroup>
 
-  <!-- Bundled adb (USB mode fallback). Put the Android SDK platform-tools
-       contents into `platform-tools\` next to this project; they are copied to
-       the output/publish folder and shipped by the installer. The build still
-       succeeds when absent (an adb on PATH or in the Android SDK is used).
-       The directory is the same on every platform; only the executable name
-       inside differs (adb.exe / adb). -->  <ItemGroup Condition="Exists('platform-tools')">
+  <!-- Bundled adb (USB mode fallback). The Android SDK platform-tools
+       contents live in one per-OS subfolder next to this project:
+         platform-tools\windows\  adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll
+                                  (the official build is 32-bit x86 and also
+                                  runs on ARM64 through emulation, so no
+                                  separate arm64 folder is needed)
+         platform-tools\linux\    adb (official x86_64 build)
+       platform-tools\NOTICE.txt holds the Apache 2.0 notices for both.
+       Everything is copied to the output/publish folder; the Windows installer
+       and the Linux AppImage then ship only their own platform's subfolder.
+       The build still succeeds when a subfolder is absent (an adb on PATH or in
+       the Android SDK is used instead). -->
+  <ItemGroup Condition="Exists('platform-tools')">
     <Content Include="platform-tools\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
