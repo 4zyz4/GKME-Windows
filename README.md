@@ -66,8 +66,9 @@ installs to `/opt/gkme` and registers the application menu entry.
   `pkexec`.
 - Attaching a virtual controller needs root. The installed `gkme` launcher
   elevates through `pkexec` and forwards the session's `DISPLAY`,
-  `WAYLAND_DISPLAY`, `XAUTHORITY` and `XDG_RUNTIME_DIR`. Without pkexec, run
-  `sudo /opt/gkme/GKME`.
+  `WAYLAND_DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR` and locale variables.
+  Without pkexec, run `sudo /opt/gkme/GKME` (start it from the launcher when
+  the UI language matters, since a bare `sudo` may not keep `LANG`).
 - USB mode needs `adb` on `PATH`, in `$ANDROID_HOME/platform-tools`, or in
   `platform-tools/` next to the executable. The Windows `adb.exe` copied into
   the repository is not used on Linux.

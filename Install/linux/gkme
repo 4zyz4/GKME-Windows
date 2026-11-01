@@ -4,8 +4,9 @@
 # Creating a virtual controller writes the kernel vhci_hcd sysfs attributes,
 # which only root may do. When started as a normal user this relaunches the
 # app through pkexec, forwarding the desktop session's display environment
-# (pkexec starts from a clean environment, so DISPLAY/WAYLAND_DISPLAY and the
-# X11 cookie would otherwise be lost and the window would never appear).
+# and locale (pkexec starts from a clean environment, so DISPLAY/
+# WAYLAND_DISPLAY, the X11 cookie and LANG would otherwise be lost: the window
+# would never appear, or the UI would fall back to English).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -27,4 +28,8 @@ exec pkexec env \
     XAUTHORITY="${XAUTHORITY:-}" \
     XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
     PULSE_SERVER="${PULSE_SERVER:-}" \
+    LANG="${LANG:-}" \
+    LANGUAGE="${LANGUAGE:-}" \
+    LC_ALL="${LC_ALL:-}" \
+    LC_MESSAGES="${LC_MESSAGES:-}" \
     "$binary" "$@"
