@@ -30,6 +30,8 @@ public sealed class AdbManager : IDisposable
 
     private readonly object _runLock = new();
     private bool _serverEnsured;
+    private bool _missingLogged;
+    private bool _availableLogged;
 
     public string? AdbPath { get; private set; }
     public bool Available => !string.IsNullOrEmpty(AdbPath);
@@ -46,11 +48,21 @@ public sealed class AdbManager : IDisposable
         {
             LastError = "未找到 adb（请安装 Android SDK platform-tools，或将 adb 放入程序目录的 platform-tools 文件夹）";
             AdbPath = null;
+            if (!_missingLogged)
+            {
+                Log.Warn("adb not found; USB mode unavailable");
+                _missingLogged = true;
+            }
             return false;
         }
 
         AdbPath = path;
         LastError = null;
+        if (!_availableLogged)
+        {
+            Log.Info($"adb: {path}");
+            _availableLogged = true;
+        }
         return true;
     }
 

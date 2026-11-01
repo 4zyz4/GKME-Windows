@@ -1,5 +1,6 @@
 using System;
 using Avalonia.Controls;
+using GKME.Core;
 using GKME.Localization;
 
 namespace GKME.Ui;
@@ -15,7 +16,11 @@ public partial class UsbipInstallDialog : Window
     public UsbipInstallDialog()
     {
         InitializeComponent();
-        InstallButton.Click += (_, _) => InstallRequested?.Invoke();
+        InstallButton.Click += (_, _) =>
+        {
+            Log.Info("USB/IP install requested from the dialog");
+            InstallRequested?.Invoke();
+        };
         CancelButton.Click += (_, _) => Close();
     }
 

@@ -87,6 +87,9 @@ public class GamepadSession : IDisposable
     /// upgraded before controllers can be created. The UI surfaces this as
     /// an install prompt.</summary>
     public event Action<GamepadSession>? OnUsbipInstallRequired;
+    /// <summary>Raised when creating a virtual controller fails; the exception
+    /// has already been written to <see cref="Log"/> in full.</summary>
+    public event Action<GamepadSession, Exception>? OnControllerError;
 
     public GamepadSession(DiscoveredDevice device, Func<IMessage, Task> sendToPhone, Action onAudioSendStart, GKContext gkContext, bool hidMaestroAvailable = true, ControllerMode initialMode = ControllerMode.Ds4)
     {
@@ -282,11 +285,8 @@ public class GamepadSession : IDisposable
                     }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine(
-                            $"[GamepadSession] create controller {Mode} failed: {ex.Message}");
-                        System.IO.File.AppendAllText(
-                            Path.Combine(AppContext.BaseDirectory, "gkme_error.log"),
-                            $"{DateTime.UtcNow:O} CREATE_CONTROLLER FAIL {Mode}: {ex}\n");
+                        Log.Error($"create controller {Mode} failed", ex);
+                        try { OnControllerError?.Invoke(this, ex); } catch { }
                     }
                 }
             }
@@ -300,6 +300,7 @@ public class GamepadSession : IDisposable
         if (!_readyFired)
         {
             _readyFired = true;
+            Log.Info($"session ready: '{Device.DeviceName}' {Device.Identity.EndpointLabel}, mode {Mode}");
             OnReady?.Invoke(this);
         }
 
@@ -530,23 +531,24 @@ public class GamepadSession : IDisposable
             {
                 created = new VirtualKeyboardMouse(_gkContext);
             }
-            catch (UsbipRebootRequiredException)
+            catch (UsbipRebootRequiredException ex)
             {
+                Log.Warn($"create virtual keyboard/mouse needs a reboot: {ex.Message}");
                 MarkKeyboardMouseFailed();
                 try { OnRebootRequired?.Invoke(this); } catch { }
                 return;
             }
-            catch (UsbipInstallRequiredException)
+            catch (UsbipInstallRequiredException ex)
             {
+                Log.Warn($"create virtual keyboard/mouse skipped: USB/IP transport not ready: {ex.Message}");
                 MarkKeyboardMouseFailed();
                 try { OnUsbipInstallRequired?.Invoke(this); } catch { }
                 return;
             }
             catch (Exception ex)
             {
+                Log.Error("create virtual keyboard/mouse failed", ex);
                 MarkKeyboardMouseFailed();
-                System.Diagnostics.Debug.WriteLine(
-                    $"[GamepadSession] create virtual keyboard/mouse failed: {ex.Message}");
                 return;
             }
 
@@ -600,20 +602,22 @@ public class GamepadSession : IDisposable
             {
                 newSet = await Task.Run(() => CreateControllers(nextPersona));
             }
-            catch (UsbipRebootRequiredException)
+            catch (UsbipRebootRequiredException ex)
             {
+                Log.Warn($"switch to {mode} needs a reboot: {ex.Message}");
                 try { OnRebootRequired?.Invoke(this); } catch { }
                 return Mode;
             }
-            catch (UsbipInstallRequiredException)
+            catch (UsbipInstallRequiredException ex)
             {
+                Log.Warn($"switch to {mode} skipped: USB/IP transport not ready: {ex.Message}");
                 try { OnUsbipInstallRequired?.Invoke(this); } catch { }
                 return Mode;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"[GamepadSession] create controller {mode} failed: {ex.Message}; keep current {Controller}");
+                Log.Error($"switch controller mode {mode} failed; keeping {Mode}", ex);
+                try { OnControllerError?.Invoke(this, ex); } catch { }
                 return Mode;
             }
 
@@ -657,6 +661,7 @@ public class GamepadSession : IDisposable
             if (!_readyFired)
             {
                 _readyFired = true;
+                Log.Info($"session ready: '{Device.DeviceName}' {Device.Identity.EndpointLabel}, mode {Mode}");
                 OnReady?.Invoke(this);
             }
 

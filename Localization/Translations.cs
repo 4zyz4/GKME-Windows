@@ -22,6 +22,7 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "Disconnect all",
         ["Menu_Language"] = "Language",
         ["Menu_About"] = "About",
+        ["Menu_OpenLog"] = "Open log folder",
 
         ["Lang_FollowSystem"] = "Follow system",
         ["Lang_English"] = "English",
@@ -51,6 +52,7 @@ internal static class Translations
         ["About_QQGroup"] = "QQ group: 639317971",
         ["About_OpenSource"] = "Open source:",
         ["About_Note"] = "Note: This software is not Emotion. Join QQ group 1045923515 to download the genuine Emotion.",
+        ["About_Log"] = "Log file: {0}",
         ["Version"] = "Version: {0}",
         ["UnknownVersion"] = "Unknown",
 
@@ -70,6 +72,7 @@ internal static class Translations
         ["Status_Ready"] = "Ready",
         ["Status_DriverCreateFailed"] = "Driver error: unable to create service",
         ["Status_HidMaestroUnavailable"] = "USB/IP transport unavailable; virtual controllers cannot be created",
+        ["Status_ControllerError"] = "Virtual controller creation failed; see the log: {0}",
         ["Status_LinuxRootRequired"] = "Linux: run GKME as root (sudo) to create virtual controllers",
         ["Status_UsbipExtracting"] = "Preparing the USB/IP transport...",
         ["Status_InstallFailed"] = "Installation failed: {0}",
@@ -126,6 +129,7 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "断开全部",
         ["Menu_Language"] = "语言",
         ["Menu_About"] = "关于",
+        ["Menu_OpenLog"] = "打开日志文件夹",
 
         ["Lang_FollowSystem"] = "跟随系统",
         ["Lang_English"] = "English",
@@ -155,6 +159,7 @@ internal static class Translations
         ["About_QQGroup"] = "软件Q群：639317971",
         ["About_OpenSource"] = "开源地址：",
         ["About_Note"] = "注意：本软件不是Emotion，请进入Q群1045923515以下载正版Emotion",
+        ["About_Log"] = "日志文件：{0}",
         ["Version"] = "版本: {0}",
         ["UnknownVersion"] = "未知版本",
 
@@ -174,6 +179,7 @@ internal static class Translations
         ["Status_Ready"] = "就绪",
         ["Status_DriverCreateFailed"] = "驱动错误: 无法创建服务",
         ["Status_HidMaestroUnavailable"] = "USB/IP 传输不可用，无法创建虚拟手柄",
+        ["Status_ControllerError"] = "创建虚拟手柄失败，详见日志：{0}",
         ["Status_LinuxRootRequired"] = "Linux：请以 root（sudo）运行 GKME 以创建虚拟手柄",
         ["Status_UsbipExtracting"] = "正在准备 USB/IP 传输...",
         ["Status_InstallFailed"] = "安装失败：{0}",
@@ -230,6 +236,7 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "中斷所有連線",
         ["Menu_Language"] = "語言",
         ["Menu_About"] = "關於",
+        ["Menu_OpenLog"] = "開啟日誌資料夾",
 
         ["Lang_FollowSystem"] = "跟隨系統",
         ["Lang_English"] = "English",
@@ -259,6 +266,7 @@ internal static class Translations
         ["About_QQGroup"] = "軟件QQ群：639317971",
         ["About_OpenSource"] = "開源位址：",
         ["About_Note"] = "注意：本軟件不是Emotion，請進入Q群1045923515以下載正版Emotion",
+        ["About_Log"] = "日誌檔案：{0}",
         ["Version"] = "版本：{0}",
         ["UnknownVersion"] = "未知版本",
 
@@ -278,6 +286,7 @@ internal static class Translations
         ["Status_Ready"] = "就緒",
         ["Status_DriverCreateFailed"] = "驅動程式錯誤：無法建立服務",
         ["Status_HidMaestroUnavailable"] = "USB/IP 傳輸無法使用，無法建立虛擬手掣",
+        ["Status_ControllerError"] = "建立虛擬手掣失敗，詳見日誌：{0}",
         ["Status_LinuxRootRequired"] = "Linux：請以 root（sudo）執行 GKME 以建立虛擬手掣",
         ["Status_UsbipExtracting"] = "正在準備 USB/IP 傳輸...",
         ["Status_InstallFailed"] = "安裝失敗：{0}",
@@ -334,6 +343,7 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "中斷所有連線",
         ["Menu_Language"] = "語言",
         ["Menu_About"] = "關於",
+        ["Menu_OpenLog"] = "開啟日誌資料夾",
 
         ["Lang_FollowSystem"] = "跟隨系統",
         ["Lang_English"] = "English",
@@ -363,6 +373,7 @@ internal static class Translations
         ["About_QQGroup"] = "軟體QQ群：639317971",
         ["About_OpenSource"] = "開源位址：",
         ["About_Note"] = "注意：本軟體不是Emotion，請進入Q群1045923515以下載正版Emotion",
+        ["About_Log"] = "日誌檔案：{0}",
         ["Version"] = "版本：{0}",
         ["UnknownVersion"] = "未知版本",
 
@@ -382,6 +393,7 @@ internal static class Translations
         ["Status_Ready"] = "就緒",
         ["Status_DriverCreateFailed"] = "驅動程式錯誤：無法建立服務",
         ["Status_HidMaestroUnavailable"] = "USB/IP 傳輸無法使用，無法建立虛擬手把",
+        ["Status_ControllerError"] = "建立虛擬手把失敗，詳見日誌：{0}",
         ["Status_LinuxRootRequired"] = "Linux：請以 root（sudo）執行 GKME 以建立虛擬手把",
         ["Status_UsbipExtracting"] = "正在準備 USB/IP 傳輸...",
         ["Status_InstallFailed"] = "安裝失敗：{0}",
@@ -438,6 +450,7 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "Отключить всё",
         ["Menu_Language"] = "Язык",
         ["Menu_About"] = "О программе",
+        ["Menu_OpenLog"] = "Открыть папку журнала",
 
         ["Lang_FollowSystem"] = "Как в системе",
         ["Lang_English"] = "English",
@@ -467,6 +480,7 @@ internal static class Translations
         ["About_QQGroup"] = "QQ-группа: 639317971",
         ["About_OpenSource"] = "Открытый код:",
         ["About_Note"] = "Внимание: это не Emotion. Вступите в QQ-группу 1045923515, чтобы скачать официальный Emotion.",
+        ["About_Log"] = "Файл журнала: {0}",
         ["Version"] = "Версия: {0}",
         ["UnknownVersion"] = "Неизвестно",
 
@@ -486,6 +500,7 @@ internal static class Translations
         ["Status_Ready"] = "Готово",
         ["Status_DriverCreateFailed"] = "Ошибка драйвера: не удалось создать службу",
         ["Status_HidMaestroUnavailable"] = "Транспорт USB/IP недоступен; виртуальные контроллеры создать нельзя",
+        ["Status_ControllerError"] = "Не удалось создать виртуальный контроллер; см. журнал: {0}",
         ["Status_LinuxRootRequired"] = "Linux: запустите GKME от имени root (sudo), чтобы создавать виртуальные контроллеры",
         ["Status_UsbipExtracting"] = "Подготовка транспорта USB/IP...",
         ["Status_InstallFailed"] = "Ошибка установки: {0}",
@@ -542,6 +557,7 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "Tout déconnecter",
         ["Menu_Language"] = "Langue",
         ["Menu_About"] = "À propos",
+        ["Menu_OpenLog"] = "Ouvrir le dossier des journaux",
 
         ["Lang_FollowSystem"] = "Suivre le système",
         ["Lang_English"] = "English",
@@ -571,6 +587,7 @@ internal static class Translations
         ["About_QQGroup"] = "Groupe QQ : 639317971",
         ["About_OpenSource"] = "Open source :",
         ["About_Note"] = "Remarque : cette application n'est pas Emotion. Rejoignez le groupe QQ 1045923515 pour télécharger la version officielle d'Emotion.",
+        ["About_Log"] = "Fichier journal : {0}",
         ["Version"] = "Version : {0}",
         ["UnknownVersion"] = "Inconnu",
 
@@ -590,6 +607,7 @@ internal static class Translations
         ["Status_Ready"] = "Prêt",
         ["Status_DriverCreateFailed"] = "Erreur de pilote : impossible de créer le service",
         ["Status_HidMaestroUnavailable"] = "Transport USB/IP indisponible ; impossible de créer des manettes virtuelles",
+        ["Status_ControllerError"] = "Échec de la création de la manette virtuelle ; voir le journal : {0}",
         ["Status_LinuxRootRequired"] = "Linux : lancez GKME en root (sudo) pour créer des manettes virtuelles",
         ["Status_UsbipExtracting"] = "Préparation du transport USB/IP...",
         ["Status_InstallFailed"] = "Échec de l'installation : {0}",

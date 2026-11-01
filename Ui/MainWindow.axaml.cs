@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -63,6 +65,7 @@ public partial class MainWindow : Window
 
     private void ShowUsbipInstallDialog()
     {
+        Log.Info("USB/IP install dialog opening");
         var owner = ResolveOwner();
 
         bool applied = false;
@@ -82,15 +85,21 @@ public partial class MainWindow : Window
             try
             {
                 result = await Task.Run(() => UsbipDriverInstaller.Install(
-                    s => Dispatcher.UIThread.Post(() => dlg.SetStatus(s)),
+                    s =>
+                    {
+                        Log.Info($"usbip install: {s}");
+                        Dispatcher.UIThread.Post(() => dlg.SetStatus(s));
+                    },
                     interactive: true));
             }
             catch (Exception ex)
             {
+                Log.Error("USB/IP transport install failed", ex);
                 dlg.SetCompleted(Localizer.Instance.Format("Status_InstallFailed", ex.Message));
                 return;
             }
 
+            Log.Info($"usbip install result: {result}");
             if (result == UsbipInstallResult.Success)
             {
                 applied = true;
@@ -336,5 +345,68 @@ public partial class MainWindow : Window
     {
         var dialog = new AboutDialog();
         await dialog.ShowDialog(this);
+    }
+
+    /// <summary>Opens the folder holding the diagnostic log; if the desktop has
+    /// no opener, shows the path so it can be copied.</summary>
+    private void OnOpenLogClick(object? sender, RoutedEventArgs e)
+    {
+        var path = Log.FilePath;
+        try
+        {
+            if (PlatformInfo.IsWindows)
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"")
+                {
+                    UseShellExecute = true,
+                });
+            }
+            else
+            {
+                var dir = Path.GetDirectoryName(path);
+                if (string.IsNullOrEmpty(dir)) dir = path;
+                Process.Start(new ProcessStartInfo("xdg-open", dir) { UseShellExecute = false });
+            }
+        }
+        catch
+        {
+            _ = ShowLogPathAsync(path);
+        }
+    }
+
+    private async Task ShowLogPathAsync(string path)
+    {
+        var text = new TextBox
+        {
+            Text = path,
+            IsReadOnly = true,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            Margin = new Thickness(16, 16, 16, 8),
+            MinHeight = 60,
+            FontSize = 12,
+            Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#2D2D2D")),
+            Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#CCCCCC")),
+        };
+        var close = new Button
+        {
+            Content = Localizer.Instance.Get("Close"),
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Margin = new Thickness(0, 0, 16, 16),
+            Padding = new Thickness(16, 6),
+            Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#0E639C")),
+            Foreground = Avalonia.Media.Brushes.White,
+        };
+        var dlg = new Window
+        {
+            Title = Localizer.Instance.Get("Menu_OpenLog"),
+            Width = 540,
+            Height = 190,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#1E1E1E")),
+            Content = new StackPanel { Children = { text, close } },
+        };
+        close.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
     }
 }

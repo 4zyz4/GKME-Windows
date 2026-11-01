@@ -13,6 +13,9 @@ class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        var version = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "?";
+        Log.StartupBanner("GKME", version);
+
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             var ex = e.ExceptionObject as Exception;

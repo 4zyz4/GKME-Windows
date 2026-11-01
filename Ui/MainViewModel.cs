@@ -71,6 +71,7 @@ public class MainViewModel : INotifyPropertyChanged
         _network.OnSessionConnectionLost += OnSessionConnectionLost;
         _network.OnRebootRequired += OnRebootRequired;
         _network.OnUsbipInstallRequired += OnUsbipInstallRequired;
+        _network.OnControllerError += OnControllerError;
     }
 
     // ----- device board bindings ------------------------------------------
@@ -188,6 +189,7 @@ public class MainViewModel : INotifyPropertyChanged
         _network.OnSessionConnectionLost -= OnSessionConnectionLost;
         _network.OnRebootRequired -= OnRebootRequired;
         _network.OnUsbipInstallRequired -= OnUsbipInstallRequired;
+        _network.OnControllerError -= OnControllerError;
         _network.StopDiscovery();
         await _network.DisconnectAllAsync();
     }
@@ -288,6 +290,11 @@ public class MainViewModel : INotifyPropertyChanged
 
     private void OnRebootRequired() => UiInvoke(() => RebootRequired?.Invoke());
     private void OnUsbipInstallRequired() => UiInvoke(() => UsbipInstallRequired?.Invoke());
+
+    /// <summary>The exception is already in the log; the status line tells the
+    /// user where to find it (the log path is also in About and the menu).</summary>
+    private void OnControllerError(GamepadSession session, Exception ex)
+        => UiInvoke(() => SetStatus("Status_ControllerError", Log.FilePath));
 
     private static void UiInvoke(Action action)
     {

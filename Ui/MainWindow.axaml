@@ -128,6 +128,7 @@
                           Click="OnLanguageMenuClick" />
             </MenuItem>
             <MenuItem Header="{DynamicResource Menu_About}" Click="OnAboutClick" />
+            <MenuItem Header="{DynamicResource Menu_OpenLog}" Click="OnOpenLogClick" />
         </Menu>
 
         <!-- Manual IP input -->

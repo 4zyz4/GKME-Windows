@@ -185,13 +185,7 @@ public sealed class StaticHost : IDisposable
         catch (ObjectDisposedException) { }
         catch (Exception ex)
         {
-            try
-            {
-                File.AppendAllText(
-                    Path.Combine(AppContext.BaseDirectory, "gkme_web.log"),
-                    $"{DateTime.UtcNow:O} client error: {ex}\n");
-            }
-            catch { }
+            Log.Error("web client error", ex);
         }
         finally
         {

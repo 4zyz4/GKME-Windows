@@ -72,6 +72,7 @@ public class NetworkService : IDisposable
         _intake.DeviceInfoUpdated += d => OnDeviceInfoUpdated?.Invoke(d);
         _intake.RebootRequired += _ => { RebootRequired = true; OnRebootRequired?.Invoke(); };
         _intake.UsbipInstallRequired += _ => OnUsbipInstallRequired?.Invoke();
+        _intake.ControllerError += (s, ex) => OnControllerError?.Invoke(s, ex);
     }
 
     /// <summary>Builds the session object the intake will drive. The controller
@@ -119,13 +120,12 @@ public class NetworkService : IDisposable
     {
         try
         {
-            var log = Path.Combine(AppContext.BaseDirectory, "gkme_error.log");
-            System.IO.File.AppendAllText(log, $"[InitHidMaestro] starting, BaseDir={AppContext.BaseDirectory}\n");
+            Log.Info("InitializeHidMaestro: loading profiles");
             
             int loaded = _gkContext.LoadDefaultProfiles();
             if (loaded == 0)
             {
-                System.IO.File.AppendAllText(log, "[InitHidMaestro] LoadDefaultProfiles returned 0\n");
+                Log.Error("InitializeHidMaestro: LoadDefaultProfiles returned 0 (profile catalog empty)");
                 return false;
             }
 
@@ -134,18 +134,20 @@ public class NetworkService : IDisposable
             // Always ensure the SDK's embedded driver version is deployed.
             // InstallDriver() has a same-version fast path (~40-60 ms) and only
             // runs the full pipeline when the installed driver actually differs.
+            Log.Info($"InitializeHidMaestro: {loaded} profiles, usbip backend available={GKContext.IsUsbipBackendAvailable}");
             _gkContext.InstallDriver();
 
             HidMaestroAvailable = true;
             RebootRequired = false;
             UsbipInstallRequired = false;
+            Log.Info("InitializeHidMaestro: virtual controller transport ready");
             return true;
         }
-        catch (UsbipRebootRequiredException)
+        catch (UsbipRebootRequiredException ex)
         {
             // The upgrade was applied but only a reboot will load it. Surface
             // a prompt rather than treating it as a driver failure.
-            try { System.IO.File.AppendAllText("gkme_error.log", "[InitHidMaestro] USBip upgrade requires a reboot\n"); } catch { }
+            Log.Warn($"InitializeHidMaestro: USB/IP upgrade requires a reboot: {ex.Message}");
             HidMaestroAvailable = false;
             RebootRequired = true;
             OnRebootRequired?.Invoke();
@@ -155,7 +157,7 @@ public class NetworkService : IDisposable
         {
             // Nothing is installed (or it is too old): the user chooses when
             // to install. Surface a prompt rather than a driver failure.
-            try { System.IO.File.AppendAllText("gkme_error.log", $"[InitHidMaestro] USBip install required (upgrade={ex.IsUpgrade})\n"); } catch { }
+            Log.Warn($"InitializeHidMaestro: USB/IP transport not ready (upgrade={ex.IsUpgrade}): {ex.Message}");
             HidMaestroAvailable = false;
             UsbipInstallRequired = true;
             OnUsbipInstallRequired?.Invoke();
@@ -163,7 +165,7 @@ public class NetworkService : IDisposable
         }
         catch (Exception ex)
         {
-            try { System.IO.File.AppendAllText("gkme_error.log", $"[InitHidMaestro] EXCEPTION: {ex}\n"); } catch { }
+            Log.Error("InitializeHidMaestro failed", ex);
             HidMaestroAvailable = false;
             return false;
         }
@@ -233,6 +235,10 @@ public class NetworkService : IDisposable
     public event Action<GamepadSession>? OnSessionStarted;
     public event Action<GamepadSession>? OnSessionEnded;
     public event Action<DeviceIdentity>? OnSessionConnectionLost;
+    /// <summary>Raised when creating a virtual controller fails (attach error,
+    /// missing permission, driver failure). The full exception goes to the log
+    /// file; the UI only points the user at it.</summary>
+    public event Action<GamepadSession, Exception>? OnControllerError;
     /// <summary>Raised when the USBip transport needs a reboot before
     /// controllers can be created. The UI shows a reboot prompt.</summary>
     public event Action? OnRebootRequired;
@@ -618,16 +624,22 @@ public class NetworkService : IDisposable
         _sendEvent.Set();
     }
 
-    public Task<GamepadSession?> ConnectAsync(DiscoveredDevice device, int connectTimeoutMs = 5000)
+    public async Task<GamepadSession?> ConnectAsync(DiscoveredDevice device, int connectTimeoutMs = 5000)
     {
-        if (device.IsUsb) return ConnectUsbAsync(device, connectTimeoutMs);
+        if (device.IsUsb) return await ConnectUsbAsync(device, connectTimeoutMs);
 
         // The intake performs the reboot check, serialises connects, reuses a
         // live session, drains retired ones, registers and starts.
         var phoneEp = new IPEndPoint(device.IpAddress, Port);
         var transport = new UdpSessionTransport(
             msg => EnqueueSend(phoneEp, TypeServerToClient, msg));
-        return _intake.ConnectAsync(device, transport);
+        Log.Info($"connect (wifi) -> {device.Identity.EndpointLabel} '{device.DeviceName}'");
+        var session = await _intake.ConnectAsync(device, transport);
+        if (session != null)
+            Log.Info($"connected -> {device.Identity.EndpointLabel}");
+        else
+            Log.Warn($"connect failed -> {device.Identity.EndpointLabel}");
+        return session;
     }
 
     /// <summary>Creates a session for a browser client served by the embedded
@@ -644,8 +656,13 @@ public class NetworkService : IDisposable
     public async Task<GamepadSession?> ConnectWebAsync(DiscoveredDevice device, Func<IMessage, Task> sendToBrowser)
     {
         OnDeviceDiscovered?.Invoke(device);
+        Log.Info($"connect (web) -> '{device.DeviceName}'");
         var session = await _intake.ConnectAsync(device, new WebSessionTransport(sendToBrowser));
-        if (session == null) OnDeviceLost?.Invoke(device);
+        if (session == null)
+        {
+            Log.Warn("connect (web) failed");
+            OnDeviceLost?.Invoke(device);
+        }
         return session;
     }
 
@@ -653,9 +670,9 @@ public class NetworkService : IDisposable
     /// forward and opens a TCP connection to the assigned loopback port; the
     /// phone accepts it in its USB TCP server. The session's device is the
     /// loopback endpoint, not the scan card.</summary>
-    private Task<GamepadSession?> ConnectUsbAsync(DiscoveredDevice device, int connectTimeoutMs)
+    private async Task<GamepadSession?> ConnectUsbAsync(DiscoveredDevice device, int connectTimeoutMs)
     {
-        if (string.IsNullOrEmpty(device.AdbSerial)) return Task.FromResult<GamepadSession?>(null);
+        if (string.IsNullOrEmpty(device.AdbSerial)) return null;
 
         var liveDevice = new DiscoveredDevice
         {
@@ -671,7 +688,11 @@ public class NetworkService : IDisposable
         // The transport resolves its link lazily, so a re-attached USB link keeps
         // flowing through the same session without re-creating it.
         var transport = new UsbSessionTransport(liveDevice, _adb, connectTimeoutMs);
-        return _intake.ConnectAsync(liveDevice, transport);
+        Log.Info($"connect (usb) -> {device.AdbSerial}");
+        var session = await _intake.ConnectAsync(liveDevice, transport);
+        if (session == null)
+            Log.Warn($"connect (usb) failed -> {device.AdbSerial}");
+        return session;
     }
 
     /// <summary>Re-attaches the USB transport for a session whose link dropped,

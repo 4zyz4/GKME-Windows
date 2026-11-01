@@ -194,8 +194,9 @@ public partial class App : Application
             _service = new NetworkService();
             _service.InitializeHidMaestro();
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Error("NetworkService initialization failed", ex);
             _service?.Dispose();
             _service = null;
         }
@@ -208,20 +209,24 @@ public partial class App : Application
         if (_service == null) return;
         try
         {
-            _webHost = new StaticHost(new BrowserBridge(_service));
-            _webHost.Start();
-            if (_webHost.Running)
+            var webHost = new StaticHost(new BrowserBridge(_service));
+            _webHost = webHost;
+            webHost.Start();
+            if (webHost.Running)
             {
+                Log.Info($"web server listening on {webHost.WebRoot} port {StaticHost.HttpPort}");
                 vm.ConfigureWeb();
             }
             else
             {
-                if (!string.IsNullOrEmpty(_webHost.LastError))
-                    vm.SetWebServerError(_webHost.LastError);
+                Log.Warn($"web server did not start: {webHost.LastError}");
+                if (!string.IsNullOrEmpty(webHost.LastError))
+                    vm.SetWebServerError(webHost.LastError);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Error("web server startup failed", ex);
             _webHost?.Dispose();
             _webHost = null;
         }

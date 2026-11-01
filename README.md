@@ -93,6 +93,37 @@ in the file manager.
   the bundled WenQuanYi Micro Hei as the CJK fallback instead of drawing boxes
   (licence: `licenses/WQY-MICROHEI-LICENSE.txt`).
 
+## Logs and troubleshooting
+
+GKME writes a diagnostic log that is independent of the install/mount
+directory (an AppImage payload is read-only, so the old
+`<app dir>/gkme_error.log` could never be written there):
+
+| Where GKME runs | Log file |
+|-----------------|----------|
+| Linux, as root (AppImage + pkexec) | `/var/log/gkme/gkme.log` |
+| Linux, as a normal user | `~/.local/state/GKME/logs/gkme.log` (`$XDG_STATE_HOME`) |
+| Windows | `%LOCALAPPDATA%\GKME\logs\gkme.log` |
+
+The log contains a startup banner (build, OS, architecture, elevation, paths),
+the USB/IP transport state, every connect attempt, controller-creation
+failures with full stack traces, and installer progress. The same lines go to
+stderr. The **Open log folder** menu item opens the directory, and the About
+dialog shows the exact path.
+
+Kernel-side USB/IP failures are in the kernel ring buffer:
+
+```bash
+sudo dmesg | grep -iE 'vhci|usbip'
+cat /sys/devices/platform/vhci_hcd.0/status   # port/state/device table
+```
+
+If `/sys/devices/platform/vhci_hcd*` does not exist, the module is not loaded:
+
+```bash
+sudo modprobe vhci_hcd
+```
+
 ## Limitations
 
 - WSLg can run and drive the UI, but the WSL kernel usually ships without

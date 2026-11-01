@@ -30,6 +30,8 @@ public static class ExceptionLogger
         while (_logs.Count > MaxRecords)
             _logs.RemoveAt(0);
 
+        Log.Error($"{record.SourceLocation}: {record.Type}: {record.Message}", ex);
+
         OnNewException?.Invoke();
     }
 

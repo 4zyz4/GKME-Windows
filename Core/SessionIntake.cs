@@ -59,6 +59,9 @@ public sealed class SessionIntake
     public event Action<DiscoveredDevice>? DeviceInfoUpdated;
     public event Action<GamepadSession>? RebootRequired;
     public event Action<GamepadSession>? UsbipInstallRequired;
+    /// <summary>Carries a controller-creation failure and its exception; the
+    /// exception is already written to the log by the session.</summary>
+    public event Action<GamepadSession, Exception>? ControllerError;
 
     public IReadOnlyCollection<GamepadSession> ActiveSessions
     {
@@ -116,7 +119,11 @@ public sealed class SessionIntake
     {
         // e.g. a USBip upgrade is waiting for a reboot: Windows will not load
         // the transport, so every new connection is refused up front.
-        if (_isConnectionBlocked?.Invoke() == true) return null;
+        if (_isConnectionBlocked?.Invoke() == true)
+        {
+            Log.Warn($"connect {device.Identity.EndpointLabel} refused: transport blocked (reboot required)");
+            return null;
+        }
 
         var key = device.Identity.EndpointId;
         GamepadSession? oldSession = null;
@@ -166,6 +173,7 @@ public sealed class SessionIntake
 
             if (!await transport.AttachAsync(session).ConfigureAwait(false))
             {
+                Log.Warn($"transport attach failed -> {device.Identity.EndpointLabel}");
                 // Roll the half-established session back: the UI must never show
                 // a connected device with no transport behind it.
                 lock (_connectLock)
@@ -226,6 +234,7 @@ public sealed class SessionIntake
         session.OnDeviceInfoUpdated += s => DeviceInfoUpdated?.Invoke(s.Device);
         session.OnRebootRequired += s => RebootRequired?.Invoke(s);
         session.OnUsbipInstallRequired += s => UsbipInstallRequired?.Invoke(s);
+        session.OnControllerError += (s, ex) => ControllerError?.Invoke(s, ex);
         session.OnDisconnected += s =>
         {
             lock (_connectLock)
