@@ -51,6 +51,7 @@ public class GamepadSession : IDisposable
     private VirtualKeyboardMouse? _kbMouse;
     private bool _kbMouseCreating;
     private bool _kbMouseFailed;
+    private DateTime _kbMouseRetryAfterUtc;
 
     public DiscoveredDevice Device { get; }
     public ControllerMode Mode { get; private set; }
@@ -520,9 +521,18 @@ public class GamepadSession : IDisposable
         lock (_kbMouseLock)
         {
             if (_kbMouse != null) return _kbMouse;
-            if (_kbMouseCreating || _kbMouseFailed || _disposed) return null;
+            if (_kbMouseCreating || _disposed) return null;
+            if (_kbMouseFailed)
+            {
+                // A transient USB/IP attach failure must not disable the
+                // keyboard/mouse for the whole session; retry after a pause.
+                if (DateTime.UtcNow < _kbMouseRetryAfterUtc) return null;
+                _kbMouseFailed = false;
+            }
             _kbMouseCreating = true;
         }
+
+        Log.Info("creating virtual keyboard/mouse");
 
         _ = Task.Run(() =>
         {
@@ -560,6 +570,7 @@ public class GamepadSession : IDisposable
                 _kbMouseCreating = false;
             }
             if (orphaned) created.Dispose();
+            else Log.Info("virtual keyboard/mouse attached (HID keyboard + mouse)");
         });
 
         return null;
@@ -567,7 +578,12 @@ public class GamepadSession : IDisposable
 
     private void MarkKeyboardMouseFailed()
     {
-        lock (_kbMouseLock) { _kbMouseCreating = false; _kbMouseFailed = true; }
+        lock (_kbMouseLock)
+        {
+            _kbMouseCreating = false;
+            _kbMouseFailed = true;
+            _kbMouseRetryAfterUtc = DateTime.UtcNow.AddSeconds(10);
+        }
     }
 
     public async Task<ControllerMode> SetControllerModeAsync(ControllerMode mode)
