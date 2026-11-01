@@ -108,8 +108,7 @@ directory (an AppImage payload is read-only, so the old
 The log contains a startup banner (build, OS, architecture, elevation, paths),
 the USB/IP transport state, every connect attempt, controller-creation
 failures with full stack traces, and installer progress. The same lines go to
-stderr. The **Open log folder** menu item opens the directory, and the About
-dialog shows the exact path.
+stderr. The About dialog shows the exact log path.
 
 Kernel-side USB/IP failures are in the kernel ring buffer:
 

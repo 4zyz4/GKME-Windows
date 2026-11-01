@@ -22,7 +22,6 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "Disconnect all",
         ["Menu_Language"] = "Language",
         ["Menu_About"] = "About",
-        ["Menu_OpenLog"] = "Open log folder",
 
         ["Lang_FollowSystem"] = "Follow system",
         ["Lang_English"] = "English",
@@ -129,7 +128,6 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "断开全部",
         ["Menu_Language"] = "语言",
         ["Menu_About"] = "关于",
-        ["Menu_OpenLog"] = "打开日志文件夹",
 
         ["Lang_FollowSystem"] = "跟随系统",
         ["Lang_English"] = "English",
@@ -236,7 +234,6 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "中斷所有連線",
         ["Menu_Language"] = "語言",
         ["Menu_About"] = "關於",
-        ["Menu_OpenLog"] = "開啟日誌資料夾",
 
         ["Lang_FollowSystem"] = "跟隨系統",
         ["Lang_English"] = "English",
@@ -343,7 +340,6 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "中斷所有連線",
         ["Menu_Language"] = "語言",
         ["Menu_About"] = "關於",
-        ["Menu_OpenLog"] = "開啟日誌資料夾",
 
         ["Lang_FollowSystem"] = "跟隨系統",
         ["Lang_English"] = "English",
@@ -450,7 +446,6 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "Отключить всё",
         ["Menu_Language"] = "Язык",
         ["Menu_About"] = "О программе",
-        ["Menu_OpenLog"] = "Открыть папку журнала",
 
         ["Lang_FollowSystem"] = "Как в системе",
         ["Lang_English"] = "English",
@@ -557,7 +552,6 @@ internal static class Translations
         ["Menu_DisconnectAll"] = "Tout déconnecter",
         ["Menu_Language"] = "Langue",
         ["Menu_About"] = "À propos",
-        ["Menu_OpenLog"] = "Ouvrir le dossier des journaux",
 
         ["Lang_FollowSystem"] = "Suivre le système",
         ["Lang_English"] = "English",
