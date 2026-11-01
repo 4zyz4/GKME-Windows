@@ -36,6 +36,54 @@ dotnet publish -c Release -r linux-arm64   # x64 host also needs aarch64-linux-g
 
 Without `-r`, the machine's own RID is used.
 
+### Linux builds from Windows (WSL)
+
+NativeAOT cannot cross-compile, so building the Linux executable from Windows
+starts WSL and builds there:
+
+```powershell
+Install\Build-Linux.ps1                          # AppImage for the WSL architecture
+Install\Build-Linux.ps1 -Target Publish          # plain publish output only
+Install\Build-Linux.ps1 -Rid linux-arm64         # on x64 needs aarch64 binutils
+Install\Build-Linux.ps1 -InstallDeps -Clean      # apt install prerequisites, full rebuild
+Install\Build-Linux.ps1 -Distro Ubuntu -NoCopyBack
+```
+
+The script copies this project and its sibling `GKMD` (plus `GKME-Web` when
+present) into `~/gkme-build` inside WSL. Building from `/mnt/c` is slow and
+loses the executable bit, so the sources are synced to the Linux filesystem
+first; `bin/`, `obj/` and repository metadata are skipped, and `rsync` keeps
+the copy in sync when it is available. The artifact is copied back to
+`bin\Release` (`GKME-v<version>-<rid>.AppImage`, or `publish-<rid>/` for
+`-Target Publish`).
+
+### All platforms
+
+```powershell
+Install\Build-All.ps1                              # every supported platform
+Install\Build-All.ps1 -Platforms win-x64,linux-x64
+Install\Build-All.ps1 -OutputDir D:\GKME-release
+Install\Build-All.ps1 -KeepOutput -InstallDeps -Clean
+```
+
+Each platform is built in turn — Windows installers through
+`Build-Installer.ps1`, Linux AppImages through WSL — and the artifacts are
+collected into one subfolder per platform under `Install\Output`:
+
+```
+Install\Output\
+  win-x64\GKME_Setup_<version>.exe
+  win-arm64\GKME_Setup_<version>_arm64.exe
+  linux-x64\GKME-v<version>-linux-x64.AppImage
+  linux-arm64\GKME-v<version>-linux-arm64.AppImage
+```
+
+A platform that fails (Inno Setup 7, WSL or an ARM64 toolchain missing) is
+reported in the summary and the script exits non-zero, but the remaining
+platforms are still built. The per-platform folders are recreated unless
+`-KeepOutput` is passed; `-InstallDeps` and `-Clean` are forwarded to the Linux
+builds.
+
 ### Windows installer
 
 ```powershell

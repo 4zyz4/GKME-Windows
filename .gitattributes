@@ -63,3 +63,7 @@ Driver/Resources/USBip-0.9.8.0-x64.exe filter=lfs diff=lfs merge=lfs -text
 # Bundled adb payloads are binaries (and linux/adb must keep its exec bit).
 platform-tools/windows/adb.exe -text
 platform-tools/linux/adb -text
+
+# Shell scripts are executed by WSL/Linux; a CRLF checkout makes bash fail on
+# the shebang and on every line, so they always keep LF.
+*.sh text eol=lf
