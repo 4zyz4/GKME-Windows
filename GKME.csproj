@@ -66,10 +66,25 @@
       <ProtoRoot>proto</ProtoRoot>
     </Protobuf>
   </ItemGroup>
-  <!-- The virtual controller engine lives in the independent GKMD repo,
-       checked out as a sibling directory of this one. -->
+  <!-- GKMD is compiled from source into this AOT image. Its release
+       artifact is a NativeAOT C ABI library (GKMD.dll / libGKMD.so) and
+       can no longer be referenced as a managed assembly, so the sources
+       and embedded payload are pulled in directly. -->
+  <PropertyGroup>
+    <UsbipPayloadArch Condition="'$(UsbipPayloadArch)' == '' and '$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.ToLowerInvariant().Contains('arm64'))">arm64</UsbipPayloadArch>
+    <UsbipPayloadArch Condition="'$(UsbipPayloadArch)' == ''">x64</UsbipPayloadArch>
+    <DefineConstants>$(DefineConstants);GKMD_WINDOWS</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
-    <ProjectReference Include="..\GKMD\GKMD.csproj" />
+    <Compile Include="..\GKMD\**\*.cs"
+             Exclude="..\GKMD\bin\**;..\GKMD\obj\**;..\GKMD\tools\**;..\GKMD\Native\**;..\GKMD\AssemblyInfo.cs" />
+    <EmbeddedResource Include="..\GKMD\Resources\USBip-0.9.8.1-$(UsbipPayloadArch).exe">
+      <LogicalName>GKMD.Resources.USBip-0.9.8.1-$(UsbipPayloadArch).exe</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\GKMD\Resources\THIRD-PARTY-NOTICES.txt">
+      <LogicalName>GKMD.Resources.THIRD-PARTY-NOTICES.txt</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- Ship the licenses of the components bundled with GKME: GKMD's MIT
