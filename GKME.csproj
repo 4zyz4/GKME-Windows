@@ -77,6 +77,8 @@
   <ItemGroup>
     <AvaloniaResource Include="icon.ico" />
     <AvaloniaResource Include="icon.png" />
+    <!-- CJK fallback for Linux only: Windows always ships a CJK system font. -->
+    <AvaloniaResource Include="Assets\Fonts\wqy-microhei.ttf" Condition="'$(GkmeIsWindows)' != 'true'" />
     <Content Include="icon.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
@@ -141,6 +143,11 @@
     </Content>
     <Content Include="..\GKMD\Resources\THIRD-PARTY-NOTICES.txt">
       <Link>licenses\USBIP-WIN2-LICENSE.txt</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="Assets\Fonts\LICENSE-WQY-MicroHei.txt">
+      <Link>licenses\WQY-MICROHEI-LICENSE.txt</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>

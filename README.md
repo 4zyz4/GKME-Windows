@@ -75,13 +75,23 @@ installs to `/opt/gkme` and registers the application menu entry.
 - Closing the window exits on Linux; on Windows it hides to the tray. The
   Linux tray icon is created when the desktop provides a StatusNotifier host,
   but a hidden window must never depend on one.
-- Chinese/Japanese/Korean UI text needs a CJK font; WSLg ships without one and
-  renders boxes until a font such as `fonts-noto-cjk` is installed.
+- Chinese/Japanese/Korean text uses the system CJK font when one is visible to
+  the process. When none is visible — typically when the app runs as root and
+  the fonts were installed under the user's home, as in WSLg — GKME registers
+  the bundled WenQuanYi Micro Hei as the CJK fallback instead of drawing boxes
+  (licence: `licenses/WQY-MICROHEI-LICENSE.txt`).
 
 ## Limitations
 
 - WSLg can run and drive the UI, but the WSL kernel usually ships without
   `vhci_hcd`, so virtual controller creation has to be verified on a real Linux
-  installation.
+  installation. (A `sudo modprobe vhci_hcd` in a recent WSL2 kernel makes the
+  whole flow testable inside WSL.)
 - Windows arm64 and Linux arm64 builds are cross-architecture artifacts; they
   were not exercised on physical hardware as part of this repository's CI.
+
+## Third-party assets
+
+- **WenQuanYi Micro Hei** (Apache-2.0), embedded as a CJK glyph fallback for
+  Linux hosts without a system CJK font. See
+  `Assets/Fonts/LICENSE-WQY-MicroHei.txt`.
