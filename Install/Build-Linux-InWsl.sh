@@ -172,7 +172,10 @@ chmod 755 "$REPO/platform-tools/linux/adb" 2>/dev/null || true
 if [[ "$TARGET" == "AppImage" ]]; then
     log "Publishing and packing the AppImage"
     bash "$REPO/Install/Build-Linux-AppImage.sh" "$RID" "$CONFIG"
-    ARTIFACT="$(find "$REPO/bin/$CONFIG" -maxdepth 1 -name "GKME-v*-$RID.AppImage" -print -quit)"
+    # Pick the newest AppImage: the build tree keeps previous releases (bin/ is
+    # excluded from the sync), and find's directory order would otherwise hand
+    # back a stale file from an older version.
+    ARTIFACT="$(find "$REPO/bin/$CONFIG" -maxdepth 1 -name "GKME-v*-$RID.AppImage" -printf '%T@\t%p\n' | sort -nr | head -n1 | cut -f2-)"
     [[ -n "$ARTIFACT" ]] || die "AppImage was not produced under $REPO/bin/$CONFIG"
 else
     PUBLISH_DIR="$REPO/bin/$CONFIG/net10.0/$RID/publish"
