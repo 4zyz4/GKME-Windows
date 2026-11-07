@@ -95,6 +95,10 @@
     <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
     <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <!-- Used directly by Core/TrayHost.cs to ask the session bus whether a
+         StatusNotifier host is running. Avalonia.FreeDesktop (pulled in by
+         Avalonia.X11) already depends on the same version. -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.94.1" />
     <PackageReference Include="Grpc.Tools" Version="2.67.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

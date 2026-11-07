@@ -141,9 +141,10 @@ in the file manager.
   `pkexec`.
 - Attaching a virtual controller needs root. `AppRun` re-runs the AppImage
   through `pkexec` (forwarding `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`,
-  `XDG_RUNTIME_DIR`, `PULSE_SERVER` and the locale variables), so the desktop
-  asks for authentication and the app comes up with the rights it needs. If
-  polkit is unavailable and a graphical `SUDO_ASKPASS` helper is configured,
+  `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `PULSE_SERVER` and the locale
+  variables), so the desktop asks for authentication, the app comes up with the
+  rights it needs and its tray icon still registers on the user's session bus.
+  If polkit is unavailable and a graphical `SUDO_ASKPASS` helper is configured,
   `sudo -A` is used instead; otherwise the AppImage explains how to launch it
   with `sudo`.
 - Set `GKME_NO_ELEVATE=1` to skip elevation for UI-only testing (virtual
@@ -155,9 +156,11 @@ in the file manager.
   official Linux adb, so no external install is required; on Linux ARM64 that
   copy is the x86_64 build and only works where x86_64 emulation is available,
   otherwise a native `adb` on `PATH` is used instead.
-- Closing the window exits on Linux; on Windows it hides to the tray. The
-  Linux tray icon is created when the desktop provides a StatusNotifier host,
-  but a hidden window must never depend on one.
+- Closing the window hides it to the tray on both platforms. On Linux this
+  needs a desktop that hosts StatusNotifierItems (KDE Plasma, Xfce, LXQt,
+  Ubuntu's GNOME with the AppIndicator extension, ...): GKME checks for
+  `org.kde.StatusNotifierWatcher` and exits instead of hiding when no host is
+  running, so the window can never become unreachable.
 - Chinese/Japanese/Korean text uses the system CJK font when one is visible to
   the process. When none is visible — typically when the app runs as root and
   the fonts were installed under the user's home, as in WSLg — GKME registers

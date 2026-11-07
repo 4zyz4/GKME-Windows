@@ -31,9 +31,10 @@ public partial class App : Application
     private NativeMenuItem? _trayShowItem;
     private NativeMenuItem? _trayExitItem;
 
-    /// <summary>True when the desktop accepted a tray icon. Without one the
-    /// main window has to exit on close instead of hiding, otherwise the
-    /// process would keep running with no way to get the window back.</summary>
+    /// <summary>True when Avalonia created a tray icon. On Linux the desktop
+    /// only draws it while a StatusNotifier host is running, so code that
+    /// hides a window must also ask <see cref="TrayHost"/>; a hidden window
+    /// without a visible icon would be unreachable.</summary>
     public static bool TrayAvailable { get; private set; }
 
     private static string IconFileName => PlatformInfo.IsWindows ? "icon.ico" : "icon.png";
@@ -164,10 +165,11 @@ public partial class App : Application
             TrayIcon.SetIcons(this, trayIcons);
             TrayAvailable = true;
         }
-        catch
+        catch (Exception ex)
         {
             // Headless sessions and desktops without a tray/StatusNotifier host
             // do not support TrayIcon. Keep running without one.
+            Log.Warn($"tray: icon could not be created: {ex.Message}");
             TrayAvailable = false;
         }
     }

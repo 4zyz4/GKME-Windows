@@ -248,15 +248,18 @@ public partial class MainWindow : Window
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         e.Cancel = true;
-        if (App.TrayAvailable && PlatformInfo.IsWindows)
+
+        // Keep running in the tray on both platforms, but only when the icon
+        // is really there: on Linux Avalonia accepts the registration without
+        // a StatusNotifier host, and a hidden window would then be
+        // unreachable. Re-check the host so a tray that disappeared after
+        // startup does not swallow the window either.
+        if (App.TrayAvailable && TrayHost.IsAvailable())
         {
             Hide();
             return;
         }
 
-        // Windows keeps running in the tray. Linux exits instead: a desktop
-        // without a StatusNotifier host accepts the tray registration but never
-        // shows the icon, and a hidden window would then be unreachable.
         _ = SafeCloseAsync();
     }
 
