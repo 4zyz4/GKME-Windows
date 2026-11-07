@@ -19,7 +19,7 @@
   #define SetupArch "x64"
 #endif
 #ifndef OutputSuffix
-  #define OutputSuffix ""
+  #define OutputSuffix "_x64"
 #endif
 #if SetupArch == "arm64"
   #define AllowedArch "arm64"

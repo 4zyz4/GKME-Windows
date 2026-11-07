@@ -12,9 +12,9 @@ $RepoRoot = Resolve-Path "$PSScriptRoot\.."
 $Rid = "win-$Architecture"
 $PublishDir = "$RepoRoot\bin\$Configuration\net10.0-windows\$Rid\publish"
 
-# The x64 installer keeps the historical file name; the ARM64 one is named
-# apart so both can sit in the same release.
-$OutputSuffix = if ($Architecture -eq 'x64') { '' } else { "_$Architecture" }
+# Both installers carry their architecture in the file name so they can sit
+# in the same release without ambiguity.
+$OutputSuffix = "_$Architecture"
 
 # ---------- step 1: publish self-contained NativeAOT ----------
 # NativeAOT cannot cross-compile: the Windows ARM64 build needs the MSVC

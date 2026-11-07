@@ -72,7 +72,7 @@ collected into one subfolder per platform under `Install\Output`:
 
 ```
 Install\Output\
-  win-x64\GKME_Setup_<version>.exe
+  win-x64\GKME_Setup_<version>_x64.exe
   win-arm64\GKME_Setup_<version>_arm64.exe
   linux-x64\GKME-v<version>-linux-x64.AppImage
   linux-arm64\GKME-v<version>-linux-arm64.AppImage
@@ -87,7 +87,7 @@ builds.
 ### Windows installer
 
 ```powershell
-Install\Build-Installer.ps1                 # x64 → GKME_Setup_<version>.exe
+Install\Build-Installer.ps1                 # x64 → GKME_Setup_<version>_x64.exe
 Install\Build-Installer.ps1 -Architecture arm64  # → GKME_Setup_<version>_arm64.exe
 ```
 
