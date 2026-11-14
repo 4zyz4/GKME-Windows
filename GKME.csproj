@@ -139,10 +139,16 @@
     </EmbeddedResource>
   </ItemGroup>
 
-  <!-- Ship the licenses of the components bundled with GKME: GKMD's MIT
-       license and the third-party notices for the embedded usbip-win2. They
-       are copied into the publish folder and installed under `licenses\`. -->
+  <!-- Ship the licenses of the components bundled with GKME: the GPLv3 text
+       for GKME itself, GKMD's MIT license and the third-party notices for the
+       embedded usbip-win2. They are copied into the publish folder and
+       installed under `licenses\`. -->
   <ItemGroup>
+    <Content Include="LICENSE">
+      <Link>licenses\GPL-3.0.txt</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
     <Content Include="..\GKMD\LICENSE">
       <Link>licenses\GKMD-LICENSE.txt</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

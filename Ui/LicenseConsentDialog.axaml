@@ -1,0 +1,60 @@
+<Window x:Class="GKME.Ui.LicenseConsentDialog" xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource License_ConsentTitle}"
+        Width="760" Height="720"
+        MinWidth="480" MinHeight="360"
+        WindowStartupLocation="CenterScreen"
+        Background="#1E1E1E"
+        Foreground="#E0E0E0">
+    <Window.Styles>
+        <Style Selector="Button">
+            <Setter Property="Background" Value="#3A3A3A" />
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="16,7" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
+        <Style Selector="Button:pointerover">
+            <Setter Property="Background" Value="#4A4A4A" />
+        </Style>
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="#0E639C" />
+            <Setter Property="Foreground" Value="White" />
+        </Style>
+        <Style Selector="Button.primary:pointerover">
+            <Setter Property="Background" Value="#1177BB" />
+        </Style>
+        <Style Selector="CheckBox">
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
+    </Window.Styles>
+
+    <Grid Margin="20" RowDefinitions="Auto,*,Auto">
+        <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,12">
+            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#E0E0E0"
+                       Text="{DynamicResource License_ConsentHeading}" />
+            <TextBlock FontSize="12" Foreground="#B0B0B0" TextWrapping="Wrap"
+                       Text="{DynamicResource License_ConsentIntro}" />
+        </StackPanel>
+
+        <Border Grid.Row="1" Background="#252525" CornerRadius="4" Padding="14">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <SelectableTextBlock x:Name="LicenseText" FontSize="12" Foreground="#B0B0B0"
+                                     FontFamily="Consolas, DejaVu Sans Mono, Liberation Mono, monospace"
+                                     TextWrapping="Wrap" LineHeight="18" />
+            </ScrollViewer>
+        </Border>
+
+        <StackPanel Grid.Row="2" Spacing="10" Margin="0,12,0,0">
+            <CheckBox x:Name="AcceptCheck" Content="{DynamicResource License_ConsentCheck}" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="12">
+                <Button x:Name="DeclineButton" Content="{DynamicResource License_ConsentDecline}"
+                        IsCancel="True" />
+                <Button x:Name="AcceptButton" Classes="primary" IsEnabled="False"
+                        IsDefault="True" Content="{DynamicResource License_ConsentAccept}" />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</Window>

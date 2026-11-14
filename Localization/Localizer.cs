@@ -61,7 +61,12 @@ public sealed class Localizer : INotifyPropertyChanged
 
         _selectedLanguage = language;
         _effectiveLanguage = Resolve(language);
-        _settingsStore.Save(new AppSettings { Language = ToCode(language) });
+
+        // Reload before saving so unrelated preferences (such as the accepted
+        // license) are not reset to their defaults.
+        var settings = _settingsStore.Load();
+        settings.Language = ToCode(language);
+        _settingsStore.Save(settings);
 
         LanguageChanged?.Invoke(this, EventArgs.Empty);
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs("Item[]"));

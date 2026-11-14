@@ -87,29 +87,79 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-
             if (IsPortInUse(NetworkService.Port))
-                {
-                    ShowDuplicateWarning();
-                    desktop.Shutdown(-1);
-                    return;
-                }
-
-            TryInitializeService();
-
-            var vm = new MainViewModel(_service);
-            StartWebServer(vm);
-            var window = new MainWindow(vm);
-            _mainWindow = window;
-            TrySetWindowIcon(window);
-
-            window.Show();
-            window.Closed += OnMainWindowClosed;
-
-            SetupTrayIcon();
+            {
+                ShowDuplicateWarning();
+                desktop.Shutdown(-1);
+            }
+            else if (NeedsLicenseConsent())
+            {
+                ShowLicenseConsent(desktop);
+            }
+            else
+            {
+                StartApplication(desktop, showWindow: false);
+            }
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    /// <summary>Linux packages have no installer, so the GPLv3 has never been
+    /// shown. Ask once on first launch; the Windows installer handles the same
+    /// consent through its license page.</summary>
+    private static bool NeedsLicenseConsent() =>
+        PlatformInfo.IsLinux && !new SettingsStore().Load().LicenseAccepted;
+
+    /// <summary>Shows the consent window as the first (and, until accepted,
+    /// only) window. The lifetime shows <c>MainWindow</c> after this method
+    /// returns, so the dialog must not be shown here as well.</summary>
+    private void ShowLicenseConsent(IClassicDesktopStyleApplicationLifetime desktop)
+    {
+        // Closing the consent dialog would otherwise trigger OnLastWindowClose
+        // before the main window exists.
+        desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+        var dialog = new LicenseConsentDialog();
+        desktop.MainWindow = dialog;
+        dialog.Closed += (_, _) =>
+        {
+            if (!dialog.Accepted)
+            {
+                desktop.Shutdown(1);
+                return;
+            }
+
+            var store = new SettingsStore();
+            var settings = store.Load();
+            settings.LicenseAccepted = true;
+            store.Save(settings);
+
+            desktop.ShutdownMode = ShutdownMode.OnLastWindowClose;
+            StartApplication(desktop, showWindow: true);
+        };
+    }
+
+    /// <summary>Creates the service, web host, main window and tray icon.
+    /// Runs after the first-launch license check has been satisfied.</summary>
+    /// <param name="showWindow">The lifetime shows <c>MainWindow</c> itself
+    /// right after startup; when this runs later (after the license dialog)
+    /// the window has to be shown here instead.</param>
+    private void StartApplication(IClassicDesktopStyleApplicationLifetime desktop, bool showWindow)
+    {
+        TryInitializeService();
+
+        var vm = new MainViewModel(_service);
+        StartWebServer(vm);
+        var window = new MainWindow(vm);
+        _mainWindow = window;
+        TrySetWindowIcon(window);
+
+        desktop.MainWindow = window;
+        if (showWindow) window.Show();
+        window.Closed += OnMainWindowClosed;
+
+        SetupTrayIcon();
     }
 
     /// <summary>Window/taskbar icon. Windows uses the multi-resolution .ico,

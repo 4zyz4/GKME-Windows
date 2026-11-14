@@ -69,6 +69,9 @@ DisableWelcomePage=yes
 DisableDirPage=no
 DisableFinishedPage=no
 CloseApplications=yes
+; 安装前必须同意 GPLv3：Inno Setup 会因此插入“许可协议”页；
+; 用户选择“我不同意”时安装程序直接退出。路径相对于本 .iss 文件。
+LicenseFile=..\LICENSE
 
 [Languages]
 Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
