@@ -1,0 +1,102 @@
+# 编译校验：push / PR / 手动触发时，对 win-x64 与 linux-x64 各跑一次
+# `dotnet publish` 的 NativeAOT 构建，确认源码可以正常编译。
+#
+# 这里只做「编译验证」，不产出安装包：
+#   * Windows 安装包（Inno Setup）见 Install\Build-Installer.ps1
+#   * Linux AppImage 见 Install\Build-Linux-AppImage.sh
+#
+# 工程文件把同级目录的 GKMD 源码直接编译进产物，并在存在 GKME-Web 时
+# 打包网页手柄前端，所以检出本仓库后还要把这两个仓库克隆到同一父目录。
+# 需要锁定版本时，在仓库 Variables 里设置 GKMD_REF / GKME_WEB_REF。
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+# 同一个分支的新提交会取消上一次仍在跑的校验，省时间也省额度。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  CONFIGURATION: Release
+
+jobs:
+  build:
+    name: build (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 两个平台各自独立，一个失败不影响另一个的结果。
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            tfm: net10.0-windows
+          - rid: linux-x64
+            os: ubuntu-latest
+            tfm: net10.0
+
+    steps:
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          # 以工程文件作为缓存键，包版本变了才会重新下载。
+          cache: true
+          cache-dependency-path: GKME.csproj
+
+      - name: 显示 SDK 信息
+        run: dotnet --info
+
+      # NativeAOT 在 Linux 上依赖 clang 链接器和 zlib。
+      - name: 安装 Linux 编译依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang zlib1g-dev build-essential
+
+      # GKME.csproj 通过 ..\GKMD 和 ..\GKME-Web 引用同级仓库：
+      # 工作区是 <root>/GKME-Windows/GKME-Windows，父目录可写，克隆到上一级即可。
+      - name: 克隆同级依赖仓库
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch "${{ vars.GKMD_REF || 'main' }}" \
+            https://github.com/4zyz4/GKMD.git ../GKMD
+          # 网页手柄只是可选载荷，克隆失败时工程仍可编译，仅给出警告。
+          git clone --depth 1 --branch "${{ vars.GKME_WEB_REF || 'master' }}" \
+            https://github.com/4zyz4/GKME-Web.git ../GKME-Web \
+            || echo "::warning::GKME-Web 克隆失败，本次校验不含网页手柄载荷"
+
+      - name: NativeAOT 发布 (${{ matrix.rid }})
+        run: >-
+          dotnet publish GKME.csproj
+          -c ${{ env.CONFIGURATION }}
+          -r ${{ matrix.rid }}
+          --self-contained true
+
+      - name: 检查可执行文件
+        shell: bash
+        run: |
+          dir="bin/${{ env.CONFIGURATION }}/${{ matrix.tfm }}/${{ matrix.rid }}/publish"
+          exe="$dir/GKME"
+          [[ -f "$exe" ]] || exe="$exe.exe"
+          [[ -f "$exe" ]] || { echo "::error::没有找到 $dir/GKME(.exe)"; exit 1; }
+          echo "产物：$exe"
+          echo "大小：$(($(stat -c%s "$exe") / 1024 / 1024)) MB"

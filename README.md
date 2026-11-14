@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"/></a>
+  <a href="https://github.com/4zyz4/GKME-Windows/actions/workflows/ci.yml"><img src="https://github.com/4zyz4/GKME-Windows/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="https://github.com/4zyz4/GKME-Windows/releases"><img src="https://img.shields.io/badge/download-Releases-blue?logo=github" alt="Download Releases"/></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg" alt="Platforms"/>
 </p>
