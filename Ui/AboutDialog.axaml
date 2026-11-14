@@ -155,9 +155,6 @@
 
             <Button Classes="sponsor" Content="{DynamicResource About_Sponsor}"
                     Margin="0,16,0,0" Click="OnSponsorClick" />
-
-            <TextBlock x:Name="LogPathTextBlock" FontSize="10" Foreground="#777777"
-                       TextWrapping="Wrap" TextAlignment="Center" Margin="0,16,0,0" />
         </StackPanel>
     </ScrollViewer>
 </Window>

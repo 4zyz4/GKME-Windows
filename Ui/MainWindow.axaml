@@ -127,7 +127,10 @@
                           ToggleType="Radio" GroupName="Language" Tag="French"
                           Click="OnLanguageMenuClick" />
             </MenuItem>
-            <MenuItem Header="{DynamicResource Menu_About}" Click="OnAboutClick" />
+            <MenuItem Header="{DynamicResource Menu_Help}">
+                <MenuItem Header="{DynamicResource Menu_About}" Click="OnAboutClick" />
+                <MenuItem Header="{DynamicResource Menu_ShowLog}" Click="OnShowLogClick" />
+            </MenuItem>
         </Menu>
 
         <!-- Manual IP input -->

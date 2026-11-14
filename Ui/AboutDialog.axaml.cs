@@ -68,7 +68,6 @@ public partial class AboutDialog : Window
         var version = typeof(AboutDialog).Assembly.GetName().Version?.ToString()
             ?? Localizer.Instance.Get("UnknownVersion");
         VersionTextBlock.Text = Localizer.Instance.Format("Version", version);
-        LogPathTextBlock.Text = Localizer.Instance.Format("About_Log", Log.FilePath);
     }
 
     /// <summary>用代码生成开源项目行，避免在 XAML 里重复八份相同结构。</summary>

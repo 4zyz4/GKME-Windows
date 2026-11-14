@@ -287,9 +287,9 @@ public class MainViewModel : INotifyPropertyChanged
     private void OnUsbipInstallRequired() => UiInvoke(() => UsbipInstallRequired?.Invoke());
 
     /// <summary>The exception is already in the log; the status line tells the
-    /// user where to find it (the log path is also in About and the menu).</summary>
+    /// user where to find it (Help → Show log window).</summary>
     private void OnControllerError(GamepadSession session, Exception ex)
-        => UiInvoke(() => SetStatus("Status_ControllerError", Log.FilePath));
+        => UiInvoke(() => SetStatus("Status_ControllerError"));
 
     private static void UiInvoke(Action action)
     {

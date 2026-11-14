@@ -1,32 +1,37 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Text;
 
 namespace GKME.Core;
 
 /// <summary>
-/// Process-wide diagnostic log. Unlike the old <c>AppContext.BaseDirectory</c>
-/// file it never writes next to the executable: an AppImage mounts its payload
-/// read-only, and on Windows the program directory is under Program Files.
-///
-/// <para>Linux: <c>/var/log/gkme/gkme.log</c> when running as root (the normal
-/// AppImage/pkexec path), otherwise
-/// <c>$XDG_STATE_HOME/GKME/logs/gkme.log</c> (usually
-/// <c>~/.local/state/GKME/logs/gkme.log</c>). Windows:
-/// <c>%LOCALAPPDATA%\GKME\logs\gkme.log</c>. Every line is also mirrored to
-/// stderr so a terminal launch shows it immediately.</para>
+/// Process-wide diagnostic log. Everything stays in memory for the current
+/// run and is shown by the Help → Show log window; nothing is written to
+/// disk, so a read-only install directory (AppImage, Program Files) is never
+/// a problem. Every line is also mirrored to stderr so a terminal launch
+/// shows it immediately.
 /// </summary>
 public static class Log
 {
-    private static readonly object Gate = new();
-    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
-    private static string? _filePath;
+    /// <summary>Upper bound on retained entries. Older lines are dropped so a
+    /// long-running session cannot grow without limit.</summary>
+    public const int RetentionLimit = 5000;
 
-    /// <summary>Absolute path of the active log file. Resolved on first use
-    /// and never throws: when no candidate directory is writable the file
-    /// falls back to the system temporary directory.</summary>
-    public static string FilePath => _filePath ??= ResolvePath();
+    private static readonly object Gate = new();
+    private static readonly List<LogEntry> Buffer = new();
+    private static long _sequence;
+
+    /// <summary>Raised after an entry was appended. Fires on the caller's
+    /// thread; UI subscribers must marshal to the UI thread themselves.</summary>
+    public static event Action<LogEntry>? EntryAdded;
+
+    /// <summary>Raised after the buffer was emptied, so a viewer can reset.</summary>
+    public static event Action? Cleared;
+
+    public static int Count
+    {
+        get { lock (Gate) return Buffer.Count; }
+    }
 
     public static void Info(string message) => Write("INFO", message);
 
@@ -49,99 +54,82 @@ public static class Log
              $"process={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
         Info($"Elevated: {PlatformInfo.IsElevated}");
         Info($"BaseDir : {AppContext.BaseDirectory}");
-        Info($"LogFile : {FilePath}");
+    }
+
+    /// <summary>Returns the entries newer than <paramref name="sequence"/>.
+    /// <paramref name="reset"/> is true when older entries were dropped
+    /// (size cap or <see cref="Clear"/>), meaning the caller's accumulated
+    /// text no longer matches the buffer and must be rebuilt from scratch.</summary>
+    public static IReadOnlyList<LogEntry> GetEntriesAfter(long sequence, out bool reset)
+    {
+        lock (Gate)
+        {
+            reset = Buffer.Count > 0 && Buffer[0].Sequence > sequence + 1;
+            if (reset) sequence = 0;
+
+            var result = new List<LogEntry>();
+            foreach (var entry in Buffer)
+                if (entry.Sequence > sequence) result.Add(entry);
+            return result;
+        }
+    }
+
+    public static void Clear()
+    {
+        lock (Gate) Buffer.Clear();
+        try { Cleared?.Invoke(); } catch { }
+    }
+
+    /// <summary>Full log as plain text, used by the window's copy button.</summary>
+    public static string FormatAll()
+    {
+        lock (Gate)
+        {
+            var sb = new StringBuilder();
+            foreach (var entry in Buffer)
+            {
+                if (sb.Length > 0) sb.AppendLine();
+                sb.Append(entry.ToString());
+            }
+            return sb.ToString();
+        }
     }
 
     private static void Write(string level, string message)
     {
-        var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}";
+        var entry = new LogEntry
+        {
+            Timestamp = DateTime.Now,
+            Level = level,
+            Message = message,
+        };
+        var line = entry.ToString();
 
         try { Console.Error.WriteLine(line); } catch { }
 
-        try
+        lock (Gate)
         {
-            lock (Gate)
-            {
-                var path = FilePath;
-                var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                File.AppendAllText(path, line + Environment.NewLine, Utf8NoBom);
-            }
+            entry.Sequence = ++_sequence;
+            Buffer.Add(entry);
+            if (Buffer.Count > RetentionLimit)
+                Buffer.RemoveRange(0, Buffer.Count - RetentionLimit);
         }
-        catch
-        {
-            // Logging must never take the app down.
-        }
+
+        // Raised outside the lock: a subscriber may touch the UI, which must
+        // never be able to deadlock a diagnostic write.
+        try { EntryAdded?.Invoke(entry); } catch { }
     }
+}
 
-    private static string ResolvePath()
-    {
-        foreach (var candidate in Candidates())
-        {
-            try
-            {
-                var dir = Path.GetDirectoryName(candidate);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                Rotate(candidate);
-                // Probe write access now, so a later write cannot pick a
-                // directory the user cannot use.
-                using (new FileStream(candidate, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { }
-                return candidate;
-            }
-            catch
-            {
-                // Try the next location.
-            }
-        }
+/// <summary>A single log line, timestamped when it was written.</summary>
+public sealed class LogEntry
+{
+    /// <summary>Monotonic write order, used by viewers to request only the
+    /// lines they have not seen yet.</summary>
+    public long Sequence { get; internal set; }
+    public DateTime Timestamp { get; init; }
+    public string Level { get; init; } = "INFO";
+    public string Message { get; init; } = string.Empty;
 
-        return Path.Combine(Path.GetTempPath(), "gkme.log");
-    }
-
-    private static IEnumerable<string> Candidates()
-    {
-        if (PlatformInfo.IsWindows)
-        {
-            yield return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "GKME", "logs", "gkme.log");
-            yield break;
-        }
-
-        // Root writes a system-wide, world-readable log so the user can simply
-        // `tail` it without sudo. If /var/log is not writable (containers,
-        // unprivileged user namespaces) fall through to the per-user path.
-        if (PlatformInfo.IsElevated)
-            yield return "/var/log/gkme/gkme.log";
-
-        var stateHome = Environment.GetEnvironmentVariable("XDG_STATE_HOME");
-        if (string.IsNullOrWhiteSpace(stateHome))
-        {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            if (!string.IsNullOrWhiteSpace(home))
-                stateHome = Path.Combine(home, ".local", "state");
-        }
-
-        if (!string.IsNullOrWhiteSpace(stateHome))
-            yield return Path.Combine(stateHome, "GKME", "logs", "gkme.log");
-
-        yield return Path.Combine(Path.GetTempPath(), "gkme.log");
-    }
-
-    private static void Rotate(string path)
-    {
-        try
-        {
-            const long maxBytes = 4 * 1024 * 1024;
-            if (!File.Exists(path)) return;
-            if (new FileInfo(path).Length < maxBytes) return;
-
-            var previous = path + ".1";
-            try { File.Delete(previous); } catch { }
-            File.Move(path, previous);
-        }
-        catch
-        {
-            // Rotation is best-effort; keep appending if it fails.
-        }
-    }
+    public override string ToString() => $"{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level}] {Message}";
 }

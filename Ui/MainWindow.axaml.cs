@@ -347,4 +347,9 @@ public partial class MainWindow : Window
         var dialog = new AboutDialog();
         await dialog.ShowDialog(this);
     }
+
+    private void OnShowLogClick(object? sender, RoutedEventArgs e)
+    {
+        LogWindow.ShowWindow();
+    }
 }
