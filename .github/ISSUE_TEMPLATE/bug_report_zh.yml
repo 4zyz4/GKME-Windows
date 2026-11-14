@@ -1,0 +1,150 @@
+name: 问题反馈 (简体中文)
+description: 报告 GKME 电脑端中可复现的 bug 或崩溃（简体中文）
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你花时间提交问题反馈！
+
+        提交前请：
+        - 搜索[已有 issue](https://github.com/4zyz4/GKME-Windows/issues)，避免重复。
+        - 确认你使用的是最新版本。
+        - 在日志和截图中隐去敏感信息（IP 地址、MAC 地址、序列号、账号信息等）。
+
+        如果问题只出现在手机端界面或手机端实体手柄上，请到 [GKME（手机端）](https://github.com/4zyz4/GKME/issues) 提交。
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: 前置检查
+      options:
+        - label: 我已搜索过现有 issue，确认这不是重复问题。
+          required: true
+        - label: 我正在使用 GKME 电脑端的最新版本。
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 描述问题
+      description: 请清晰、简洁地描述这个 bug。
+      placeholder: 通过 WiFi 连接 DualSense 后，按下 L2 时游戏里没有反应……
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: 应用版本
+      description: 帮助菜单 →「关于」页显示的版本，或安装包 / AppImage 文件名（例如 `GKME_Setup_4.9.0_x64.exe`）。
+      placeholder: "4.9.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台与体系结构
+      description: 你运行的构建产物。
+      options:
+        - Windows 10 / 11 (x64)
+        - Windows 10 / 11 (ARM64)
+        - Linux (x64)
+        - Linux (ARM64)
+        - 其他（请在下方说明）
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 系统版本
+      description: Windows 请填写 `winver` 显示的版本；Linux 请填写发行版名称、内核版本与桌面环境。
+      placeholder: "Windows 11 24H2 (26100.1742)；或 Fedora 41, kernel 6.11.4, KDE Plasma 6"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection
+    attributes:
+      label: 连接方式
+      description: 电脑端与手柄输入之间使用的链路。
+      multiple: true
+      options:
+        - WiFi 局域网
+        - USB (ADB)
+        - 网页手柄
+        - 不适用
+    validations:
+      required: true
+
+  - type: dropdown
+    id: controller
+    attributes:
+      label: 虚拟手柄型号
+      description: 设备卡片上选择的型号；只涉及键鼠或未连接虚拟设备时选「不适用」。
+      multiple: true
+      options:
+        - DualShock 4
+        - DualSense
+        - Xbox 360
+        - Xbox One
+        - "Xbox Series X|S"
+        - Switch Pro
+        - 双 Joy-Con
+        - 虚拟键盘 / 鼠标
+        - 不适用
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动应用直到问题出现的完整操作序列。
+      placeholder: |
+        1. 启动 GKME（管理员权限）并按提示安装 USB/IP 驱动
+        2. 手机通过 WiFi 连接，型号选择 DualSense
+        3. 点击「连接」，虚拟手柄出现在设备管理器中
+        4. 按下……
+        5. 出现错误
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: 期望行为与实际行为
+      description: 你期望发生什么，实际发生了什么。
+      placeholder: |
+        期望：……
+        实际：……
+    validations:
+      required: true
+
+  - type: textarea
+    id: driver
+    attributes:
+      label: 驱动、权限与 adb
+      description: |
+        Windows：设备管理器中 usbip-win2 / USB/IP 设备的状态与版本（如有）。
+        Linux：`lsmod | grep vhci` 的结果，以及 `cat /sys/devices/platform/vhci_hcd.0/status` 的输出。
+        USB 模式请附上 `adb version`。同时注明是否以管理员 / root 身份运行。
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: |
+        菜单「帮助 → 显示日志窗口 → 复制全部」。日志只保留在本次运行的内存中，不会写入文件；
+        从终端启动时同样的内容会输出到 stderr。请粘贴与问题相关的部分，较长的日志可保存为文件后拖拽到此处。
+        Linux 下内核侧的 USB/IP 问题请附 `sudo dmesg | grep -iE 'vhci|usbip'`。
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 附加信息
+      description: 截图、录屏、游戏名称或其他有助于说明问题的信息。

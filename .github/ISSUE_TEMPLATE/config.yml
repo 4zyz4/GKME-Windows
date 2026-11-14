@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation / 使用说明
+    url: https://github.com/4zyz4/GKME-Windows/blob/master/README.md
+    about: Supported platforms, build steps, and troubleshooting. / 支持的平台、构建步骤与排错。
+  - name: Questions and Discussion / 问题与讨论
+    url: https://github.com/4zyz4/GKME-Windows/issues
+    about: For general questions, search existing issues or open a new one. / 一般性问题请先搜索现有 issue，或新建 issue 讨论。
+  - name: Android client / 手机端
+    url: https://github.com/4zyz4/GKME/issues
+    about: Bugs and requests about the phone app itself. / 关于手机端应用本身的问题与建议。

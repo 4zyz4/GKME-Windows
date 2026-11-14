@@ -1,0 +1,150 @@
+name: Bug Report (English)
+description: Report a reproducible bug or crash in the GKME desktop client (English)
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report!
+
+        Before submitting, please:
+        - Search the [existing issues](https://github.com/4zyz4/GKME-Windows/issues) to avoid duplicates.
+        - Make sure you are running the latest release.
+        - Redact sensitive information (IP addresses, MAC addresses, serial numbers, account details) from logs and screenshots.
+
+        If the problem only occurs in the phone app UI or with a physical controller connected to the phone, report it at [GKME (Android)](https://github.com/4zyz4/GKME/issues) instead.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched the existing issues and this is not a duplicate.
+          required: true
+        - label: I am running the latest version of the GKME desktop client.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+      placeholder: After connecting a DualSense over WiFi, pressing L2 does nothing in game, ...
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: The version shown under Help → About, or the installer / AppImage file name (e.g. `GKME_Setup_4.9.0_x64.exe`).
+      placeholder: "4.9.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform and architecture
+      description: The build you are running.
+      options:
+        - Windows 10 / 11 (x64)
+        - Windows 10 / 11 (ARM64)
+        - Linux (x64)
+        - Linux (ARM64)
+        - Other (described below)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS version
+      description: On Windows, the version reported by `winver`. On Linux, the distribution, kernel version and desktop environment.
+      placeholder: "Windows 11 24H2 (26100.1742); or Fedora 41, kernel 6.11.4, KDE Plasma 6"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection method
+      description: How gamepad input reaches the desktop client.
+      multiple: true
+      options:
+        - WiFi LAN
+        - USB (ADB)
+        - Web controller
+        - Not applicable
+    validations:
+      required: true
+
+  - type: dropdown
+    id: controller
+    attributes:
+      label: Virtual controller model
+      description: The model selected on the device card. Choose "Not applicable" for keyboard/mouse only or when no virtual device was created.
+      multiple: true
+      options:
+        - DualShock 4
+        - DualSense
+        - Xbox 360
+        - Xbox One
+        - "Xbox Series X|S"
+        - Switch Pro
+        - Dual Joy-Con
+        - Virtual keyboard / mouse
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The complete sequence from launching the app to the problem.
+      placeholder: |
+        1. Start GKME as administrator and install the USB/IP driver when prompted
+        2. Connect the phone over WiFi and pick DualSense
+        3. Click Connect; the virtual controller shows up in Device Manager
+        4. Press ...
+        5. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected behavior vs. actual behavior
+      description: What you expected to happen, and what actually happened.
+      placeholder: |
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: driver
+    attributes:
+      label: Driver, privileges and adb
+      description: |
+        Windows: the status and version of the usbip-win2 / USB/IP device in Device Manager, if present.
+        Linux: the output of `lsmod | grep vhci` and `cat /sys/devices/platform/vhci_hcd.0/status`.
+        For USB mode, include `adb version`. Also state whether the app runs as administrator / root.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Menu "Help → Show log window → Copy all". Logs are kept in memory for the current run only and are never written to disk;
+        the same content goes to stderr when launched from a terminal. Paste the relevant part, or drag in a file for long logs.
+        For USB/IP problems on Linux, include `sudo dmesg | grep -iE 'vhci|usbip'`.
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, screen recordings, the game you tested with, or anything else that helps explain the problem.
