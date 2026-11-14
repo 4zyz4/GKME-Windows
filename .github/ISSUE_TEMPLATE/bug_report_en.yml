@@ -38,8 +38,8 @@ body:
     id: app-version
     attributes:
       label: App version
-      description: The version shown under Help → About, or the installer / AppImage file name (e.g. `GKME_Setup_4.9.0_x64.exe`).
-      placeholder: "4.9.0"
+      description: The version shown under Help → About, or the installer / AppImage file name (e.g. `GKME_Setup_4.9.1_x64.exe`).
+      placeholder: "4.9.1"
     validations:
       required: true
 

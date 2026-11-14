@@ -38,8 +38,8 @@ body:
     id: app-version
     attributes:
       label: 应用版本
-      description: 帮助菜单 →「关于」页显示的版本，或安装包 / AppImage 文件名（例如 `GKME_Setup_4.9.0_x64.exe`）。
-      placeholder: "4.9.0"
+      description: 帮助菜单 →「关于」页显示的版本，或安装包 / AppImage 文件名（例如 `GKME_Setup_4.9.1_x64.exe`）。
+      placeholder: "4.9.1"
     validations:
       required: true
 

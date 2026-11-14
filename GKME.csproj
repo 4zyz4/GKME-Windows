@@ -38,7 +38,7 @@
     <IlcOptimize>true</IlcOptimize>
     <IlcFoldIdenticalBehavior>true</IlcFoldIdenticalBehavior>
     <StripSymbols>true</StripSymbols>
-    <Version>4.9.0.0</Version>
+    <Version>4.9.1.0</Version>
     <VersionString>$(Version)</VersionString>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
