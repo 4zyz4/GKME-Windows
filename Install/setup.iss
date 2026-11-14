@@ -5,6 +5,9 @@
 #define MyAppPublisher "4zyz4"
 #define MyAppURL ""
 #define MyAppExeName "GKME.exe"
+; Single source for every icon this script bakes in: the installer exe, the
+; uninstaller and the shortcuts all reuse the application icon.
+#define MyAppIcon AddBackslash(SourcePath) + "..\icon.ico"
 
 ; Build-Installer.ps1 passes the publish folder with /DBuildDir=<absolute path>.
 ; Without it (e.g. when compiling from the IDE), fall back to the Release output.
@@ -50,6 +53,10 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\GKME
 DefaultGroupName=GKME
 UninstallDisplayName=GKME
+; Icon shown for GKME in Settings > Apps (falls back to the exe icon).
+UninstallDisplayIcon={app}\{#MyAppExeName}
+; Icon of Setup.exe and of the uninstaller (Setup icon is copied to the uninstaller).
+SetupIconFile={#MyAppIcon}
 OutputBaseFilename=GKME_Setup_{#MyAppVersion}{#OutputSuffix}
 VersionInfoVersion={#MyAppVersion}
 Compression=lzma2/max
@@ -90,9 +97,9 @@ Source: "{#BuildDir}\web\*"; DestDir: "{app}\web"; Flags: ignoreversion recurses
 Source: "{#BuildDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\GKME"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\GKME"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Uninstall GKME"; Filename: "{uninstallexe}"
+Name: "{group}\GKME"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
+Name: "{autodesktop}\GKME"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
+Name: "{group}\Uninstall GKME"; Filename: "{uninstallexe}"; IconFilename: "{app}\icon.ico"
 
 [Code]
 const
