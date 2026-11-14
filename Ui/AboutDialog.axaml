@@ -1,53 +1,163 @@
 <Window x:Class="GKME.Ui.AboutDialog" xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="{DynamicResource About_Title}"
-        Width="420" Height="340"
+        Width="600" Height="720"
+        MinWidth="420" MinHeight="360"
         WindowStartupLocation="CenterOwner"
-        CanResize="False"
         Background="#1E1E1E"
         Foreground="#E0E0E0">
     <Window.Styles>
-        <Style Selector="TextBlock.link">
-            <Setter Property="TextDecorations" Value="Underline" />
-            <Setter Property="Foreground" Value="#0E639C" />
+        <Style Selector="Button.badge">
+            <Setter Property="Background" Value="#3C3C3C" />
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="12,5" />
+            <Setter Property="FontSize" Value="12" />
         </Style>
-        <Style Selector="TextBlock.link:pointerover">
-            <Setter Property="Foreground" Value="#1177BB" />
+        <Style Selector="Button.badge:pointerover">
+            <Setter Property="Background" Value="#4A4A4A" />
+        </Style>
+        <Style Selector="Button.badge.accent">
+            <Setter Property="Background" Value="#0E639C" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+        </Style>
+        <Style Selector="Button.badge.accent:pointerover">
+            <Setter Property="Background" Value="#1177BB" />
+        </Style>
+        <Style Selector="Button.project">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="Padding" Value="12,10" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        </Style>
+        <Style Selector="Button.project:pointerover">
+            <Setter Property="Background" Value="#363636" />
+        </Style>
+        <Style Selector="Button.sponsor">
+            <Setter Property="Background" Value="#333333" />
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="28,10" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Button.sponsor:pointerover">
+            <Setter Property="Background" Value="#414141" />
         </Style>
     </Window.Styles>
-    <Grid Margin="24">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
 
-        <!-- Icon + Title -->
-        <StackPanel Grid.Row="0" HorizontalAlignment="Center" Orientation="Horizontal" Margin="0,0,0,20">
-            <Image Source="/icon.png" Width="48" Height="48" Margin="0,0,16,0" />
-            <StackPanel Orientation="Vertical">
-                <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#E0E0E0"
-                           VerticalAlignment="Center" Text="GKME" />
-                <TextBlock x:Name="VersionTextBlock" FontSize="12" Foreground="#888888"
-                           VerticalAlignment="Center" Margin="0,2,0,0" />
-            </StackPanel>
-        </StackPanel>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="32,24,32,32" MaxWidth="560" HorizontalAlignment="Center">
 
-        <!-- Info text -->
-        <StackPanel Grid.Row="1" HorizontalAlignment="Center" Spacing="3" Margin="0,0,0,16">
-            <TextBlock FontSize="12" Foreground="#888888" TextAlignment="Center"
-                       Text="{DynamicResource About_Author}" />
-            <TextBlock FontSize="12" Foreground="#888888" TextAlignment="Center"
-                       Text="{DynamicResource About_QQGroup}" />
-            <TextBlock FontSize="12" Foreground="#888888" TextAlignment="Center" Margin="0,8,0,0"
-                       Text="{DynamicResource About_OpenSource}" />
-            <TextBlock Classes="link" FontSize="12" Text="https://github.com/4zyz4/GKME"
+            <!-- ── Hero ── -->
+            <StackPanel HorizontalAlignment="Center">
+                <Image Source="/icon.png" Width="80" Height="80" Margin="0,8,0,0"
                        HorizontalAlignment="Center" />
-            <TextBlock FontSize="12" Foreground="#888888" TextWrapping="Wrap" TextAlignment="Center"
-                       MaxWidth="340" Margin="0,12,0,0"
-                       Text="{DynamicResource About_Note}" />
+                <TextBlock Text="GKME" FontSize="28" FontWeight="SemiBold" LetterSpacing="1.7"
+                           HorizontalAlignment="Center" Margin="0,12,0,0" />
+                <TextBlock FontSize="10" FontWeight="SemiBold" LetterSpacing="1.8"
+                           Foreground="#9D9D9D" HorizontalAlignment="Center" Margin="0,6,0,0"
+                           Text="{DynamicResource About_TaglinePrimary}" />
+                <TextBlock FontSize="11" Foreground="#9D9D9D" HorizontalAlignment="Center"
+                           Margin="0,2,0,0" Text="{DynamicResource About_TaglineSecondary}" />
+                <TextBlock x:Name="VersionTextBlock" FontSize="12" Foreground="#9D9D9D"
+                           HorizontalAlignment="Center" Margin="0,10,0,0" />
+
+                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center"
+                            Margin="0,12,0,0">
+                    <Button Classes="badge" Content="{DynamicResource About_BadgeGithub}"
+                            Click="OnSourceClick" />
+                    <Button Classes="badge accent" Content="{DynamicResource About_BadgeGpl}"
+                            Click="OnLicenseClick" />
+                </StackPanel>
+
+                <TextBlock FontSize="13" Foreground="#9D9D9D" TextAlignment="Center"
+                           TextWrapping="Wrap" LineHeight="20" Margin="0,16,0,0"
+                           Text="{DynamicResource About_Intro}" />
+            </StackPanel>
+
+            <!-- ── 连接方式 ── -->
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,24,0,10">
+                <Border Width="3" Height="16" Background="#0E639C" VerticalAlignment="Center" />
+                <TextBlock FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"
+                           Text="{DynamicResource About_SectionConnections}" />
+            </StackPanel>
+
+            <Border Background="#2D2D2D" CornerRadius="4" Padding="12,4">
+                <StackPanel>
+                    <StackPanel Spacing="2" Margin="0,6">
+                        <TextBlock FontSize="14" FontWeight="SemiBold"
+                                   Text="{DynamicResource About_ConnectionWifi}" />
+                        <TextBlock FontSize="12" Foreground="#9D9D9D" TextWrapping="Wrap"
+                                   Text="{DynamicResource About_ConnectionWifiDesc}" />
+                    </StackPanel>
+                    <Border Height="1" Background="#3E3E3E" />
+                    <StackPanel Spacing="2" Margin="0,6">
+                        <TextBlock FontSize="14" FontWeight="SemiBold"
+                                   Text="{DynamicResource About_ConnectionUsb}" />
+                        <TextBlock FontSize="12" Foreground="#9D9D9D" TextWrapping="Wrap"
+                                   Text="{DynamicResource About_ConnectionUsbDesc}" />
+                    </StackPanel>
+                    <Border Height="1" Background="#3E3E3E" />
+                    <StackPanel Spacing="2" Margin="0,6">
+                        <TextBlock FontSize="14" FontWeight="SemiBold"
+                                   Text="{DynamicResource About_ConnectionWeb}" />
+                        <TextBlock FontSize="12" Foreground="#9D9D9D" TextWrapping="Wrap"
+                                   Text="{DynamicResource About_ConnectionWebDesc}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ── 开源项目 ── -->
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,24,0,10">
+                <Border Width="3" Height="16" Background="#0E639C" VerticalAlignment="Center" />
+                <TextBlock FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"
+                           Text="{DynamicResource About_SectionOpenSource}" />
+            </StackPanel>
+
+            <TextBlock FontSize="12" Foreground="#9D9D9D" TextWrapping="Wrap" LineHeight="18"
+                       Margin="0,0,0,12" Text="{DynamicResource About_OpenSourceIntro}" />
+
+            <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"
+                       Text="{DynamicResource About_OpenSourceReferenced}" />
+            <Border Background="#2D2D2D" CornerRadius="4" Padding="0,2">
+                <StackPanel x:Name="ReferencedProjectsPanel" />
+            </Border>
+
+            <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,16,0,8"
+                       Text="{DynamicResource About_OpenSourceLibraries}" />
+            <Border Background="#2D2D2D" CornerRadius="4" Padding="0,2">
+                <StackPanel x:Name="OpenSourceLibrariesPanel" />
+            </Border>
+
+            <!-- ── 作者与反馈 ── -->
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,24,0,10">
+                <Border Width="3" Height="16" Background="#0E639C" VerticalAlignment="Center" />
+                <TextBlock FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"
+                           Text="{DynamicResource About_SectionAuthor}" />
+            </StackPanel>
+
+            <Border Background="#2D2D2D" CornerRadius="4" Padding="12">
+                <StackPanel Spacing="8">
+                    <TextBlock FontSize="13" TextWrapping="Wrap" LineHeight="19"
+                               Text="{DynamicResource About_AuthorLine}" />
+                    <TextBlock FontSize="12" Foreground="#9D9D9D" TextWrapping="Wrap" LineHeight="18"
+                               Text="{DynamicResource About_LicenseNotice}" />
+                    <TextBlock FontSize="12" Foreground="#9D9D9D" TextWrapping="Wrap" LineHeight="18"
+                               Text="{DynamicResource About_Note}" />
+                </StackPanel>
+            </Border>
+
+            <Button Classes="sponsor" Content="{DynamicResource About_Sponsor}"
+                    Margin="0,16,0,0" Click="OnSponsorClick" />
+
             <TextBlock x:Name="LogPathTextBlock" FontSize="10" Foreground="#777777"
-                       TextWrapping="Wrap" TextAlignment="Center" MaxWidth="360"
-                       Margin="0,10,0,0" />
+                       TextWrapping="Wrap" TextAlignment="Center" Margin="0,16,0,0" />
         </StackPanel>
-    </Grid>
+    </ScrollViewer>
 </Window>

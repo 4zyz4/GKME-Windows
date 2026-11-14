@@ -77,6 +77,9 @@
   <ItemGroup>
     <AvaloniaResource Include="icon.ico" />
     <AvaloniaResource Include="icon.png" />
+    <!-- About page: sponsor QR image and the GPLv3 text shown by the badge. -->
+    <AvaloniaResource Include="Assets\reward.png" />
+    <AvaloniaResource Include="Assets\GPL-3.0.txt" />
     <!-- CJK fallback for Linux only: Windows always ships a CJK system font. -->
     <AvaloniaResource Include="Assets\Fonts\wqy-microhei.ttf" Condition="'$(GkmeIsWindows)' != 'true'" />
     <Content Include="icon.ico">
